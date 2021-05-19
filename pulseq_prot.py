@@ -33,21 +33,12 @@ def insert_hdr(prot_file, metadata):
 
     prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
 
+    # user parameters
     dset_udbl = metadata.userParameters.userParameterDouble
     prot_udbl = prot_hdr.userParameters.userParameterDouble
-    dset_udbl[0].name = prot_udbl[0].name # dwellTime_us
-    dset_udbl[0].value_ = prot_udbl[0].value_
-    dset_udbl[1].name = prot_udbl[1].name # traj_delay (additional delay of trajectory [s])
-    dset_udbl[1].value_ = prot_udbl[1].value_
-    dset_udbl[2].name = prot_udbl[2].name # nsegments
-    dset_udbl[2].value_ = prot_udbl[2].value_
-    dset_udbl[3].name = prot_udbl[3].name # t_min (initial time for B0-correction)
-    dset_udbl[3].value_ = prot_udbl[3].value_
-    try: 
-        dset_udbl[4].name = prot_udbl[4].name # os_region - this factor determines the part of kspace that is used for reconstruction of phase maps
-        dset_udbl[4].value_ = prot_udbl[4].value_
-    except:
-        pass
+    for ix, param in enumerate(prot_udbl):
+        dset_udbl[ix].name = param.name
+        dset_udbl[ix].value_ = param.value_
 
     dset_e1 = metadata.encoding[0]
     prot_e1 = prot_hdr.encoding[0]

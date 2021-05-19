@@ -193,6 +193,13 @@ def process(connection, config, metadata):
 
                         # filter signal to avoid Gibbs Ringing
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
+                        
+                        # Set an offresonance frequency for debugging
+                        freq = 0 # [Hz]
+                        dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
+                        data_len = acqGroup[item.idx.slice][item.idx.contrast][-1].data[:].shape[1]
+                        phase = 2*np.pi*freq * np.arange(data_len)*dwelltime
+                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phase)
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                         # if no refscan, calculate sensitivity maps from raw data
@@ -487,6 +494,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     return images
 
 def process_acs(group, config, metadata, dmtx=None):
+    """ Process reference scans for parallel imaging calibration
+    """
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
@@ -513,6 +522,8 @@ def process_acs(group, config, metadata, dmtx=None):
         return None
 
 def sens_from_raw(group, metadata):
+    """ Calculate sensitivity maps from imaging data (if no reference scan was done)
+    """
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -525,6 +536,10 @@ def sens_from_raw(group, metadata):
     return sensmaps
 
 def process_shots(group, metadata, sensmaps):
+    """ Reconstruct images from single shots for calculation of phase maps
+
+    WIP: maybe use PowerGrid for B0-correction? If recon without B0 correction is sufficient, BART is more time efficient
+    """
 
     from skimage.transform import resize
 
@@ -541,19 +556,24 @@ def process_shots(group, metadata, sensmaps):
 
     # Reconstruct low resolution images
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-       pics_config = 'pics -g -S -e -i 30 -t'
+       pics_config = 'pics -g -l1 -r 0.001 -S -e -i 30 -t'
     else:
-       pics_config = 'pics -S -e -i 30 -t'
+       pics_config = 'pics -l1 -r 0.001 -S -e -i 30 -t'
 
     imgs = []
     for k in range(data.shape[2]):
         img = bart(1, pics_config, np.expand_dims(trj[:,:,k],2), np.expand_dims(data[:,:,k],2), sensmaps)
         img = resize(img.real, [nx,nx], anti_aliasing=True) + 1j*resize(img.imag, [nx,nx], anti_aliasing=True) # interpolate back to high resolution
         imgs.append(img)
+    
+    np.save(debugFolder + "/" + "shotimgs.npy", imgs)
 
     return imgs
 
 def calc_phasemaps(shotimgs, mask):
+    """ Calculate phase maps for phase corrected reconstruction
+    """
+
     from skimage.restoration import unwrap_phase
     from scipy.ndimage import  median_filter, gaussian_filter
 
@@ -573,6 +593,8 @@ def calc_phasemaps(shotimgs, mask):
     return unwrapped_phasemaps
 
 def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
+    """ Calculate ADC maps from diffusion images
+    """
 
     def geom_mean(arr, axis):
         return (np.prod(arr, axis=axis))**(1.0/arr.shape[axis])
@@ -703,4 +725,3 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     kspace = np.transpose(kspace, [3, 0, 1, 2])
 
     return kspace
-    

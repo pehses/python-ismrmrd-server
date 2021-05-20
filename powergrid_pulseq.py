@@ -195,10 +195,9 @@ def process(connection, config, metadata):
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
                         
                         # Set an offresonance frequency for debugging
-                        freq = 0 # [Hz]
-                        dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
-                        data_len = acqGroup[item.idx.slice][item.idx.contrast][-1].data[:].shape[1]
-                        phase = 2*np.pi*freq * np.arange(data_len)*dwelltime
+                        offres_freq = 0 # [Hz]
+                        t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
+                        phase = 2*np.pi*offres_freq * t_vec
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phase)
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):

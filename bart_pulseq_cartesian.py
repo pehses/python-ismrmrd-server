@@ -294,7 +294,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, prot_arrays=N
         data = np.abs(data)
 
     logging.debug("Image data is size %s" % (data.shape,))
-    
+
     # B1 Map calculation (Dream approach)
     if 'dream' in prot_arrays: #dream = ([ste_contr,TR,flip_angle_ste,flip_angle,prepscans,t1])
         dream = prot_arrays['dream']
@@ -369,7 +369,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, prot_arrays=N
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + par # contains image index (slices/partitions)
+            image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
             image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
             image.slice = 0
             image.attribute_string = xml
@@ -378,8 +378,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, prot_arrays=N
         if fa_map is not None:
             for par in range(n_par):
                 image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
-                image.image_index = 1 + group[0].idx.contrast * n_slc + par
-                image.image_series_index = 1 + group[0].idx.repetition + 1
+                logging.debug(1 + par)
+                image.image_index = 1 + par
+                image.image_series_index = 2 + group[0].idx.repetition
                 image.slice = 0
                 image.attribute_string = xml
                 images.append(image)

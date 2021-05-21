@@ -100,6 +100,9 @@ def process_spiral(connection, config, metadata):
     dmtx = None
     base_trj_ = []
 
+    # different contrasts need different scaling
+    process_raw.imascale = [None] * 256
+
     try:
         for acq_ctr, item in enumerate(connection):
 
@@ -274,11 +277,10 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     # Normalize and convert to int16
     # save one scaling in 'static' variable
-    try:
-        process_raw.imascale
-    except:
-        process_raw.imascale = 0.8 / data.max()
-    data *= 32767 * process_raw.imascale
+    contr = group[0].idx.contrast
+    if process_raw.imascale[contr] is None:
+        process_raw.imascale[contr] = 0.8 / data.max()
+    data *= 32767 * process_raw.imascale[contr]
     data = np.around(data)
     data = data.astype(np.int16)
 
@@ -298,7 +300,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + par # contains image index (slices/partitions)
+            image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
             image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
             image.slice = 0
             image.attribute_string = xml

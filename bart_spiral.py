@@ -138,10 +138,10 @@ def process(connection, config, metadata):
         # image in a series is typically not separately flagged.
         if len(acqGroup) > 0:
             logging.info("Processing a group of k-space data (untriggered)")
-            if sensmaps[item.idx.slice] is None:
+            if sensmaps[acqGroup[-1].idx.slice] is None:
                 # run parallel imaging calibration
-                sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx) 
-            image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
+                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata, dmtx) 
+            image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[acqGroup[-1].idx.slice])
             connection.send_image(image)
             acqGroup = []
 

@@ -265,7 +265,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     # average acquisitions before reco
     avg_before = True 
     if metadata.encoding[0].encodingLimits.contrast.maximum > 0:
-        avg_before = False # do not average before reco in diffusion imaging as this would introduce phase errors
+        avg_before = False # do not average before reco in diffusion imaging as this could introduce phase errors
 
     # Write ISMRMRD file for PowerGrid
     tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"

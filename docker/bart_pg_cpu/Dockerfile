@@ -207,6 +207,7 @@ RUN  cd /opt/code \
      && pip3 install SpiralTraj* \
      && rm SpiralTraj*
 
+# ISMRMRD Python - above this version the .value_ method of userParameters changes to .value
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python.git \
      && cd /opt/code/ismrmrd-python \

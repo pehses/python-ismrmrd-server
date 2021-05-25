@@ -12,60 +12,12 @@ from bart import bart
 import spiraltraj
 from cfft import cfftn, cifftn
 
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, fov_shift_spiral, remove_os, intp_axis
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
-
-
-# from ismrmdrdtools (wip: import from ismrmrdtools instead)
-def calculate_prewhitening(noise, scale_factor=1.0):
-    '''Calculates the noise prewhitening matrix
-
-    :param noise: Input noise data (array or matrix), ``[coil, nsamples]``
-    :scale_factor: Applied on the noise covariance matrix. Used to
-                   adjust for effective noise bandwith and difference in
-                   sampling rate between noise calibration and actual measurement:
-                   scale_factor = (T_acq_dwell/T_noise_dwell)*NoiseReceiverBandwidthRatio
-
-    :returns w: Prewhitening matrix, ``[coil, coil]``, w*data is prewhitened
-    '''
-    # from scipy.linalg import sqrtm
-
-    noise = noise.reshape((noise.shape[0], noise.size//noise.shape[0]))
-
-    R = np.cov(noise)
-    R /= np.mean(abs(np.diag(R)))
-    R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
-    # R = sqrtm(np.linalg.inv(R))
-    R = np.linalg.cholesky(np.linalg.inv(R))
-
-    return R
-
-
-def remove_os(data, axis=0):
-    '''Remove oversampling (assumes os factor 2)
-    '''
-    cut = slice(data.shape[axis]//4, (data.shape[axis]*3)//4)
-    data = np.fft.ifft(data, axis=axis)
-    data = np.delete(data, cut, axis=axis)
-    data = np.fft.fft(data, axis=axis)
-    return data
-
-
-def apply_prewhitening(data, dmtx):
-    '''Apply the noise prewhitening matrix
-
-    :param noise: Input noise data (array or matrix), ``[coil, ...]``
-    :param dmtx: Input noise prewhitening matrix
-
-    :returns w_data: Prewhitened data, ``[coil, ...]``,
-    '''
-
-    s = data.shape
-    return np.asarray(np.asmatrix(dmtx)*np.asmatrix(data.reshape(data.shape[0],data.size//data.shape[0]))).reshape(s)
-    
 
 
 def process(connection, config, metadata):
@@ -196,6 +148,9 @@ def process(connection, config, metadata):
     finally:
         connection.send_close()
 
+#######
+# Sorting of k-space data
+#######
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
@@ -260,199 +215,70 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
     return kspace
 
-
-def rot(mat, n_intl, rot=2*np.pi):
-    # rotate spiral gradient
-    # trj is a 2D trajectory or gradient arrays ([2, n_samples]), n_intlv is the number of spiral interleaves
-    # returns a new trajectory/gradient array with size [n_intl, 2, n_samples]
-    phi = np.linspace(0, rot, n_intl, endpoint=False)
-
-    # rot_mat = np.asarray([[np.cos(phi), -np.sin(phi)], [np.sin(phi), np.cos(phi)]])
-    # new orientation (switch x and y):
-    rot_mat = np.asarray([[np.cos(phi), np.sin(phi)], [-np.sin(phi), np.cos(phi)]])
-    rot_mat = np.moveaxis(rot_mat,-1,0)
-
-    return rot_mat @ mat
-
-
-def pcs_to_dcs(grads, patient_position='HFS'):
-    """ Convert from patient coordinate system (PCS, physical) 
-        to device coordinate system (DCS, physical)
-        this is valid for patient orientation head first/supine
-    """
-    grads = grads.copy()
-
-    # only valid for head first/supine - other orientations see IDEA UserGuide
-    if patient_position.upper() == 'HFS':
-        grads[:,1] *= -1
-        grads[:,2] *= -1
-    else:
-        raise ValueError
-
-    return grads
-
-def dcs_to_pcs(grads, patient_position='HFS'):
-    """ Convert from device coordinate system (DCS, physical) 
-        to patient coordinate system (DCS, physical)
-        this is valid for patient orientation head first/supine
-    """
-    return pcs_to_dcs(grads, patient_position) # same sign switch
+def sort_spiral_data(group, metadata, dmtx=None):
     
-def gcs_to_pcs(grads, rotmat):
-    """ Convert from gradient coordinate system (GCS, logical) 
-        to patient coordinate system (DCS, physical)
-    """
-    return np.matmul(rotmat, grads)
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    ncol = group[0].number_of_samples
+    res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
 
-def pcs_to_gcs(grads, rotmat):
-    """ Convert from patient coordinate system (PCS, physical) 
-        to gradient coordinate system (GCS, logical) 
-    """
-    return np.matmul(np.linalg.inv(rotmat), grads)
+    rot_mat = calc_rotmat(group[0])
+    base_trj = calc_spiral_traj(ncol, rot_mat, metadata.encoding[0])
 
-def gcs_to_dcs(grads, rotmat):
-    """ Convert from gradient coordinate system (GCS, logical) 
-        to device coordinate system (DCS, physical)
-        this is valid for patient orientation head first/supine
-    Parameters
-    ----------
-    grads : numpy array [3, intl, samples]
-            gradient to be converted
-    rotmat: numpy array [3,3]
-            rotation matrix from quaternion from Siemens Raw Data header
-    Returns
-    -------
-    grads_cv : numpy.ndarray
-               Converted gradient
-    """
-    grads = grads.copy()
+    acq_key = [None] * nz
+    sig = list()
+    trj = list()
+    enc = list()
+    for key, acq in enumerate(group):
+        enc1 = acq.idx.kspace_encode_step_1
+        enc2 = acq.idx.kspace_encode_step_2
 
-    # rotation from GCS (PHASE,READ,SLICE) to patient coordinate system (PCS)
-    grads = gcs_to_pcs(grads, rotmat)
-    
-    # PCS (SAG,COR,TRA) to DCS (X,Y,Z)
-    # only valid for head first/supine - other orientations see IDEA UserGuide
-    grads = pcs_to_dcs(grads)
-    
-    return grads
-
-
-def dcs_to_gcs(grads, rotmat):
-    """ Convert from device coordinate system (DCS, logical) 
-        to gradient coordinate system (GCS, physical)
-        this is valid for patient orientation head first/supine
-    Parameters
-    ----------
-    grads : numpy array [3, intl, samples]
-            gradient to be converted
-    rotmat: numpy array [3,3]
-            rotation matrix from quaternion from Siemens Raw Data header
-    Returns
-    -------
-    grads_cv : numpy.ndarray
-               Converted gradient
-    """
-    grads = grads.copy()
-    
-    # DCS (X,Y,Z) to PCS (SAG,COR,TRA)
-    # only valid for head first/supine - other orientations see IDEA UserGuide
-    grads = dcs_to_pcs(grads)
-    
-    # PCS (SAG,COR,TRA) to GCS (PHASE,READ,SLICE)
-    grads = pcs_to_gcs(grads, rotmat)
-    
-    return grads
-
-
-def fov_shift_spiral(sig, trj, shift, matr_sz):
-    """ 
-    shift field of view of spiral data
-    sig:  rawdata [ncha, nsamples]
-    trj:    trajectory [3, nsamples]
-    # shift:   shift [x_shift, y_shift] in voxel
-    shift:   shift [y_shift, x_shift] in voxel
-    matr_sz: matrix size of reco
-    """
-
-    if (abs(shift[0]) < 1e-2) and (abs(shift[1]) < 1e-2):
-        # nothing to do
-        return sig
-
-    sig *= np.exp(1j*(-shift[1]*np.pi*trj[0]/matr_sz-shift[0]*np.pi*trj[1]/matr_sz))[np.newaxis]
-
-    return sig
-
-
-
-def intp_axis(newgrid, oldgrid, data, axis=0):
-    # interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
-    tmp = np.moveaxis(data.copy(), axis, 0)
-    newshape = (len(newgrid),) + tmp.shape[1:]
-    tmp = tmp.reshape((len(oldgrid), -1))
-    n_elem = tmp.shape[-1]
-    intp_data = np.zeros((len(newgrid), n_elem), dtype=data.dtype)
-    for k in range(n_elem):
-        intp_data[:, k] = np.interp(newgrid, oldgrid, tmp[:, k])
-    intp_data = intp_data.reshape(newshape)
-    intp_data = np.moveaxis(intp_data, 0, axis)
-    return intp_data
-
-
-def grad_pred(grad, girf):
-    """
-    gradient prediction with girf
-    
-    Parameters:
-    ------------
-    grad: nominal gradient [interleaves, dims, samples]
-    girf:     gradient impulse response function [input dims, output dims (incl k0), samples]
-    """
-    ndim = grad.shape[1]
-    grad_sampl = grad.shape[-1]
-    girf_sampl = girf.shape[-1]
-
-    # remove k0 from girf:
-    girf = girf[:,1:]
-
-    # zero-fill grad to number of girf samples (add check?)
-    grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
-
-    # FFT
-    grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)
-
-    # apply girf to nominal gradients
-    pred_grad = np.zeros_like(grad)
-    for dim in range(ndim):
-        pred_grad[:,dim]=np.sum(grad*girf[np.newaxis,:ndim,dim,:], axis=1)
-
-    # IFFT
-    pred_grad = np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(pred_grad, axes=-1), axis=-1), axes=-1)
-    
-    # cut out relevant part
-    pred_grad = pred_grad[:,:,:grad_sampl]
-
-    return pred_grad
-
-
-def trap_from_area(area, ramptime, ftoptime, dt_grad=10e-6):
-    """create trapezoidal_gradient with selectable gradient moment
-    area in [T/m*s]
-    ramptime/ftoptime in [s]
-    """
-    n_ramp = int(ramptime/dt_grad+0.5)
-    n_ftop = int(ftoptime/dt_grad+0.5)
-    amp = area/(ftoptime+ramptime)
-    ramp = np.arange(0.5, n_ramp)/n_ramp
-    while np.ndim(ramp) < np.ndim(amp) + 1:
-        ramp = ramp[np.newaxis]
-    
-    ramp = amp[..., np.newaxis] * ramp
+        kz = enc2 - nz//2
         
-    zeros = np.zeros(area.shape + (1,))
-    grad = np.concatenate((zeros, ramp, amp[..., np.newaxis]*np.ones(area.shape + (n_ftop,)), ramp[...,::-1], zeros), -1)
-    return grad
+        # save one header per partition
+        if acq_key[enc2] is None:
+            acq_key[enc2] = key
 
+        enc.append([enc1, enc2])
+        
+        # update 3D dir.
+        tmp = base_trj[enc1].copy()
+        tmp[-1] = kz * np.ones(tmp.shape[-1])
+        trj.append(tmp)
+
+        # and append data after optional prewhitening
+        if dmtx is None:
+            sig.append(acq.data)
+        else:
+            sig.append(apply_prewhitening(acq.data, dmtx))
+
+        # apply fov shift
+        shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
+        sig[-1] = fov_shift_spiral(sig[-1], tmp, shift, nx)
+
+        # we could remove oversampling here (not really necessary after fov shift)
+
+    np.save(os.path.join(debugFolder, "enc.npy"), enc)
     
+    # convert lists to numpy arrays
+    trj = np.asarray(trj) # current size: (nacq, 3, ncol)
+    sig = np.asarray(sig) # current size: (nacq, ncha, ncol)
+
+    # rearrange trj & sig for bart - target size: ??? WIP  --(ncol, enc1_max, nz, nc)
+    trj = np.transpose(trj, [1, 2, 0])
+    sig = np.transpose(sig, [2, 0, 1])[np.newaxis]
+
+    logging.debug("trj.shape = %s, sig.shape = %s"%(trj.shape, sig.shape))
+    
+    np.save(os.path.join(debugFolder, "trj.npy"), trj)
+
+    return sig, trj, acq_key
+
+#######
+# Trajectory
+#######
+
+  
 def calc_spiral_traj(ncol, rot_mat, encoding):
     dt_grad = 10e-6
     dt_skope = 1e-6
@@ -577,71 +403,75 @@ def calc_spiral_traj(ncol, rot_mat, encoding):
     # return base_trj
     return pred_trj
 
-
-def sort_spiral_data(group, metadata, dmtx=None):
+def grad_pred(grad, girf):
+    """
+    gradient prediction with girf
     
-    def calc_rotmat(acq):
-        phase_dir = np.asarray(acq.phase_dir)
-        read_dir = np.asarray(acq.read_dir)
-        slice_dir = np.asarray(acq.slice_dir)
-        return np.round(np.concatenate([phase_dir[:,np.newaxis], read_dir[:,np.newaxis], slice_dir[:,np.newaxis]], axis=1), 6)
+    Parameters:
+    ------------
+    grad: nominal gradient [interleaves, dims, samples]
+    girf:     gradient impulse response function [input dims, output dims (incl k0), samples]
+    """
+    ndim = grad.shape[1]
+    grad_sampl = grad.shape[-1]
+    girf_sampl = girf.shape[-1]
 
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    ncol = group[0].number_of_samples
+    # remove k0 from girf:
+    girf = girf[:,1:]
 
-    rot_mat = calc_rotmat(group[0])
-    base_trj = calc_spiral_traj(ncol, rot_mat, metadata.encoding[0])
+    # zero-fill grad to number of girf samples (add check?)
+    grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
 
-    acq_key = [None] * nz
-    sig = list()
-    trj = list()
-    enc = list()
-    for key, acq in enumerate(group):
-        enc1 = acq.idx.kspace_encode_step_1
-        enc2 = acq.idx.kspace_encode_step_2
+    # FFT
+    grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)
 
-        kz = enc2 - nz//2
+    # apply girf to nominal gradients
+    pred_grad = np.zeros_like(grad)
+    for dim in range(ndim):
+        pred_grad[:,dim]=np.sum(grad*girf[np.newaxis,:ndim,dim,:], axis=1)
+
+    # IFFT
+    pred_grad = np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(pred_grad, axes=-1), axis=-1), axes=-1)
+    
+    # cut out relevant part
+    pred_grad = pred_grad[:,:,:grad_sampl]
+
+    return pred_grad
+
+def rot(mat, n_intl, rot=2*np.pi):
+    # rotate spiral gradient
+    # trj is a 2D trajectory or gradient arrays ([2, n_samples]), n_intlv is the number of spiral interleaves
+    # returns a new trajectory/gradient array with size [n_intl, 2, n_samples]
+    phi = np.linspace(0, rot, n_intl, endpoint=False)
+
+    # rot_mat = np.asarray([[np.cos(phi), -np.sin(phi)], [np.sin(phi), np.cos(phi)]])
+    # new orientation (switch x and y):
+    rot_mat = np.asarray([[np.cos(phi), np.sin(phi)], [-np.sin(phi), np.cos(phi)]])
+    rot_mat = np.moveaxis(rot_mat,-1,0)
+
+    return rot_mat @ mat
+
+def trap_from_area(area, ramptime, ftoptime, dt_grad=10e-6):
+    """create trapezoidal_gradient with selectable gradient moment
+    area in [T/m*s]
+    ramptime/ftoptime in [s]
+    """
+    n_ramp = int(ramptime/dt_grad+0.5)
+    n_ftop = int(ftoptime/dt_grad+0.5)
+    amp = area/(ftoptime+ramptime)
+    ramp = np.arange(0.5, n_ramp)/n_ramp
+    while np.ndim(ramp) < np.ndim(amp) + 1:
+        ramp = ramp[np.newaxis]
+    
+    ramp = amp[..., np.newaxis] * ramp
         
-        # save one header per partition
-        if acq_key[enc2] is None:
-            acq_key[enc2] = key
+    zeros = np.zeros(area.shape + (1,))
+    grad = np.concatenate((zeros, ramp, amp[..., np.newaxis]*np.ones(area.shape + (n_ftop,)), ramp[...,::-1], zeros), -1)
+    return grad
 
-        enc.append([enc1, enc2])
-        
-        # update 3D dir.
-        tmp = base_trj[enc1].copy()
-        tmp[-1] = kz * np.ones(tmp.shape[-1])
-        trj.append(tmp)
-
-        # and append data after optional prewhitening
-        if dmtx is None:
-            sig.append(acq.data)
-        else:
-            sig.append(apply_prewhitening(acq.data, dmtx))
-
-        # apply fov shift
-        shift = pcs_to_gcs(np.asarray(acq.position), rot_mat)
-        sig[-1] = fov_shift_spiral(sig[-1], tmp, shift, nx)
-
-        # we could remove oversampling here (not really necessary after fov shift)
-
-    np.save(os.path.join(debugFolder, "enc.npy"), enc)
-    
-    # convert lists to numpy arrays
-    trj = np.asarray(trj) # current size: (nacq, 3, ncol)
-    sig = np.asarray(sig) # current size: (nacq, ncha, ncol)
-
-    # rearrange trj & sig for bart - target size: ??? WIP  --(ncol, enc1_max, nz, nc)
-    trj = np.transpose(trj, [1, 2, 0])
-    sig = np.transpose(sig, [2, 0, 1])[np.newaxis]
-
-    logging.debug("trj.shape = %s, sig.shape = %s"%(trj.shape, sig.shape))
-    
-    np.save(os.path.join(debugFolder, "trj.npy"), trj)
-
-    return sig, trj, acq_key
-
+########
+# Processing data
+########
 
 def process_acs(group, config, metadata, dmtx=None):
     if len(group)>0:
@@ -653,10 +483,13 @@ def process_acs(group, config, metadata, dmtx=None):
         #     zfill = True
         #     tmp = np.zeros(data[:,:,::2,:].shape, dtype=data.dtype)
         #     data = np.concatenate((tmp, data, tmp) ,axis=2)
-            
-        print(data.shape)
-        # sensmaps = bart(1, 'ecalib -m 1 -k 8 -I -r 48', data)  # ESPIRiT calibration
-        sensmaps = bart(1, 'ecalib -m 1 -I', data)  # ESPIRiT calibration
+        
+        # print(data.shape)
+        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
+        else:
+            sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
+        # sensmaps = bart(1, 'ecalib -m 1 -I', data)  # ESPIRiT calibration
 
         if zfill:
             sensmaps = sensmaps[:,:,::2,:]
@@ -666,7 +499,6 @@ def process_acs(group, config, metadata, dmtx=None):
         return sensmaps
     else:
         return None
-
 
 def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
 
@@ -710,7 +542,10 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     else:
         # data = bart(1, 'pics -e -i 20 -t', trj, data, sensmaps)
         # data = bart(1, 'pics -e -l1 -r 0.001 -i 25 -t', trj, data, sensmaps)
-        data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)
+        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+            data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)
+        else:
+            data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)  
         data = np.abs(data)
         # make sure that data is at least 3d:
         while np.ndim(data) < 3:

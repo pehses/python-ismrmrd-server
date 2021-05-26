@@ -53,8 +53,9 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && git clone https://github.com/mrirecon/bart \
-     && cd bart \
+     && wget https://github.com/mrirecon/bart/archive/v0.7.00.tar.gz \
+     && tar xzvf v0.7.00.tar.gz \
+     && cd bart-0.7.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \

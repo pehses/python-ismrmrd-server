@@ -17,6 +17,7 @@
         <p><s>MEAS.sPat.ucRefScanMode</s>                           <d>siemens.MEAS.sPat.ucRefScanMode</d></p>
         <p><s>MEAS.sPat.lAccelFactPE</s>                            <d>siemens.MEAS.sPat.lAccelFactPE</d></p>
         <p><s>MEAS.sPat.lAccelFact3D</s>                            <d>siemens.MEAS.sPat.lAccelFact3D</d></p>
+        <p><s>MEAS.sPat.lReorderingShift3D</s>                      <d>siemens.MEAS.sPat.lReorderingShift3D</d></p>
         <p><s>MEAS.sPat.lRefLinesPE</s>                             <d>siemens.MEAS.sPat.lRefLinesPE</d></p>
         <p><s>MEAS.sPat.lRefLines3D</s>                             <d>siemens.MEAS.sPat.lRefLines3D</d></p>
         <p><s>MEAS.sSliceArray.lSize</s>                            <d>siemens.MEAS.sSliceArray.lSize</d></p>

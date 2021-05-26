@@ -170,10 +170,15 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if enc2 > enc2_max:
             enc2_max = enc2
 
-    nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.x
-    # ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    if zf_around_center:
+        nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
+        ny = metadata.encoding[0].encodedSpace.matrixSize.x
+        # ny = metadata.encoding[0].encodedSpace.matrixSize.y
+        nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    else:
+        nx = group[0].data.shape[-1]
+        ny = enc1_max+1
+        nz = enc2_max+1
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
@@ -184,13 +189,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
 
-        # in case dim sizes smaller than expected, sort data into k-space center (e.g. for reference scans)
-        ncol = acq.data.shape[-1]
-        cx = nx // 2
-        ccol = ncol // 2
-        col = slice(cx - ccol, cx + ccol)
-
+        col = slice(None)
         if zf_around_center:
+            ncol = acq.data.shape[-1]
+            cx = nx // 2
+            ccol = ncol // 2
+            col = slice(cx - ccol, cx + ccol)
+
             cy = ny // 2
             cz = nz // 2
 

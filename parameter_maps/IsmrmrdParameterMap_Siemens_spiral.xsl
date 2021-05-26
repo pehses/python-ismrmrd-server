@@ -767,7 +767,19 @@
                         </value>
                     </userParameterLong>
                 </xsl:if>
-
+                
+                <userParameterLong>
+                    <name>lReorderingShift</name>    
+                    <value>
+                    <xsl:choose>
+                        <xsl:when test="not(siemens/MEAS/sPat/lReorderingShift3D)">0</xsl:when>
+                        <xsl:otherwise>
+                        <xsl:value-of select="siemens/MEAS/sPat/lReorderingShift3D"/>
+                        </xsl:otherwise>
+                    </xsl:choose>
+                    </value>
+                </userParameterLong>
+                
                 <xsl:if test="siemens/MEAS/lProtonDensMap">
                     <userParameterLong>
                         <name>NumOfProtonDensityImages</name>

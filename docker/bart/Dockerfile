@@ -101,7 +101,7 @@ RUN mkdir -p /opt/code/pythonpath
 ENV PYTHONPATH "${PYTHONPATH}:/opt/code/pythonpath"
 
 # copy bart python interface to pythonpath
-COPY --from=mrd_converter /opt/code/bart/python/* /opt/code/pythonpath/
+COPY --from=mrd_converter /opt/code/bart-0.7.00/python/* /opt/code/pythonpath/
 
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \

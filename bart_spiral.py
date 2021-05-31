@@ -490,7 +490,7 @@ def process_acs(group, config, metadata, dmtx=None):
         #     data = np.concatenate((tmp, data, tmp) ,axis=2)
         
         # print(data.shape)
-        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
@@ -547,7 +547,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     else:
         # data = bart(1, 'pics -e -i 20 -t', trj, data, sensmaps)
         # data = bart(1, 'pics -e -l1 -r 0.001 -i 25 -t', trj, data, sensmaps)
-        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)
         else:
             data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)  

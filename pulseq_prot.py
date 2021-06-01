@@ -274,6 +274,10 @@ def calc_traj(acq, hdr, ncol):
     pred_trj = np.cumsum(pred_grad.real, axis=1)
     base_trj = np.cumsum(grad, axis=1)
 
+    # proper scaling
+    pred_trj *= dt_grad * gammabar * (1e-3 * fov)
+    base_trj *= dt_grad * gammabar * (1e-3 * fov)
+
     # set z-axis if trajectory is two-dimensional
     if dims == 2:
         nz = hdr.encoding[0].encodedSpace.matrixSize.z
@@ -283,10 +287,6 @@ def calc_traj(acq, hdr, ncol):
 
     # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
     gradtime += dt_grad/2 - dt_skope/2
-
-    # proper scaling
-    pred_trj *= dt_grad * gammabar * (1e-3 * fov)
-    base_trj *= dt_grad * gammabar * (1e-3 * fov)
 
     # align trajectory to scanner ADC
     base_trj = intp_axis(adctime, gradtime, base_trj, axis=1)

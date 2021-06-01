@@ -249,7 +249,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update 3D dir.
         tmp = base_trj[enc1].copy()
         tmp[-1] = kz * np.ones(tmp.shape[-1])
-        trj.append(tmp)
+        trj.append(tmp[[1,0,2],:]) # switch x and y for correct orientation
 
         # and append data after optional prewhitening
         if dmtx is None:
@@ -257,7 +257,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
         else:
             sig.append(apply_prewhitening(acq.data, dmtx))
 
-        # apply fov shift
+        # apply fov shift - use trajectory with x and y NOT switched
         shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
         sig[-1] = fov_shift_spiral(sig[-1], tmp, shift, nx)
 
@@ -396,16 +396,6 @@ def calc_spiral_traj(ncol, rot_mat, encoding):
     
     np.save(os.path.join(debugFolder, "pred_trj.npy"), pred_trj)
 
-    # pred_trj = np.load(os.path.join(dependencyFolder, "spiralout_meas.npy")
-    # pred_trj = np.load(os.path.join(dependencyFolder, "traj_doublespiral_r1_skope.npy")
-    # pred_trj = np.transpose(pred_trj, [2, 0, 1])
-
-    # now we can switch x and y dir for correct orientation in FIRE
-    pred_trj = pred_trj[:,[1,0,2],:]
-    base_trj = base_trj[:,[1,0,2],:]
-
-    ## WIP  
-    # return base_trj
     return pred_trj
 
 def grad_pred(grad, girf):

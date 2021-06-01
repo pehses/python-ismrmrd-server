@@ -188,7 +188,6 @@ def process(connection, config, metadata):
                         rotmat = calc_rotmat(item)
                         shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
                         traj = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
-                        traj = traj[[1,0,2],:]  # switch x and y dir for correct orientation
                         data = fov_shift_spiral(data, traj, shift, matr_sz)
 
                         # filter signal to avoid Gibbs Ringing

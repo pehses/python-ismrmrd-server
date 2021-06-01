@@ -370,14 +370,13 @@ def sort_spiral_data(group, metadata, dmtx=None):
         else:
             sig.append(apply_prewhitening(acq.data, dmtx))
 
-        # update trajectory - for a BART reco we dont need the time dimension
-        traj = np.swapaxes(acq.traj[:,:3],0,1) # [dims, samples]
-        traj = traj[[1,0,2],:]  # switch x and y dir for correct orientation in FIRE
-        trj.append(traj)
+        # update trajectory - for a BART reco we only need kx,ky,kz
+        traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
+        trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
 
-        # fov shift
+        # fov shift - use trajectory with x and y NOT switched
         shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
-        sig[-1] = fov_shift_spiral(sig[-1], trj[-1], shift, nx)
+        sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
 
     np.save(debugFolder + "/" + "enc.npy", enc)
     

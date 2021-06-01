@@ -415,7 +415,7 @@ def grad_pred(grad, girf):
     Parameters:
     ------------
     grad: nominal gradient [interleaves, dims, samples]
-    girf:     gradient impulse response function [input dims, output dims (incl k0), samples]
+    girf: gradient impulse response function [input dims, output dims (incl k0), samples] in frequency space
     """
     ndim = grad.shape[1]
     grad_sampl = grad.shape[-1]
@@ -425,7 +425,13 @@ def grad_pred(grad, girf):
     girf = girf[:,1:]
 
     # zero-fill grad to number of girf samples (add check?)
-    grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
+    if girf_sampl > grad_sampl:
+        grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
+    if grad_sampl > girf_sampl:
+        logging.debug("WARNING: GIRF is interpolated, check trajectory result carefully.")
+        oldgrid = np.linspace(0,girf_sampl,girf_sampl)
+        newgrid = np.linspace(0,girf_sampl,grad_sampl)
+        girf = intp_axis(newgrid, oldgrid, girf, axis=-1)
 
     # FFT
     grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)

@@ -6,6 +6,7 @@ Includes trajectory prediction with the GIRF
 import ismrmrd
 import numpy as np
 import os
+import logging
 from reco_helper import calc_rotmat, gcs_to_dcs, dcs_to_gcs, intp_axis
 
 def insert_hdr(prot_file, metadata): 
@@ -156,7 +157,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
     dset_acq.idx.set = prot_acq.idx.set
     dset_acq.idx.segment = prot_acq.idx.segment
 
-    # flags - WIP: this is not the complete list of flags - if needed, flags can be added
+    # flags
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
@@ -189,14 +190,11 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
         if nsamples_full > nsamples_max:
             raise ValueError("The number of samples exceed the maximum allowed number of 65535 (uint16 maximum).")
 
+        # time vector for B0 correction
         dwelltime = 1e-6*prot_hdr.userParameters.userParameterDouble[0].value_ # [s]
-        try:
-            t_min = prot_hdr.userParameters.userParameterDouble[3].value_ # [s]
-            t_vec = t_min + dwelltime * np.arange(nsamples_full) # time vector for B0 correction
-        except:
-            # just a fallback for older versions, where t_min was not saved in the protocol
-            t_vec = None
-
+        t_min = prot_hdr.userParameters.userParameterDouble[3].value_ # [s]
+        t_vec = t_min + dwelltime * np.arange(nsamples_full)
+        
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
         dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
@@ -209,12 +207,10 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
         else:
             reco_trj, base_trj = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
 
-        dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
+        # fill extended part of data with zeros
+        dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
-        if t_vec is not None:
-            dset_acq.traj[:,3] = t_vec
-        else:
-            dset_acq.traj[:,3] = np.zeros(nsamples_full)
+        dset_acq.traj[:,3] = t_vec.copy()
 
         prot.close()
     
@@ -309,7 +305,7 @@ def grad_pred(grad, girf):
     Parameters:
     ------------
     grad: nominal gradient [dims, samples]
-    girf: gradient impulse response function [input dims, output dims (incl k0), samples]
+    girf: gradient impulse response function [input dims, output dims (incl k0), samples] in frequency space
     """
     ndim = grad.shape[0]
     grad_sampl = grad.shape[-1]
@@ -319,7 +315,13 @@ def grad_pred(grad, girf):
     girf = girf[:,1:]
 
     # zero-fill grad to number of girf samples (add check?)
-    grad = np.concatenate([grad.copy(), np.zeros([ndim, girf_sampl-grad_sampl])], axis=-1)
+    if girf_sampl > grad_sampl:
+        grad = np.concatenate([grad.copy(), np.zeros([ndim, girf_sampl-grad_sampl])], axis=-1)
+    if grad_sampl > girf_sampl:
+        logging.debug("WARNING: GIRF is interpolated, check trajectory result carefully.")
+        oldgrid = np.linspace(0,girf_sampl,girf_sampl)
+        newgrid = np.linspace(0,girf_sampl,grad_sampl)
+        girf = intp_axis(newgrid, oldgrid, girf, axis=-1)
 
     # FFT
     grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)

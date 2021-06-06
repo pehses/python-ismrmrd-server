@@ -12,7 +12,7 @@ from bart import bart
 import spiraltraj
 from cfft import cfftn, cifftn
 
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, gcs_to_dcs, dcs_to_gcs, fov_shift_spiral, remove_os, intp_axis
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, gcs_to_dcs, dcs_to_gcs, fov_shift_spiral, remove_os, intp_axis, filt_ksp
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
@@ -260,6 +260,9 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # apply fov shift - use trajectory with x and y NOT switched
         shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
         sig[-1] = fov_shift_spiral(sig[-1], tmp, shift, nx)
+
+        # filter k-space
+        sig[-1] = filt_ksp(sig[-1], tmp, filt_fac=1)
 
         # we could remove oversampling here (not really necessary after fov shift)
 

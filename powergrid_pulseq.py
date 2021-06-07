@@ -302,7 +302,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary
-    # WIPs: Compare bet_mask and mask
     pcSENSE = False
     if shotimgs is not None:
         pcSENSE = True
@@ -346,6 +345,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         continue
                     else:
                         acq.idx.slice = 0
+                # get rid of k0 in 5th dim, we dont need it in PowerGrid
+                acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
                 dset_tmp.append_acquisition(acq)
     dset_tmp.close()
     acqGroup.clear() # free memory

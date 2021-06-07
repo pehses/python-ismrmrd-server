@@ -197,7 +197,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
         
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
-        dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+        dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
         # calculate trajectory with GIRF or take trajectory from protocol
         # check if number of samples equals number of trajectory points and check maximum of trajectory value (should be a pretty robust check)
@@ -205,12 +205,13 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
             reco_trj = prot_acq.traj[:,:3] # trajectory (aligned to ADC) from the protocol file
             base_trj = reco_trj.copy()
         else:
-            reco_trj, base_trj = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
+            reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
         dset_acq.traj[:,3] = t_vec.copy()
+        dset_acq.traj[:,4] = k0.copy()
 
         prot.close()
     
@@ -266,17 +267,22 @@ def calc_traj(acq, hdr, ncol):
 
     # gradient prediction
     pred_grad = grad_pred(grad_phys, girf)
+    k0 = pred_grad[0] # 0th order field [T]
+    pred_grad = pred_grad[1:]
 
     # rotate back to logical system
     pred_grad = dcs_to_gcs(pred_grad, rotmat)
 
-    # calculate trajectory 
-    pred_trj = np.cumsum(pred_grad.real, axis=1)
-    base_trj = np.cumsum(grad, axis=1)
+    # calculate global phase term k0 [rad]
+    k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
 
-    # proper scaling
-    pred_trj *= dt_grad * gammabar * (1e-3 * fov)
-    base_trj *= dt_grad * gammabar * (1e-3 * fov)
+    # calculate trajectory [1/m]
+    pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
+    base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
+
+    # scale with FOV for BART & PowerGrid recon
+    pred_trj *= 1e-3 * fov
+    base_trj *= 1e-3 * fov
 
     # set z-axis if trajectory is two-dimensional
     if dims == 2:
@@ -291,12 +297,13 @@ def calc_traj(acq, hdr, ncol):
     # align trajectory to scanner ADC
     base_trj = intp_axis(adctime, gradtime, base_trj, axis=1)
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+    k0 = intp_axis(adctime, gradtime, k0, axis=0)
 
     # switch array order to [samples, dims]
     pred_trj = np.swapaxes(pred_trj,0,1)
     base_trj = np.swapaxes(base_trj,0,1)
 
-    return pred_trj, base_trj
+    return pred_trj, base_trj, k0
 
 def grad_pred(grad, girf):
     """
@@ -311,9 +318,6 @@ def grad_pred(grad, girf):
     grad_sampl = grad.shape[-1]
     girf_sampl = girf.shape[-1]
 
-    # remove k0 from girf:
-    girf = girf[:,1:]
-
     # zero-fill grad to number of girf samples (add check?)
     if girf_sampl > grad_sampl:
         grad = np.concatenate([grad.copy(), np.zeros([ndim, girf_sampl-grad_sampl])], axis=-1)
@@ -327,8 +331,8 @@ def grad_pred(grad, girf):
     grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)
 
     # apply girf to nominal gradients
-    pred_grad = np.zeros_like(grad)
-    for dim in range(ndim):
+    pred_grad = np.zeros_like(girf[0])
+    for dim in range(ndim+1):
         pred_grad[dim]=np.sum(grad*girf[np.newaxis,:ndim,dim,:], axis=1)
 
     # IFFT

@@ -313,7 +313,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         shotimgs = np.swapaxes(shotimgs, -1, -2) # swap nx & ny
         # mask = fmap['bet_mask']
         mask = fmap['mask'] # seems to make no difference which mask is used
-        if slc_sel:
+        if slc_sel is not None:
             mask = mask[slc_sel]
         phasemaps = calc_phasemaps(shotimgs, mask)
         np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
@@ -346,8 +346,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                     else:
                         acq.idx.slice = 0
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
+                save_trj = acq.traj[:,:4].copy()
                 acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
+                acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
+
+    ts = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # one time segment per ms
     dset_tmp.close()
     acqGroup.clear() # free memory
 
@@ -374,7 +378,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     cores = psutil.cpu_count(logical = False) # number of physical cores
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t 20 -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:

@@ -74,6 +74,10 @@ def process(connection, config, metadata):
     matr_sz = metadata.encoding[0].encodedSpace.matrixSize.x
     res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz
 
+    # parameters for B0 correction
+    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
+    t_min = metadata.userParameters.userParameterDouble[3].value_ # [s]
+
     logging.info("Config: \n%s", config)
 
     # Metadata should be MRD formatted header, but may be a string
@@ -134,8 +138,10 @@ def process(connection, config, metadata):
             if isinstance(item, ismrmrd.Acquisition):
 
                 # insert acquisition protocol
+                # base_trj is calculated e.g. for future trajectory comparisons
+                # WIP: or to revert the FOV shift from the Pulseq sequence (delay von + oder - einer grad raster time beachten)
                 base_trj = insert_acq(prot_file, item, acq_ctr)
-                if base_trj is not None: # base_trj is calculated e.g. for future trajectory comparisons
+                if base_trj is not None:
                     base_trj_.append(base_trj)
 
                 # run noise decorrelation
@@ -170,6 +176,9 @@ def process(connection, config, metadata):
 
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
+                        nsamples = item.number_of_samples
+                        t_vec = t_min + dwelltime * np.arange(nsamples)
+                        item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
                     else:
                         # append data to first segment of ADC group

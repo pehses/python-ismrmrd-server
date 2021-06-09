@@ -41,6 +41,7 @@ def insert_hdr(prot_file, metadata):
         dset_udbl[ix].name = param.name
         dset_udbl[ix].value_ = param.value_
 
+    # encoding
     dset_e1 = metadata.encoding[0]
     prot_e1 = prot_hdr.encoding[0]
     dset_e1.trajectory = prot_e1.trajectory
@@ -81,6 +82,10 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.contrast.minimum = prot_e1.encodingLimits.contrast.minimum
         dset_e1.encodingLimits.contrast.maximum = prot_e1.encodingLimits.contrast.maximum
         dset_e1.encodingLimits.contrast.center = prot_e1.encodingLimits.contrast.center
+    if prot_e1.encodingLimits.segment is not None:
+        dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
+        dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
+        dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
 
     prot.close()
 
@@ -179,39 +184,38 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
         prot.close()
         return
 
-    # calculate trajectory with GIRF prediction - trajectory is stored only in first segment
+    # deal with noncartesian trajectories
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
-        # some parameters from the header
+        # calculate full number of samples
         nsamples = dset_acq.number_of_samples
-        nsegments = prot_hdr.userParameters.userParameterDouble[2].value_
+        try:
+            # preferred parameter for segments, user parameter is kept for compatibility
+            nsegments = prot_hdr.encoding[0].encodingLimits.segment.maximum + 1
+        except:
+            nsegments = prot_hdr.userParameters.userParameterDouble[2].value_
         nsamples_full = int(nsamples*nsegments+0.5)
-        nsamples_max = 65535 # number_of_samples is a uint16, so we cannot store a higher number here
+        nsamples_max = 65535
         if nsamples_full > nsamples_max:
             raise ValueError("The number of samples exceed the maximum allowed number of 65535 (uint16 maximum).")
-
-        # time vector for B0 correction
-        dwelltime = 1e-6*prot_hdr.userParameters.userParameterDouble[0].value_ # [s]
-        t_min = prot_hdr.userParameters.userParameterDouble[3].value_ # [s]
-        t_vec = t_min + dwelltime * np.arange(nsamples_full)
-        
+       
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
-        # calculate trajectory with GIRF or take trajectory from protocol
-        # check if number of samples equals number of trajectory points and check maximum of trajectory value (should be a pretty robust check)
+        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol
+        # check should be a pretty robust
         if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
-            reco_trj = prot_acq.traj[:,:3] # trajectory (aligned to ADC) from the protocol file
+            reco_trj = prot_acq.traj[:,:3]
             base_trj = reco_trj.copy()
         else:
             reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
+            dset_acq.traj[:,4] = k0.copy()
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
-        dset_acq.traj[:,3] = t_vec.copy()
-        dset_acq.traj[:,4] = k0.copy()
+        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector
 
         prot.close()
     

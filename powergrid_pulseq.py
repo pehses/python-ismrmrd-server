@@ -478,8 +478,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                             for nz in range(data.shape[4]):
                                 img_ix += 1
                                 image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz])
-                                image.image_index = img_ix # contains slices/partitions and phases
-                                image.image_series_index = series_ix # contains repetitions, contrasts
+                                image.image_index = img_ix
+                                image.image_series_index = series_ix
                                 image.slice = 0 # WIP: test counting slices, contrasts, ... at scanner
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])

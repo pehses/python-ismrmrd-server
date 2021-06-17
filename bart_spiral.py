@@ -544,9 +544,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-            data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 30 -t', trj, data, sensmaps)
+            data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
         else:
-            data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 30 -t', trj, data, sensmaps)  
+            data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)  
         data = np.abs(data)
         # make sure that data is at least 3d:
         while np.ndim(data) < 3:

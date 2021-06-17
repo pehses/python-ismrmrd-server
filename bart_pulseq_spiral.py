@@ -226,14 +226,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
-
-    #logging.debug("Raw data is size %s" % (data.shape,))
-    #logging.debug("nx,ny,nz %s, %s, %s" % (nx, ny, nz))
-    np.save(debugFolder + "/" + "raw.npy", data)
     
-    # if sensmaps is None: # assume that this is a fully sampled scan (wip: only use autocalibration region in center k-space)
-        # sensmaps = bart(1, 'ecalib -m 1 -I ', data)  # ESPIRiT calibration
-
     if gpu:
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
@@ -300,21 +293,18 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
-            image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+            image.image_index = 1 + group[0].idx.contrast * n_par + par
+            image.image_series_index = 1 + group[0].idx.repetition
             image.slice = 0
             image.attribute_string = xml
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+        image.image_series_index = 1 + group[0].idx.repetition
         image.slice = 0
         image.attribute_string = xml
         images.append(image)
-
-    # logging.debug("Image MetaAttributes: %s", xml)
-    # logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
     return images
 
@@ -330,9 +320,9 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
         shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         data = fov_shift(data, shift)
 
-        data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
+        data = np.swapaxes(data,0,1) # in my Pulseq gre_refscan sequence read and phase are changed atm
         if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
 
@@ -370,7 +360,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
         else:
             sig.append(apply_prewhitening(acq.data, dmtx))
 
-        # update trajectory - for a BART reco we only need kx,ky,kz
+        # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
 
@@ -386,10 +376,11 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
     # rearrange trj & sig for bart
     trj = np.transpose(trj, [1, 2, 0]) # [3, ncol, nacq]
-    sig = np.transpose(sig, [2, 0, 1])[np.newaxis]
+    sig = np.transpose(sig, [2, 0, 1])[np.newaxis] # [1, ncol, nacq, ncha]
     logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, sig.shape))
     
     np.save(debugFolder + "/" + "trj.npy", trj)
+    np.save(debugFolder + "/" + "raw.npy", sig)
 
     return sig, trj
 

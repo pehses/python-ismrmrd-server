@@ -187,6 +187,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
     # deal with noncartesian trajectories
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
+        
         # calculate full number of samples
         nsamples = dset_acq.number_of_samples
         try:

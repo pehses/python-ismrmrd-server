@@ -8,14 +8,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
-       wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils \
-       libfftw3-dev git build-essential gfortran liblapacke-dev libpng-dev libopenblas-dev libboost-all-dev libxml2-dev libxslt1-dev libssl-dev curl
-
-RUN  apt-get update --quiet \
-     && apt-get dist-upgrade --yes \
-     && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 \
-     && pip3 install --no-cache-dir pyxb h5py intel-openmp scipy scikit-image
+       wget ca-certificates libhdf5-serial-dev build-essential libxml2-dev libxslt1-dev\
+       libfftw3-dev git liblapacke-dev libopenblas-dev libboost-all-dev curl
 
 # Install Latest CMake
 RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
@@ -23,10 +17,6 @@ RUN  apt install software-properties-common --no-install-recommends --no-install
      && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
      && apt update \
      && apt install cmake --no-install-recommends --no-install-suggests --yes
-
-# Install mkl
-COPY ./mkl.sh /tmp/
-RUN /tmp/mkl.sh
 
 RUN  mkdir -p /opt/code
 
@@ -59,7 +49,7 @@ RUN cd /opt/code \
 # Download and install NVIDIA HPC SDK
 RUN  wget https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-20-11_20.11_amd64.deb \
      https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-2020_20.11_amd64.deb \
-     && apt-get install ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
+     && apt-get install --yes ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
 
 # Handle NVIDIA HPC SDK specific stuff
 ENV NVARCH=Linux_x86_64

@@ -26,7 +26,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process_spiral(connection, config, metadata):
+def process(connection, config, metadata):
   
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
@@ -104,16 +104,16 @@ def process_spiral(connection, config, metadata):
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
-                acqGroup[item.idx.contrast][item.idx.slice].append(item)
+                acqGroup[item.idx.slice].append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    images = process_raw(acqGroup[item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
-                    acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
+                    acqGroup[item.idx.slice].clear() # free memory
 
     finally:
         connection.send_close()
@@ -130,7 +130,8 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     
     data, trj = sort_data(group, metadata, dmtx)
-   
+    nc = data.shape[-1]
+
     if gpu:
         nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
@@ -140,7 +141,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
-    # WIP: take sensmaps from Jemris (saved in ISMRMRD Array - is that streamed??) 
+    # WIP: take sensmaps from Jemris - how?
     # if sensmaps is None:
     #     ismrmrd_arrays = get_ismrmrd_arrays(???)
 
@@ -150,17 +151,19 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
+    # Recon
     if sensmaps is None:          
         data = bart(1, nufft_config, trj, data) # nufft
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+        if data.shape[-1] == nc:
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
         data = bart(1, pics_config , trj, data, sensmaps)
-        data = np.abs(data)
-        # make sure that data is at least 3d:
-        while np.ndim(data) < 3:
-            data = data[..., np.newaxis]
-    
+    data = np.abs(data)
 
+    # make sure that data is at least 3d:
+    while np.ndim(data) < 3:
+        data = data[..., np.newaxis]
+    
     logging.debug("Image data is size %s" % (data.shape,))
     if group[0].idx.slice == 0:
         np.save(debugFolder + "/" + "img.npy", data)

@@ -88,6 +88,12 @@ class Server:
                 importlib.reload(bart_spiral)
                 logging.info("Starting bart_spiral processing based on config")
                 bart_spiral.process(connection, config, metadata)
+            elif (config == "bart_jemris"):
+                import bart_jemris
+                import importlib
+                importlib.reload(bart_jemris)
+                logging.info("Starting bart_pulseq processing based on config")
+                bart_jemris.process(connection, config, metadata)
             elif (config == "bart_pulseq"):
                 import bart_pulseq
                 import importlib

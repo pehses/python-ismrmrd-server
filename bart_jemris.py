@@ -133,13 +133,13 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     nc = data.shape[-1]
 
     if gpu:
-        nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
-        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -g -S -e -i 50 -t'
     else:
-        nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
-        pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -S -e -i 50 -t'
 
     # WIP: take sensmaps from Jemris - how?
     # if sensmaps is None:
@@ -148,17 +148,20 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     force_pics = False
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
-        sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
+        if data.shape[-1] != nc:
+            data = data[...,np.newaxis]
+        sensmaps = cfftn(sensmaps, [k for k in range(len(data)-1)]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
     # Recon
-    if sensmaps is None:          
+    if sensmaps is None:
         data = bart(1, nufft_config, trj, data) # nufft
         if data.shape[-1] == nc:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
         data = bart(1, pics_config , trj, data, sensmaps)
     data = np.abs(data)
+    data = data[:,::-1] # correct orientation
 
     # make sure that data is at least 3d:
     while np.ndim(data) < 3:

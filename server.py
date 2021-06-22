@@ -84,25 +84,21 @@ class Server:
                 bart_pics.process(connection, config, metadata)
             elif (config == "bart_spiral"):
                 import bart_spiral
-                import importlib
                 importlib.reload(bart_spiral)
                 logging.info("Starting bart_spiral processing based on config")
                 bart_spiral.process(connection, config, metadata)
             elif (config == "bart_jemris"):
                 import bart_jemris
-                import importlib
                 importlib.reload(bart_jemris)
-                logging.info("Starting bart_pulseq processing based on config")
+                logging.info("Starting bart_jemris processing based on config")
                 bart_jemris.process(connection, config, metadata)
             elif (config == "bart_pulseq"):
                 import bart_pulseq
-                import importlib
                 importlib.reload(bart_pulseq)
                 logging.info("Starting bart_pulseq processing based on config")
                 bart_pulseq.process(connection, config, metadata)
             elif (config == "powergrid_pulseq"):
                 import powergrid_pulseq
-                import importlib
                 importlib.reload(powergrid_pulseq)
                 logging.info("Starting powergrid_pulseq processing based on config")
                 powergrid_pulseq.process(connection, config, metadata)

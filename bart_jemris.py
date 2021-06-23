@@ -91,23 +91,30 @@ def process(connection, config, metadata):
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
                     noiseGroup.clear()
-                                   
-                # Accumulate all imaging readouts in a group
-                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
-                    sensmaps_jemris.append(item.data[:].reshape(item.traj[0].astype(np.int))) # WIP: order jemris sensmaps by slices
+                
+                # Other flags
+                if item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # ADCs with no specific purpose
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # ADCs with no specific purpose
+                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA): # WIP: not supported in Jemris yet
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA): # not supported in Jemris yet
+                # Jemris sensitivity maps
+                elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+                    sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))
+                    if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
+                        continue
+                    sens_fov = item.user_int[0]
+                    sensmap_coil = intp_sensmaps(sensmap_coil, sens_fov, metadata)
+                    sensmaps_jemris.append(sensmap_coil)
                     continue
+                # Sensitivity maps from calibration scan - WIP: not tested yet
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
-                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
+                # Accumulate all imaging readouts in a group
                 acqGroup[item.idx.slice].append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
@@ -145,9 +152,15 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 
-    # WIP: sensmaps from Jemris - have to be interpolated
+    # Take sensmaps from Jemris
     if sensmaps is None and sensmaps_jemris:
-        test = np.stack(sensmaps_jemris).T
+        sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
+        if nz==2: # 2D
+            sensmaps = sensmaps[group[0].idx.slice]
+            sensmaps = np.transpose(sensmaps[np.newaxis], [2,1,0,3]) # [x,y,1,coils]
+        else: # 3D
+            sensmaps = np.transpose(sensmaps, [2,1,0,3]) # [x,y,z,coils]
+        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # calculate sensitivity maps from imaging data, if selected
     force_pics = False
@@ -238,7 +251,9 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
 
 def sort_data(group, metadata, dmtx=None):
     
-    fov = metadata.encoding[0].reconSpace.fieldOfView_mm.x
+    fov_x = metadata.encoding[0].reconSpace.fieldOfView_mm.x
+    fov_y = metadata.encoding[0].reconSpace.fieldOfView_mm.y
+    fov_z = metadata.encoding[0].reconSpace.fieldOfView_mm.z
 
     sig = list()
     trj = list()
@@ -252,7 +267,9 @@ def sort_data(group, metadata, dmtx=None):
 
         # trajectory
         traj = np.swapaxes(acq.traj,0,1) # [samples, dims] to [dims, samples]
-        traj *= fov / (2*np.pi) # rad/mm -> bart (dimensionless)
+        traj[0] *= fov_x / (2*np.pi) # rad/mm -> bart (dimensionless)
+        traj[1] *= fov_y / (2*np.pi)
+        traj[2] *= fov_z / (2*np.pi)
         trj.append(traj)
    
     # convert lists to numpy arrays
@@ -268,3 +285,39 @@ def sort_data(group, metadata, dmtx=None):
     np.save(debugFolder + "/" + "raw.npy", sig)
 
     return sig, trj
+
+def intp_sensmaps(sensmap_coil, sens_fov, metadata):
+
+    fov_x = int(metadata.encoding[0].reconSpace.fieldOfView_mm.x)
+    fov_y = int(metadata.encoding[0].reconSpace.fieldOfView_mm.y)
+    fov_z = int(metadata.encoding[0].reconSpace.fieldOfView_mm.z)
+
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+
+    from skimage.transform import resize
+    
+    # Resize to full fov
+    if sensmap_coil.shape[2] == 1:
+        newshape = [sens_fov, sens_fov, 1]
+    else:
+        newshape = [sens_fov, sens_fov, sens_fov]
+    sensmap_coil = resize(sensmap_coil.real, newshape, anti_aliasing=True) + 1j*resize(sensmap_coil.imag, newshape, anti_aliasing=True)
+
+    # Cut out measurement fov
+    if fov_x > sens_fov or fov_y > sens_fov or fov_z > sens_fov:
+        print("WARNING: Sensitivity map FOV is smaller than measurement FOV")
+    slc_x = (sens_fov-fov_x)//2
+    slc_y = (sens_fov-fov_y)//2
+    slc_z = (sens_fov-fov_z)//2
+    if sensmap_coil.shape[2] == 1:
+        sensmap_coil = sensmap_coil[slc_x:-slc_x, slc_y:-slc_y]
+    else:
+        sensmap_coil = sensmap_coil[slc_x:-slc_x, slc_y:-slc_y, slc_z:-slc_z]
+
+    # Interpolate to reconstruction matrix
+    newshape = [nx, ny, nz]
+    sensmap_coil = resize(sensmap_coil.real, newshape, anti_aliasing=True) + 1j*resize(sensmap_coil.imag, newshape, anti_aliasing=True)
+
+    return sensmap_coil

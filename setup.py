@@ -14,3 +14,4 @@ setup(name='ismrmrd_client',
       scripts=['client.py','connection.py','constants.py'],
       zip_safe=False,
       )
+      

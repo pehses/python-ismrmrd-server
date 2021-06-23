@@ -27,12 +27,11 @@ RUN  cd /opt/code \
      && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
 
 # install spiraltraj for trajectory calculation
-COPY spiraltraj /opt/code/spiraltraj
 RUN  cd /opt/code \
+     && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
+     && mv spiral-pypulseq-example/spiraltraj . \
      && cd spiraltraj \
      && pip3 wheel .
-     # && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
-     # && mv spiral-pypulseq-example/spiraltraj . \
 
 # ISMRMRD library
 RUN cd /opt/code \

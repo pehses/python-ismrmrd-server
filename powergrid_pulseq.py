@@ -120,6 +120,7 @@ def process(connection, config, metadata):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     dmtx = None
+    offres = None 
     base_trj_ = []
 
     if "b_values" in prot_arrays and n_intl > 1:
@@ -160,6 +161,12 @@ def process(connection, config, metadata):
                 
                 # Check for additional flags
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+                    if slc_sel is None or item.idx.slice == slc_sel:
+                        # calculate global phase slope from phase correction scans 
+                        data = item.data[:]
+                        phsdiff = data[:,1:] * np.conj(data[:,:-1])
+                        phsdiff = np.angle(np.sum(phsdiff))  # weighted sum over coils
+                        offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -202,11 +209,13 @@ def process(connection, config, metadata):
                         # filter signal to avoid Gibbs Ringing
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
                         
-                        # Set an offresonance frequency for debugging
-                        offres_freq = 0 # [Hz]
-                        t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
-                        phase = 2*np.pi*offres_freq * t_vec
-                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phase)
+                        # Correct the global phase
+                        if offres is not None:
+                            t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
+                            k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
+                            global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
+                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(1j*global_phs)
+                            offres = None
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                         # if no refscan, calculate sensitivity maps from raw data
@@ -522,7 +531,7 @@ def process_acs(group, config, metadata, dmtx=None):
         data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
             print("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration

@@ -20,11 +20,14 @@ def insert_hdr(prot_file, metadata):
     # Read protocol
     #---------------------------
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 
@@ -95,11 +98,14 @@ def get_ismrmrd_arrays(prot_file):
 
     """
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 
@@ -130,11 +136,14 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
     # Read protocol
     #---------------------------
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 

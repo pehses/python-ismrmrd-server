@@ -46,7 +46,8 @@ RUN cd /usr/local/lib && tar -zxvf libismrmrd.tar.gz && rm libismrmrd.tar.gz && 
 # Copy siemens_to_ismrmrd from last stage
 COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd  /usr/local/bin/siemens_to_ismrmrd
 
-RUN apt-get update && apt-get install -y git
+# xslt and hdf5 are dependencies for siemens_to_ismrmrd
+RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103 git
 RUN mkdir -p /opt/code
 
 RUN  cd /opt/code \
@@ -59,8 +60,9 @@ RUN  cd /opt/code \
      && cd /opt/code/ismrmrd-python-tools \
      && pip3 install --no-cache-dir .
 
-# Various visualization tools including colormaps
-RUN pip3 install --no-cache-dir matplotlib
+# matplotlib is used by rgb.py and provides various visualization tools including colormaps
+# pydicom is used by dicom2mrd.py to parse DICOM data
+RUN pip3 install --no-cache-dir matplotlib pydicom pynetdicom
 
 # # If building from the GitHub repo, uncomment the below section, open a command
 # # prompt in the folder containing this Dockerfile and run the command:
@@ -71,8 +73,18 @@ RUN pip3 install --no-cache-dir matplotlib
 # If doing local development, use this section to copy local code into Docker
 # image. From the folder containing the python-ismrmrd-server repo, uncomment
 # the COPY line below and run the command:
-#    docker build -t fire-python-custom -f python-ismrmrd-server/docker/Dockerfile ./
+#    docker build --no-cache -t fire-python-custom -f python-ismrmrd-server/docker/Dockerfile ./
 COPY python-ismrmrd-server  /opt/code/python-ismrmrd-server
+
+# Ensure startup scripts have Unix (LF) line endings, which may not be true
+# if the git repo is cloned in Windows
+RUN apt-get install -y dos2unix \
+    && find /opt/code/python-ismrmrd-server -name *.sh | xargs dos2unix \
+    && apt-get remove dos2unix -y
+
+# Ensure startup scripts are marked as executable, which may be lost if files
+# are copied in Windows
+RUN find /opt/code/python-ismrmrd-server -name *.sh -exec chmod +x {} \;
 
 # Cleanup files not required after installation
 RUN  apt-get remove git -y \

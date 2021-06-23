@@ -11,7 +11,6 @@ import sys
 import ismrmrd
 import multiprocessing
 from connection import Connection
-
 import time
 import os
 
@@ -24,8 +23,20 @@ defaults = {
     'send_waveforms': False
 }
 
-# Wait for incoming data and cleanup
-def connection_receive_loop(sock, outfile, outgroup):
+def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, recvAcqs, recvImages, recvWaveforms):
+    """Start a Connection instance to receive data, generally run in a separate thread"""
+
+    if verbose:
+        verbosity = logging.DEBUG
+    else:
+        verbosity = logging.INFO
+
+    if logfile:
+        logging.basicConfig(filename=logfile, format='%(asctime)s - %(message)s', level=verbosity)
+        logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    else:
+        logging.basicConfig(format='%(asctime)s - %(message)s', level=verbosity)
+
     incoming_connection = Connection(sock, True, outfile, "", outgroup)
 
     try:
@@ -38,13 +49,17 @@ def connection_receive_loop(sock, outfile, outgroup):
         except:
             pass
         sock.close()
-        logging.info("Socket closed")
+        logging.debug("Socket closed (reader)")
 
         # Dataset may not be closed properly if a close message is not received
         try:
             incoming_connection.dset.close()
         except:
             pass
+
+    recvAcqs.value      = incoming_connection.recvAcqs
+    recvImages.value    = incoming_connection.recvImages
+    recvWaveforms.value = incoming_connection.recvWaveforms
 
 def main(args):
     # ----- Load and validate file ---------------------------------------------
@@ -126,7 +141,10 @@ def main(args):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((args.address, args.port))
 
-    process = multiprocessing.Process(target=connection_receive_loop, args=[sock, args.outfile, args.out_group])
+    recvAcqs      = multiprocessing.Value('i', 0)
+    recvImages    = multiprocessing.Value('i', 0)
+    recvWaveforms = multiprocessing.Value('i', 0)
+    process = multiprocessing.Process(target=connection_receive_loop, args=(sock, args.outfile, args.out_group, args.verbose, args.logfile, recvAcqs, recvImages, recvWaveforms))
     process.daemon = True
     process.start()
 
@@ -212,12 +230,19 @@ def main(args):
     logging.debug("Waiting for threads to finish")
     process.join()
 
+    sock.close()
+    logging.info("Socket closed (writer)")
+
     # Save a copy of the MRD XML header now that the connection thread is finished with the file
     logging.debug("Writing MRD metadata to file")
     dset = ismrmrd.Dataset(args.outfile, args.out_group)
     dset.write_xml_header(bytes(xml_header, 'utf-8'))
     dset.close()
 
+    logging.info("---------------------- Summary ----------------------")
+    logging.info("Sent %4d acquisitions  |  Received %4d acquisitions", connection.sentAcqs,      recvWaveforms.value)
+    logging.info("Sent %4d images        |  Received %4d images",       connection.sentImages,    recvImages.value)
+    logging.info("Sent %4d waveforms     |  Received %4d waveforms",    connection.sentWaveforms, recvWaveforms.value)
     logging.info("Session complete")
 
     return

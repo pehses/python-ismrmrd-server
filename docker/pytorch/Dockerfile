@@ -46,9 +46,12 @@ RUN cd /usr/local/lib && tar -zxvf libismrmrd.tar.gz && rm libismrmrd.tar.gz && 
 # Copy siemens_to_ismrmrd from last stage
 COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd  /usr/local/bin/siemens_to_ismrmrd
 
+# Install xslt and hdf5 dependencies for siemens_to_ismrmrd
+RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103
+
 # Install PyTorch and its dependencies
 COPY python-ismrmrd-server/docker/pytorch/requirements.txt /
-RUN  apt-get update && apt-get install -y git \
+RUN  apt-get install -y git \
      && apt-get install -y libglib2.0-0 \
      && apt install libgl1-mesa-glx -y \
      && pip3 install --no-cache-dir -r requirements.txt
@@ -74,8 +77,18 @@ RUN  cd /opt/code \
 # If doing local development, use this section to copy local code into Docker
 # image. From the folder containing the python-ismrmrd-server repo, uncomment
 # the COPY line below and run the command:
-#    docker build -t fire-python-custom -f python-ismrmrd-server/docker/Dockerfile ./
+#    docker build --no-cache -t fire-python-custom -f python-ismrmrd-server/docker/Dockerfile ./
 COPY python-ismrmrd-server  /opt/code/python-ismrmrd-server
+
+# Ensure startup scripts have Unix (LF) line endings, which may not be true
+# if the git repo is cloned in Windows
+RUN apt-get install -y dos2unix \
+    && find /opt/code/python-ismrmrd-server -name *.sh | xargs dos2unix \
+    && apt-get remove dos2unix -y
+
+# Ensure startup scripts are marked as executable, which may be lost if files
+# are copied in Windows
+RUN find /opt/code/python-ismrmrd-server -name *.sh -exec chmod +x {} \;
 
 # Cleanup files not required after installation
 RUN  apt-get remove git -y

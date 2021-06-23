@@ -44,16 +44,18 @@ python3 /opt/code/ismrmrd-python-tools/generate_cartesian_shepp_logan_dataset.py
 
 Run the client and send data to the server in the other Docker container:
 ```
-python3 /opt/code/python-ismrmrd-server/client.py -a 172.17.0.1 -p 9002 -G "dataset" -o /tmp/phantom_img.h5 /tmp/phantom_raw.h5
+python3 /opt/code/python-ismrmrd-server/client.py -a host.docker.internal -p 9002 -G "dataset" -o /tmp/phantom_img.h5 /tmp/phantom_raw.h5
 ```
 
 The command line options used are:
 ```
--a 172.17.0.1  Send data to address 172.17.0.1, which is the default IP address of the Docker host.
--p 9002        Send data to port 9002.  This is sent to the host, which is then redirected to the
-               server container due to the “-p” port mapping when starting the server. 
--o             Specifies the output file name
--G             Specifies the group name in the output file
+-a host.docker.internal  Send data to address host.docker.internal, which
+                         resolves to the IP address of the Docker host.
+-p 9002                  Send data to port 9002.  This is sent to the host, which
+                         is then redirected to the server container due to the
+                         "-p" port mapping when starting the server. 
+-o                       Specifies the output file name
+-G                       Specifies the group name in the output file
 
 The last argument specifies the input file name.
 ```
@@ -102,23 +104,27 @@ Within this container, attempt to start the Python server by running ``python3 /
 ### Creation of a chroot image
 A chroot image contains the complete contents of a Linux operating system and serves as the root folder for the reconstruction program.  The chroot image can contain libraries and other files that can be used by the reconstruction program, isolated from the Linux operating system on the MARS computer.  Operating systems tested for FIRE chroot compatibility include Ubuntu, Debian, and Alpine.  Chroot images can be generated using manual tools such as debootstrap or be created from existing containers such as Docker.
 
-A Docker image of the MRD reconstruction server in this repository can be found on Docker Hub.  It can be downloaded by running:
-```
-docker pull kspacekelvin/fire-python
-```
+A set of scripts is provided to automate the creation of chroot images from Docker images.  To use them, open a command prompt inside the [docker](/docker) folder and run the following command:
 
-A Docker image using the MRD reconstruction server in this repository can be created using the provided [Dockerfile](../docker/Dockerfile).  To build it, run the following command from the folder containing the python-ismrmrd-server repo folder:
-```
-docker build --no-cache -t kspacekelvin/fire-python -f python-ismrmrd-server/docker/Dockerfile ./
-```
+    ```
+    In Windows:
+        docker_to_chroot.bat kspacekelvin/fire-python fire-python-chroot.img
 
-The following steps can be used to create a chroot image from a Docker image.  They are performed within a Linux Docker image, but can also be run on a Linux system natively.
+    In MacOS/Linux:
+        ./docker_to_chroot.sh kspacekelvin/fire-python fire-python-chroot.img
+    ```
+
+Note that both the [docker_to_chroot.bat](/docker/docker_to_chroot.bat) and [docker_to_chroot.sh](/docker/docker_to_chroot.sh) scripts require the [docker_tar_to_chroot.sh](/docker/docker_tar_to_chroot.sh) script that is also in the docker folder.
+
+#### Manual creation of a chroot image
+The following steps can be used to manually create a chroot image from a Docker image.  These steps are the same as those automated by the ``docker_to_chroot`` scripts above.  Here they are performed within a Linux Docker image, but they can also be run on a Linux system natively.
+
 1. Create a Docker container instance from an image.  If a different tag was used above, change the last argument accordingly.
     ```
     docker create --name tmpimage kspacekelvin/fire-python
     ```
 
-2. Export the file system contents to a tar archive.  Create the tmp folder if necessary.
+1. Export the file system contents to a tar archive.  Create the tmp folder if necessary.
     ```
     In Windows:
         docker export -o C:\tmp\fire-python-contents.tar tmpimage
@@ -127,12 +133,12 @@ The following steps can be used to create a chroot image from a Docker image.  T
         docker export -o /tmp/fire-python-contents.tar tmpimage
     ```
 
-3. Remove the Docker container instance.
+1. Remove the Docker container instance.
     ```
     docker rm tmpimage
     ```
 
-4. Start a Ubuntu Linux Docker container, sharing the tmp folder.
+1. Start a Ubuntu Linux Docker container, sharing the tmp folder.
     ```
     In Windows:
         docker run -it --rm --privileged=true -v C:\tmp:/tmp ubuntu
@@ -149,41 +155,41 @@ The following steps can be used to create a chroot image from a Docker image.  T
     -v /tmp:/tmp       Share volume (folder) from host to container
     ```
 
-5. Create a blank chroot file with an ext3 file system 425 MB in size.  The total file size is the product of the number of blocks (count) and the block size (bs).  However, the available space is ~30 MB less than the file size due to file system overhead.  The available space must be greater than the size of the tar archive above, with sufficient additional space (~10%) for temporary files that may be created during image reconstruction.
+1. Create a blank chroot file with an ext3 file system 450 MB in size.  The total file size is the product of the number of blocks (count) and the block size (bs).  However, the available space is ~30 MB less than the file size due to file system overhead.  The available space must be greater than the size of the tar archive above, with sufficient additional space (~10%) for temporary files that may be created during image reconstruction.
     ```
-    dd if=/dev/zero of=/tmp/fire-python-chroot.img bs=1M count=425
+    dd if=/dev/zero of=/tmp/fire-python-chroot.img bs=1M count=450
     mke2fs -F -t ext3 /tmp/fire-python-chroot.img
     ```
 
-6. Mount the chroot file.  If not using Docker, add “sudo” before the mount command.
+1. Mount the chroot file.  If not using Docker, add “sudo” before the mount command.
     ```
     mkdir /mnt/chroot
     mount -o loop /tmp/fire-python-chroot.img /mnt/chroot
     ```
 
-7. Extract the image contents into the mounted chroot image.
+1. Extract the image contents into the mounted chroot image.
     ```
     tar -xvf /tmp/fire-python-contents.tar --directory=/mnt/chroot
     ```
 
-8. Verify the amount of free space available on the chroot image (52 MB in the below):
+1. Verify the amount of free space available on the chroot image by running ``df -h`` (52 MB in the below):
     ```
     root@0cdce2f7e3cf:/# df -h
     Filesystem      Size  Used Avail Use% Mounted on
     /dev/loop0      396M  324M   52M  87% /mnt/chroot
     ```
 
-9. Unmount the chroot image.
+1. Unmount the chroot image.
     ```
     umount /mnt/chroot
     ```
 
-10. (Optional) The chroot is highly compressible using the zip file format.
+1. (Optional) The chroot is highly compressible using the zip file format.
     ```
     zip -j /tmp/fire-python-chroot.zip /tmp/fire-python-chroot.img
     ```
 
-11.  Exit the Docker container instance if started in step 4.
+1. Exit the Docker container instance if started in step 4.
     ```
     exit
     ```

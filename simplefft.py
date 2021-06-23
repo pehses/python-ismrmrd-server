@@ -64,9 +64,17 @@ def process_group(group, config, metadata):
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
+    # Remove readout oversampling
+    data = fft.ifft(data, axis=1)
+    data = np.delete(data, np.arange(int(data.shape[1]*1/4),int(data.shape[1]*3/4)), 1)
+    data = fft.fft( data, axis=1)
+
+    logging.debug("Raw data is size after readout oversampling removal %s" % (data.shape,))
+    np.save(debugFolder + "/" + "rawNoOS.npy", data)
+
     # Fourier Transform
-    data = fft.fftshift(data, axes=(1, 2))
-    data = fft.ifft2(data)
+    data = fft.fftshift( data, axes=(1, 2))
+    data = fft.ifft2(    data, axes=(1, 2))
     data = fft.ifftshift(data, axes=(1, 2))
 
     # Sum of squares coil combination
@@ -83,9 +91,14 @@ def process_group(group, config, metadata):
     data = np.around(data)
     data = data.astype(np.int16)
 
+    # Remove readout oversampling
+    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
+    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.x,:]
+
     # Remove phase oversampling
-    nRO = np.size(data,0)
-    data = data[int(nRO/4):int(nRO*3/4),:]
+    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
+    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.y]
+
     logging.debug("Image without oversampling is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgCrop.npy", data)
 

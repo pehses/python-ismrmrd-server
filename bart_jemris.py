@@ -67,6 +67,7 @@ def process(connection, config, metadata):
 
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
+    sensmaps_jemris = []
     dmtx = None
 
     try:
@@ -92,7 +93,10 @@ def process(connection, config, metadata):
                     noiseGroup.clear()
                                    
                 # Accumulate all imaging readouts in a group
-                if item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
+                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+                    sensmaps_jemris.append(item.data[:].reshape(item.traj[0].astype(np.int))) # WIP: order jemris sensmaps by slices
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # ADCs with no specific purpose
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA): # not supported in Jemris yet
                     continue
@@ -110,7 +114,7 @@ def process(connection, config, metadata):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    images = process_raw(acqGroup[item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.slice].clear() # free memory
@@ -123,7 +127,7 @@ def process(connection, config, metadata):
 # Process Data
 #########################
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False):
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -141,10 +145,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 
-    # WIP: take sensmaps from Jemris - how?
-    # if sensmaps is None:
-    #     ismrmrd_arrays = get_ismrmrd_arrays(???)
+    # WIP: sensmaps from Jemris - have to be interpolated
+    if sensmaps is None and sensmaps_jemris:
+        test = np.stack(sensmaps_jemris).T
 
+    # calculate sensitivity maps from imaging data, if selected
     force_pics = False
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
@@ -163,22 +168,13 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     data = np.abs(data)
     data = data[:,::-1] # correct orientation
 
-    # make sure that data is at least 3d:
+    # make sure that data is at least 3D
     while np.ndim(data) < 3:
         data = data[..., np.newaxis]
     
     logging.debug("Image data is size %s" % (data.shape,))
     if group[0].idx.slice == 0:
         np.save(debugFolder + "/" + "img.npy", data)
-
-    # Normalize and convert to int16
-    # save one scaling in 'static' variable
-    # contr = group[0].idx.contrast
-    # if process_raw.imascale[contr] is None:
-    #     process_raw.imascale[contr] = 0.8 / data.max()
-    # data *= 32767 * process_raw.imascale[contr]
-    # data = np.around(data)
-    # data = data.astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',

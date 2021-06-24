@@ -20,7 +20,6 @@ from pulseq_prot import get_ismrmrd_arrays
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
-dependencyFolder = os.path.join(shareFolder, "dependency")
 
 ########################
 # Main Function
@@ -78,7 +77,7 @@ def process(connection, config, metadata):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                # run noise decorrelation - WIP: noise scans not supported in Jemris yet
+                # run noise decorrelation - WIP: noise scans not yet supported in Jemris
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
                     continue
@@ -95,7 +94,7 @@ def process(connection, config, metadata):
                 # Other flags
                 if item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # ADCs with no specific purpose
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA): # WIP: not supported in Jemris yet
+                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
                 # Jemris sensitivity maps
                 elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):

@@ -96,7 +96,7 @@ def process(connection, config, metadata):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                # run noise decorrelation - WIP: noise scans not yet supported in Jemris
+                # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
                     continue
@@ -217,21 +217,23 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     images = []
     n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    # n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     # Format as ISMRMRD image data
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + par # slices/partitions
-            image.image_series_index = 1 # e.g. different contrasts (not supported yet)
+            image.image_index = 1 + group[0].idx.contrast * n_par + par
+            image.image_series_index = 1 + + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.slice #slices/partitions
-        image.image_series_index = 1 + group[0].idx.repetition # e.g. different contrasts
+        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+        image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
         image.slice = 0
         image.attribute_string = xml
         images.append(image)

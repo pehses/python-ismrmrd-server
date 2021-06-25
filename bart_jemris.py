@@ -128,8 +128,8 @@ def process(connection, config, metadata):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
-                elif sensmaps[item.idx.slice] is None:
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
+                elif sensmaps[item.idx.slice] is None: # WIP: currently not working
+                    # sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
                 # Accumulate all imaging readouts in a group
@@ -185,14 +185,14 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         if data.shape[-1] != nc:
-            data = data[...,np.newaxis]
+            sensmaps = sensmaps[...,np.newaxis]
         sensmaps = cfftn(sensmaps, [k for k in range(len(data)-1)]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
     # Recon
     if sensmaps is None:
         data = bart(1, nufft_config, trj, data) # nufft
-        if data.shape[-1] == nc:
+        if nc != 1:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
         data = bart(1, pics_config , trj, data, sensmaps)
@@ -255,7 +255,12 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
             ecalib_config = 'ecalib -m 1 -I'
 
         sensmaps = bart(1, nufft_config, trj, data) # nufft
-        sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
+        if sensmaps.ndim == 2:
+            sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
+        else:
+            sensmaps = cfftn(sensmaps, [0, 1, 2])
+        while sensmaps.ndim < 4:
+            sensmaps = sensmaps[...,np.newaxis]
         sensmaps = bart(1, ecalib_config, data)  # ESPIRiT calibration
 
         np.save(debugFolder + "/" + "acs.npy", data)

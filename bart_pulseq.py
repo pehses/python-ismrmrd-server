@@ -7,6 +7,7 @@ import base64
 
 import bart_pulseq_spiral 
 import bart_pulseq_cartesian
+import bart_jemris
 
 """ Checks trajectory type and launches reconstruction
 """
@@ -22,8 +23,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process(connection, config, metadata):
   
-    protFolder = "/tmp/share/dependency/pulseq_protocols"
-    protFolder_local = "/tmp/local/pulseq_protocols" # Protocols mountpoint (not at the scanner)
+    protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
+    protFolder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
     prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
 
     # Check if local protocol folder is available - if not use protFolder (scanner)
@@ -47,6 +48,12 @@ def process(connection, config, metadata):
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
         bart_pulseq_cartesian.process_cartesian(connection, config, metadata)
+    elif trajtype == 'other': # WIP: support Jemris sequences (not available yet)
+        pass
+        import importlib
+        importlib.reload(bart_jemris)
+        logging.info("Starting cartesian reconstruction.")
+        bart_jemris.process_cartesian(connection, config, metadata)
     else:
         raise ValueError('Trajectory type not recognized')
 

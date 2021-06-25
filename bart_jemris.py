@@ -7,7 +7,7 @@ import numpy as np
 from bart import bart
 from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
-from pulseq_prot import get_ismrmrd_arrays
+from pulseq_prot import insert_hdr, insert_acq
 
 """ Reconstruction of simulation data from Jemris with the BART toolbox
     WIP: support also Pulseq data acquired with Jemris sequences
@@ -18,6 +18,7 @@ from pulseq_prot import get_ismrmrd_arrays
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
+dependencyFolder = os.path.join(shareFolder, "dependency")
 
 ########################
 # Main Function
@@ -31,6 +32,20 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
     
     logging.info("Config: \n%s", config)
+
+    # Check if Pulseq or Jemris data
+    try:
+        protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
+        prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
+        prot_file = protFolder + "/" + prot_filename
+        print("Reconstruction of scanner data.")
+    except:
+        prot_file = None
+        print("Reconstruction of simulated data.")
+    
+    # Insert header, if Pulseq data
+    if prot_file is not None:
+        insert_hdr(prot_file, metadata)
 
     # Check for GPU availability
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -56,9 +71,11 @@ def process(connection, config, metadata):
 
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    # n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
-    acqGroup = [[] for _ in range(n_slc)]
+    acqGroup = [[[[[] for _ in range(n_slc)] for _ in range(n_contr)] for _ in range(n_sets)] for _ in range(n_avgs)]
     noiseGroup = []
     waveformGroup = []
 
@@ -68,7 +85,11 @@ def process(connection, config, metadata):
     dmtx = None
 
     try:
-        for item in connection:
+        for acq_ctr, item in enumerate(connection):
+
+            # Insert acquisition protocol, if Pulseq data
+            if prot_file is not None:
+                insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -112,16 +133,16 @@ def process(connection, config, metadata):
                     acsGroup[item.idx.slice].clear()
 
                 # Accumulate all imaging readouts in a group
-                acqGroup[item.idx.slice].append(item)
+                acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice].append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu)
+                    images = process_raw(acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
-                    acqGroup[item.idx.slice].clear() # free memory
+                    acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice].clear() # free memory
 
     finally:
         connection.send_close()

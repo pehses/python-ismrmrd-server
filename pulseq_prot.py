@@ -120,7 +120,7 @@ def get_ismrmrd_arrays(prot_file):
 
     return arr
 
-def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
+def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=True):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
@@ -229,7 +229,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
 
         prot.close()
     
-    return base_trj
+    if return_basetrj:
+        return base_trj
  
 
 def calc_traj(acq, hdr, ncol):

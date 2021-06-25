@@ -7,6 +7,7 @@ import numpy as np
 import numpy.fft as fft
 import base64
 import ctypes
+import multiprocessing
 
 from bart import bart
 import spiraltraj
@@ -18,6 +19,8 @@ from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat,
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
+
+use_multiprocessing = True
 
 
 def process(connection, config, metadata):
@@ -58,6 +61,9 @@ def process(connection, config, metadata):
     acsGroup = [[] for _ in range(256)]
     sensmaps = [None] * 256
     dmtx = None
+    
+    if use_multiprocessing:
+        pool = multiprocessing.Pool(processes=4)
 
     try:
         for item in connection:
@@ -98,10 +104,14 @@ def process(connection, config, metadata):
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
-                    logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
-                    logging.debug("Sending images to client:\n%s", images)
-                    connection.send_image(images)
+                    # logging.info("Processing a group of k-space data")
+                    # images = process_raw(acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
+                    # logging.debug("Sending images to client:\n%s", images)
+                    # connection.send_image(images)
+                    if use_multiprocessing:
+                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice]))
+                    else:
+                        process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
                     acqGroup = []
 
             # ----------------------------------------------------------
@@ -141,12 +151,29 @@ def process(connection, config, metadata):
             if sensmaps[acqGroup[-1].idx.slice] is None:
                 # run parallel imaging calibration
                 sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata, dmtx) 
-            image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[acqGroup[-1].idx.slice])
-            connection.send_image(image)
+            # image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[acqGroup[-1].idx.slice])
+            # connection.send_image(image)
+            if use_multiprocessing:
+                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice]))
+            else:
+                process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
             acqGroup = []
 
     finally:
+        if use_multiprocessing:
+            pool.close()
+            pool.join()
         connection.send_close()
+
+
+
+# wip: this may in the future help with multiprocessing
+def process_and_send(connection, acqGroup, config, metadata, dmtx, sensmap):
+    logging.info("Processing a group of k-space data")
+    images = process_raw(acqGroup, config, metadata, dmtx, sensmap)
+    logging.debug("Sending images to client:\n%s", images)
+    connection.send_image(images)
+
 
 #######
 # Sorting of k-space data

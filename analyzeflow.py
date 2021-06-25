@@ -1,4 +1,3 @@
-
 import ismrmrd
 import os
 import itertools
@@ -8,6 +7,8 @@ import numpy.fft as fft
 import base64
 import re
 import mrdhelper
+import constants
+from time import perf_counter
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -44,15 +45,10 @@ def process(connection, config, metadata):
             # Image data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Image):
-                meta = ismrmrd.Meta.deserialize(item.attribute_string)
-                slice = extract_minihead_long_param(base64.b64decode(meta['IceMiniHead']).decode('utf-8'), 'AnatomicalPartitionNo')
-                item.slice = slice
-
                 # Only process phase images
                 if item.image_type is ismrmrd.IMTYPE_PHASE:
                     imgGroup.append(item)
                 else:
-
                     connection.send_image(item)
                     continue
 
@@ -61,6 +57,14 @@ def process(connection, config, metadata):
             # ----------------------------------------------------------
             elif isinstance(item, ismrmrd.Waveform):
                 waveformGroup.append(item)
+
+            # ----------------------------------------------------------
+            # Ignore raw k-space data
+            # ----------------------------------------------------------
+            elif isinstance(item, ismrmrd.Acquisition):
+                strWarn = "Received an ismrmrd.Acquisition which is ignored by this analysis"
+                logging.warning(strWarn)
+                connection.send_logging(constants.MRD_LOGGING_INFO, strWarn)
 
             elif item is None:
                 break
@@ -82,7 +86,7 @@ def process(connection, config, metadata):
         # image in a series is typically not separately flagged.
         if len(imgGroup) > 0:
             logging.info("Processing a group of images (untriggered)")
-            image = process_image(imgGroup, config, metadata)
+            image = process_image(imgGroup, connection, config, metadata)
             logging.debug("Sending images to client")
             connection.send_image(image)
             imgGroup = []
@@ -90,7 +94,10 @@ def process(connection, config, metadata):
     finally:
         connection.send_close()
 
-def process_image(images, config, metadata):
+def process_image(images, connection, config, metadata):
+    # Start timer
+    tic = perf_counter()
+
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
@@ -112,6 +119,14 @@ def process_image(images, config, metadata):
 
     # Process each group of venc directions separately
     unique_venc_dir = np.unique([ismrmrd.Meta.deserialize(img.attribute_string)['FlowDirDisplay'] for img in images])
+
+    # Measure processing time
+    toc = perf_counter()
+    strProcessTime = "Total processing time: %.2f ms" % ((toc-tic)*1000.0)
+    logging.info(strProcessTime)
+
+    # Send this as a text message back to the client
+    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
     # Start the phase images at series 10.  When interpreted by FIRE, images
     # with the same image_series_index are kept in the same series, but the
@@ -184,15 +199,3 @@ def process_image(images, config, metadata):
 
         last_series += 1
     return imagesOut
-
-def extract_minihead_long_param(miniHead, name):
-    # Extract a long parameter from the serialized text of the ICE MiniHeader
-    expr = r'(?<=<ParamLong."' + name + r'">{)\s*\d*\s*'
-    res = re.search(expr, miniHead)
-
-    if res is None:
-        return None
-    elif res.group(0).isspace():
-        return 0
-    else:
-        return int(res.group(0))

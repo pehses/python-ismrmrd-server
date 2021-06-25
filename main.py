@@ -30,10 +30,16 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--savedata',        action='store_true', help='Save incoming data')
     parser.add_argument('-S', '--savedataFolder',  type=str,            help='Folder to save incoming data')
     parser.add_argument('-m', '--multiprocessing', action='store_true', help='Use multiprocessing')
+    parser.add_argument('-r', '--crlf',            action='store_true', help='Use Windows (CRLF) line endings')
 
     parser.set_defaults(**defaults)
 
     args = parser.parse_args()
+
+    if args.crlf:
+        fmt='%(asctime)s - %(message)s\r'
+    else:
+        fmt='%(asctime)s - %(message)s'
 
     if args.logfile:
         print("Logging to file: ", args.logfile)
@@ -41,11 +47,11 @@ if __name__ == '__main__':
         if not os.path.exists(os.path.dirname(args.logfile)):
             os.makedirs(os.path.dirname(args.logfile))
 
-        logging.basicConfig(filename=args.logfile, format='%(asctime)s - %(message)s', level=logging.WARNING)
+        logging.basicConfig(filename=args.logfile, format=fmt, level=logging.WARNING)
         logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     else:
         print("No logfile provided")
-        logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.WARNING)
+        logging.basicConfig(format=fmt, level=logging.WARNING)
 
     if args.verbose:
         logging.root.setLevel(logging.DEBUG)

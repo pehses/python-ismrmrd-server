@@ -74,6 +74,10 @@ def process(connection, config, metadata):
     matr_sz = metadata.encoding[0].encodedSpace.matrixSize.x
     res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz
 
+    # parameters for B0 correction
+    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
+    t_min = metadata.userParameters.userParameterDouble[3].value_ # [s]
+
     logging.info("Config: \n%s", config)
 
     # Metadata should be MRD formatted header, but may be a string
@@ -116,6 +120,7 @@ def process(connection, config, metadata):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     dmtx = None
+    offres = None 
     base_trj_ = []
 
     if "b_values" in prot_arrays and n_intl > 1:
@@ -134,8 +139,10 @@ def process(connection, config, metadata):
             if isinstance(item, ismrmrd.Acquisition):
 
                 # insert acquisition protocol
+                # base_trj is calculated e.g. for future trajectory comparisons
+                # WIP: or to revert the FOV shift from the Pulseq sequence (delay von + oder - einer grad raster time beachten)
                 base_trj = insert_acq(prot_file, item, acq_ctr)
-                if base_trj is not None: # base_trj is calculated e.g. for future trajectory comparisons
+                if base_trj is not None:
                     base_trj_.append(base_trj)
 
                 # run noise decorrelation
@@ -154,6 +161,12 @@ def process(connection, config, metadata):
                 
                 # Check for additional flags
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+                    if slc_sel is None or item.idx.slice == slc_sel:
+                        # calculate global phase slope from phase correction scans 
+                        data = item.data[:]
+                        phsdiff = data[:,1:] * np.conj(data[:,:-1])
+                        phsdiff = np.angle(np.sum(phsdiff))  # weighted sum over coils
+                        offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -170,6 +183,9 @@ def process(connection, config, metadata):
 
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
+                        nsamples = item.number_of_samples
+                        t_vec = t_min + dwelltime * np.arange(nsamples)
+                        item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
                     else:
                         # append data to first segment of ADC group
@@ -188,17 +204,18 @@ def process(connection, config, metadata):
                         rotmat = calc_rotmat(item)
                         shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
                         traj = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
-                        traj = traj[[1,0,2],:]  # switch x and y dir for correct orientation
                         data = fov_shift_spiral(data, traj, shift, matr_sz)
 
                         # filter signal to avoid Gibbs Ringing
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
                         
-                        # Set an offresonance frequency for debugging
-                        offres_freq = 0 # [Hz]
-                        t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
-                        phase = 2*np.pi*offres_freq * t_vec
-                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phase)
+                        # Correct the global phase
+                        if offres is not None:
+                            t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
+                            k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
+                            global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
+                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(1j*global_phs)
+                            offres = None
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                         # if no refscan, calculate sensitivity maps from raw data
@@ -303,7 +320,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary
-    # WIPs: Compare bet_mask and mask
     pcSENSE = False
     if shotimgs is not None:
         pcSENSE = True
@@ -315,7 +331,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         shotimgs = np.swapaxes(shotimgs, -1, -2) # swap nx & ny
         # mask = fmap['bet_mask']
         mask = fmap['mask'] # seems to make no difference which mask is used
-        if slc_sel:
+        if slc_sel is not None:
             mask = mask[slc_sel]
         phasemaps = calc_phasemaps(shotimgs, mask)
         np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
@@ -347,7 +363,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         continue
                     else:
                         acq.idx.slice = 0
+                # get rid of k0 in 5th dim, we dont need it in PowerGrid
+                save_trj = acq.traj[:,:4].copy()
+                acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
+                acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
+
+    ts = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # one time segment per ms
     dset_tmp.close()
     acqGroup.clear() # free memory
 
@@ -374,7 +396,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     cores = psutil.cpu_count(logical = False) # number of physical cores
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t 20 -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:
@@ -465,8 +487,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                             for nz in range(data.shape[4]):
                                 img_ix += 1
                                 image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz])
-                                image.image_index = img_ix # contains slices/partitions and phases
-                                image.image_series_index = series_ix # contains repetitions, contrasts
+                                image.image_index = img_ix
+                                image.image_series_index = series_ix
                                 image.slice = 0 # WIP: test counting slices, contrasts, ... at scanner
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
@@ -509,7 +531,7 @@ def process_acs(group, config, metadata, dmtx=None):
         data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
             print("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration

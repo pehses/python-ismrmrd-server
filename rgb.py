@@ -19,9 +19,28 @@ def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
 
     # Continuously parse incoming data parsed from MRD messages
+    acqGroup = []
     imgGroup = []
     try:
         for item in connection:
+            # ----------------------------------------------------------
+            # Raw k-space data messages
+            # ----------------------------------------------------------
+            if isinstance(item, ismrmrd.Acquisition):
+                # Accumulate all imaging readouts in a group
+                if (not item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT) and
+                    not item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) and
+                    not item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA)):
+                    acqGroup.append(item)
+
+                # When this criteria is met, run process_raw() on the accumulated
+                # data, which returns images that are sent back to the client.
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                    logging.info("Processing a group of k-space data")
+                    image = process_raw(acqGroup, config, metadata)
+                    connection.send_image(image)
+                    acqGroup = []
+
             # ----------------------------------------------------------
             # Image data messages
             # ----------------------------------------------------------
@@ -54,6 +73,105 @@ def process(connection, config, metadata):
 
     finally:
         connection.send_close()
+
+def process_raw(group, config, metadata):
+    # Create folder, if necessary
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
+
+    # Format data into single [cha PE RO phs] array
+    lin = [acquisition.idx.kspace_encode_step_1 for acquisition in group]
+    phs = [acquisition.idx.phase                for acquisition in group]
+
+    # Use the zero-padded matrix size
+    data = np.zeros((group[0].data.shape[0], 
+                     metadata.encoding[0].encodedSpace.matrixSize.y, 
+                     metadata.encoding[0].encodedSpace.matrixSize.x, 
+                     max(phs)+1), 
+                    group[0].data.dtype)
+
+    rawHead = [None]*(max(phs)+1)
+
+    for acq, lin, phs in zip(group, lin, phs):
+        if (lin < data.shape[1]) and (phs < data.shape[3]):
+            # TODO: Account for asymmetric echo in a better way
+            data[:,lin,-acq.data.shape[1]:,phs] = acq.data
+
+            # center line of k-space is encoded in user[5]
+            if (rawHead[phs] is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
+                rawHead[phs] = acq.getHead()
+
+    # Flip matrix in RO/PE to be consistent with ICE
+    data = np.flip(data, (1, 2))
+
+    logging.debug("Raw data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "raw.npy", data)
+
+    # Fourier Transform
+    data = fft.fftshift( data, axes=(1, 2))
+    data = fft.ifft2(    data, axes=(1, 2))
+    data = fft.ifftshift(data, axes=(1, 2))
+
+    # Sum of squares coil combination
+    # Data will be [PE RO phs]
+    data = np.abs(data)
+    data = np.square(data)
+    data = np.sum(data, axis=0)
+    data = np.sqrt(data)
+
+    logging.debug("Image data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "img.npy", data)
+
+    # Normalize and convert to int16
+    data *= 32767/data.max()
+    data = np.around(data)
+    data = data.astype(np.int16)
+
+    # Remove readout oversampling
+    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
+    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
+
+    # Remove phase oversampling
+    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
+    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
+
+    logging.debug("Image without oversampling is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "imgCrop.npy", data)
+
+    # Format as ISMRMRD image data
+    imagesOut = []
+    for phs in range(data.shape[2]):
+        # Create new MRD instance for the processed image
+        # NOTE: from_array() takes input data as [x y z coil], which is
+        # different than the internal representation in the "data" field as
+        # [coil z y x], so we need to transpose
+        tmpImg = ismrmrd.Image.from_array(data[...,phs].transpose())
+
+        # Set the header information
+        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
+        tmpImg.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        tmpImg.image_index = phs
+
+        # Set ISMRMRD Meta Attributes
+        tmpMeta = ismrmrd.Meta()
+        tmpMeta['DataRole']               = 'Image'
+        tmpMeta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
+        tmpMeta['WindowCenter']           = '16384'
+        tmpMeta['WindowWidth']            = '32768'
+        tmpMeta['Keep_image_geometry']    = 1
+
+        xml = tmpMeta.serialize()
+        logging.debug("Image MetaAttributes: %s", xml)
+        tmpImg.attribute_string = xml
+        imagesOut.append(tmpImg)
+
+    # Call process_image() to create RGB images
+    imagesOut = process_image(imagesOut, config, metadata)
+
+    return imagesOut
 
 def process_image(images, config, metadata):
     # Create folder, if necessary

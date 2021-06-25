@@ -13,14 +13,14 @@ from bart import bart
 import spiraltraj
 from cfft import cfftn, cifftn
 
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, gcs_to_dcs, dcs_to_gcs, fov_shift_spiral, remove_os, intp_axis
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, gcs_to_dcs, dcs_to_gcs, fov_shift_spiral, remove_os, intp_axis, filt_ksp
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-use_multiprocessing = True
+use_multiprocessing = False
 
 
 def process(connection, config, metadata):
@@ -276,7 +276,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update 3D dir.
         tmp = base_trj[enc1].copy()
         tmp[-1] = kz * np.ones(tmp.shape[-1])
-        trj.append(tmp)
+        trj.append(tmp[[1,0,2],:]) # switch x and y for correct orientation
 
         # and append data after optional prewhitening
         if dmtx is None:
@@ -284,9 +284,12 @@ def sort_spiral_data(group, metadata, dmtx=None):
         else:
             sig.append(apply_prewhitening(acq.data, dmtx))
 
-        # apply fov shift
+        # apply fov shift - use trajectory with x and y NOT switched
         shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
         sig[-1] = fov_shift_spiral(sig[-1], tmp, shift, nx)
+
+        # filter k-space
+        sig[-1] = filt_ksp(sig[-1], tmp, filt_fac=1)
 
         # we could remove oversampling here (not really necessary after fov shift)
 
@@ -423,16 +426,6 @@ def calc_spiral_traj(ncol, rot_mat, encoding):
     
     np.save(os.path.join(debugFolder, "pred_trj.npy"), pred_trj)
 
-    # pred_trj = np.load(os.path.join(dependencyFolder, "spiralout_meas.npy")
-    # pred_trj = np.load(os.path.join(dependencyFolder, "traj_doublespiral_r1_skope.npy")
-    # pred_trj = np.transpose(pred_trj, [2, 0, 1])
-
-    # now we can switch x and y dir for correct orientation in FIRE
-    pred_trj = pred_trj[:,[1,0,2],:]
-    base_trj = base_trj[:,[1,0,2],:]
-
-    ## WIP  
-    # return base_trj
     return pred_trj
 
 def grad_pred(grad, girf):
@@ -442,7 +435,7 @@ def grad_pred(grad, girf):
     Parameters:
     ------------
     grad: nominal gradient [interleaves, dims, samples]
-    girf:     gradient impulse response function [input dims, output dims (incl k0), samples]
+    girf: gradient impulse response function [input dims, output dims (incl k0), samples] in frequency space
     """
     ndim = grad.shape[1]
     grad_sampl = grad.shape[-1]
@@ -452,7 +445,13 @@ def grad_pred(grad, girf):
     girf = girf[:,1:]
 
     # zero-fill grad to number of girf samples (add check?)
-    grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
+    if girf_sampl > grad_sampl:
+        grad = np.concatenate([grad.copy(), np.zeros([grad.shape[0], ndim, girf_sampl-grad_sampl])], axis=-1)
+    if grad_sampl > girf_sampl:
+        logging.debug("WARNING: GIRF is interpolated, check trajectory result carefully.")
+        oldgrid = np.linspace(0,girf_sampl,girf_sampl)
+        newgrid = np.linspace(0,girf_sampl,grad_sampl)
+        girf = intp_axis(newgrid, oldgrid, girf, axis=-1)
 
     # FFT
     grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)
@@ -517,7 +516,7 @@ def process_acs(group, config, metadata, dmtx=None):
         #     data = np.concatenate((tmp, data, tmp) ,axis=2)
         
         # print(data.shape)
-        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
@@ -567,17 +566,14 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
             
         # bart nufft with nominal trajectory
         data = bart(1, 'nufft -i -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
-        # data = bart(1, 'nufft -i -t -c', trj, data) # nufft
 
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
-        # data = bart(1, 'pics -e -i 20 -t', trj, data, sensmaps)
-        # data = bart(1, 'pics -e -l1 -r 0.001 -i 25 -t', trj, data, sensmaps)
-        if False: #os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-            data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+            data = bart(1, 'pics -g -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
         else:
-            data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 100 -t', trj, data, sensmaps)  
+            data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)  
         data = np.abs(data)
         # make sure that data is at least 3d:
         while np.ndim(data) < 3:

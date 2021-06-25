@@ -46,3 +46,10 @@ SIZEOF_MRD_MESSAGE_CONFIGURATION_FILE = len(MrdMessageConfigurationFile.pack(b''
 
 MrdMessageAttribLength = struct.Struct('<Q')
 SIZEOF_MRD_MESSAGE_ATTRIB_LENGTH = len(MrdMessageAttribLength.pack(0))
+
+# Logging serverity levels
+MRD_LOGGING_DEBUG    = "DEBUG   "
+MRD_LOGGING_INFO     = "INFO    "
+MRD_LOGGING_WARNING  = "WARNING "
+MRD_LOGGING_ERROR    = "ERROR   "
+MRD_LOGGING_CRITICAL = "CRITICAL"

@@ -28,13 +28,12 @@ RUN  cd /opt/code \
      && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
 
 # install spiraltraj for trajectory calculation
-COPY spiraltraj /opt/code/spiraltraj
 RUN  cd /opt/code \
+     && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
+     && mv spiral-pypulseq-example/spiraltraj . \
      && cd spiraltraj \
      && pip3 wheel .
-     # && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
-     # && mv spiral-pypulseq-example/spiraltraj . \
-
+     
 # ISMRMRD library
 RUN cd /opt/code \
     && git clone https://github.com/ismrmrd/ismrmrd.git \
@@ -58,6 +57,7 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 # use own version of BART where CUDA path is correct
+# in this version the path for cfl exchange file can also be set (e.g. to shared memory location)
 RUN  cd /opt/code \
      && git clone https://github.com/mavel101/bart.git \
      && cd bart \
@@ -78,7 +78,7 @@ RUN  cd /opt/code \
 # Download and install NVIDIA HPC SDK
 RUN  wget https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-20-11_20.11_amd64.deb \
      https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-2020_20.11_amd64.deb \
-     && apt-get install ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
+     && apt-get install --yes ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
 
 # Handle NVIDIA HPC SDK specific stuff
 ENV NVARCH=Linux_x86_64

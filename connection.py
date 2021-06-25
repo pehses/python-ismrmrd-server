@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import h5py
 import random
+import threading
 
 import logging
 import socket
@@ -22,8 +23,13 @@ class Connection:
         self.dset           = None
         self.socket         = socket
         self.is_exhausted   = False
-        self.logged_sendraw = False
-        self.logged_recvraw = False
+        self.sentAcqs       = 0
+        self.sentImages     = 0
+        self.sentWaveforms  = 0
+        self.recvAcqs       = 0
+        self.recvImages     = 0
+        self.recvWaveforms  = 0
+        self.lock           = threading.Lock()
         self.handlers       = {
             constants.MRD_MESSAGE_CONFIG_FILE:         self.read_config_file,
             constants.MRD_MESSAGE_CONFIG_TEXT:         self.read_config_text,
@@ -34,10 +40,9 @@ class Connection:
             constants.MRD_MESSAGE_ISMRMRD_WAVEFORM:    self.read_waveform,
             constants.MRD_MESSAGE_ISMRMRD_IMAGE:       self.read_image
         }
-        self.create_save_file()
 
     def create_save_file(self):
-        if (self.savedata is True):
+        if self.savedata is True:
             # Create savedata folder, if necessary
             if ((self.savedataFolder) and (not os.path.exists(self.savedataFolder))):
                 os.makedirs(self.savedataFolder)
@@ -53,6 +58,15 @@ class Connection:
             self.dset = ismrmrd.Dataset(self.mrdFilePath, self.savedataGroup)
             self.dset._file.require_group(self.savedataGroup)
 
+    def send_logging(self, level, contents):
+        try:
+            formatted_contents = "%s %s" % (level, contents)
+        except:
+            logging.warning("Unsupported logging level: " + level)
+            formatted_contents = contents
+
+        self.send_text(formatted_contents)
+
     def __iter__(self):
         while not self.is_exhausted:
             yield self.next()
@@ -64,13 +78,14 @@ class Connection:
         return self.socket.recv(nbytes, socket.MSG_WAITALL)
 
     def next(self):
-        id = self.read_mrd_message_identifier()
+        with self.lock:
+            id = self.read_mrd_message_identifier()
 
-        if (self.is_exhausted == True):
-            return
+            if (self.is_exhausted == True):
+                return
 
-        handler = self.handlers.get(id, lambda: Connection.unknown_message_identifier(id))
-        return handler()
+            handler = self.handlers.get(id, lambda: Connection.unknown_message_identifier(id))
+            return handler()
 
     @staticmethod
     def unknown_message_identifier(identifier):
@@ -97,9 +112,10 @@ class Connection:
     #   ID               (   2 bytes, unsigned short)
     #   Config file name (1024 bytes, char          )
     def send_config_file(self, filename):
-        # logging.info("--> Sending MRD_MESSAGE_CONFIG_FILE (1)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CONFIG_FILE))
-        self.socket.send(constants.MrdMessageConfigurationFile.pack(filename.encode()))
+        with self.lock:
+            logging.info("--> Sending MRD_MESSAGE_CONFIG_FILE (1)")
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CONFIG_FILE))
+            self.socket.send(constants.MrdMessageConfigurationFile.pack(filename.encode()))
 
     def read_config_file(self):
         # logging.info("<-- Received MRD_MESSAGE_CONFIG_FILE (1)")
@@ -107,6 +123,7 @@ class Connection:
         config_file = constants.MrdMessageConfigurationFile.unpack(config_file_bytes)[0].decode("utf-8")
         config_file = config_file.split('\x00',1)[0]  # Strip off null terminators in fixed 1024 size
 
+        logging.debug("    " + config_file)
         if (config_file == "savedataonly"):
             # logging.info("Save data, but no processing based on config")
             if self.savedata is True:
@@ -115,7 +132,10 @@ class Connection:
                 self.savedata = True
                 self.create_save_file()
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             self.dset._file.require_group("dataset")
             dsetConfigFile = self.dset._dataset.require_dataset('config_file',shape=(1,), dtype=h5py.special_dtype(vlen=bytes))
             dsetConfigFile[0] = bytes(config_file, 'utf-8')
@@ -130,10 +150,12 @@ class Connection:
     #   Length           (   4 bytes, uint32_t      )
     #   Config text data (  variable, char          )
     def send_config_text(self, contents):
-        # logging.info("--> Sending MRD_MESSAGE_CONFIG_TEXT (2)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CONFIG_TEXT))
-        self.socket.send(constants.MrdMessageLength.pack(len(contents)+1)) # Add null terminator
-        self.socket.send('%s\0' % contents)                                # Add null terminator
+        with self.lock:
+            logging.info("--> Sending MRD_MESSAGE_CONFIG_TEXT (2)")
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CONFIG_TEXT))
+            contents_with_nul = '%s\0' % contents # Add null terminator
+            self.socket.send(constants.MrdMessageLength.pack(len(contents_with_nul.encode())))
+            self.socket.send(contents_with_nul.encode())
 
     def read_config_text(self):
         # logging.info("<-- Received MRD_MESSAGE_CONFIG_TEXT (2)")
@@ -141,7 +163,10 @@ class Connection:
         config = self.read(length)
         config = config.decode("utf-8").split('\x00',1)[0]  # Strip off null teminator
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             self.dset._file.require_group("dataset")
             dsetConfig = self.dset._dataset.require_dataset('config',shape=(1,), dtype=h5py.special_dtype(vlen=bytes))
             dsetConfig[0] = bytes(config, 'utf-8')
@@ -156,11 +181,12 @@ class Connection:
     #   Length           (   4 bytes, uint32_t      )
     #   Text xml data    (  variable, char          )
     def send_metadata(self, contents):
-        # logging.info("--> Sending MRD_MESSAGE_METADATA_XML_TEXT (3)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_METADATA_XML_TEXT))
-        contents_with_nul = '%s\0' % contents # Add null terminator
-        self.socket.send(constants.MrdMessageLength.pack(len(contents_with_nul.encode())))
-        self.socket.send(contents_with_nul.encode())
+        with self.lock:
+            logging.info("--> Sending MRD_MESSAGE_METADATA_XML_TEXT (3)")
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_METADATA_XML_TEXT))
+            contents_with_nul = '%s\0' % contents # Add null terminator
+            self.socket.send(constants.MrdMessageLength.pack(len(contents_with_nul.encode())))
+            self.socket.send(contents_with_nul.encode())
 
     def read_metadata(self):
         # logging.info("<-- Received MRD_MESSAGE_METADATA_XML_TEXT (3)")
@@ -168,7 +194,10 @@ class Connection:
         metadata = self.read(length)
         metadata = metadata.decode("utf-8").split('\x00',1)[0]  # Strip off null teminator
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             logging.debug("    Saving XML header to file")
             self.dset.write_xml_header(bytes(metadata, 'utf-8'))
 
@@ -177,15 +206,20 @@ class Connection:
     # ----- MRD_MESSAGE_CLOSE (4) ----------------------------------------------
     # This message signals that all data has been sent (either from server or client).
     def send_close(self):
-        # logging.info("--> Sending MRD_MESSAGE_CLOSE (4)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CLOSE))
+        with self.lock:
+            logging.info("--> Sending MRD_MESSAGE_CLOSE (4)")
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_CLOSE))
 
     def read_close(self):
         # logging.info("<-- Received MRD_MESSAGE_CLOSE (4)")
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             logging.debug("Closing file %s", self.dset._file.filename)
             self.dset.close()
+            self.dset = None
 
         self.is_exhausted = True
         return
@@ -197,16 +231,20 @@ class Connection:
     #   Length           (   4 bytes, uint32_t      )
     #   Text data        (  variable, char          )
     def send_text(self, contents):
-        # logging.info("--> Sending MRD_MESSAGE_TEXT (5)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_TEXT))
-        self.socket.send(constants.MrdMessageLength.pack(len(contents)+1)) # Add null terminator
-        self.socket.send('%s\0' % contents)                                # Add null terminator
+        with self.lock:
+            logging.info("--> Sending MRD_MESSAGE_TEXT (5)")
+            logging.info("    %s", contents)
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_TEXT))
+            contents_with_nul = '%s\0' % contents # Add null terminator
+            self.socket.send(constants.MrdMessageLength.pack(len(contents_with_nul.encode())))
+            self.socket.send(contents_with_nul.encode())
 
     def read_text(self):
         # logging.info("<-- Received MRD_MESSAGE_TEXT (5)")
         length = self.read_mrd_message_length()
         text = self.read(length)
         text = text.decode("utf-8").split('\x00',1)[0]  # Strip off null teminator
+        logging.info("    %s", text)
         return text
 
     # ----- MRD_MESSAGE_ISMRMRD_ACQUISITION (1008) -----------------------------
@@ -217,29 +255,25 @@ class Connection:
     #   Trajectory       (  variable, float         )
     #   Raw k-space data (  variable, float         )
     def send_acquisition(self, acquisition):
-        if (logging.root.getEffectiveLevel() is logging.INFO):
-            if (self.logged_sendraw is False):
-                # logging.info("--> Sending MRD_MESSAGE_ISMRMRD_ACQUISITION (1008) (no further logging of this type)")
-                self.logged_sendraw = True
-        else:
-            pass
-            # logging.debug("--> Sending MRD_MESSAGE_ISMRMRD_ACQUISITION (1008)")
+        with self.lock:
+            self.sentAcqs += 1
+            if (self.sentAcqs == 1) or (self.sentAcqs % 100 == 0):
+                logging.info("--> Sending MRD_MESSAGE_ISMRMRD_ACQUISITION (1008) (total: %d)", self.sentAcqs)
 
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_ACQUISITION))
-        acquisition.serialize_into(self.socket.send)
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_ACQUISITION))
+            acquisition.serialize_into(self.socket.send)
 
     def read_acquisition(self):
-        if (logging.root.getEffectiveLevel() is logging.INFO):
-            if (self.logged_recvraw is False):
-                # logging.info("<-- Received MRD_MESSAGE_ISMRMRD_ACQUISITION (1008) (no further logging of this type)")
-                self.logged_recvraw = True
-        else:
-            pass
-            # logging.debug("--> Received MRD_MESSAGE_ISMRMRD_ACQUISITION (1008)")
+        self.recvAcqs += 1
+        if (self.recvAcqs == 1) or (self.recvAcqs % 100 == 0):
+            logging.info("<-- Received MRD_MESSAGE_ISMRMRD_ACQUISITION (1008) (total: %d)", self.recvAcqs)
 
         acq = ismrmrd.Acquisition.deserialize_from(self.read)
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             self.dset.append_acquisition(acq)
 
         return acq
@@ -253,22 +287,25 @@ class Connection:
     #   Attribute data   (  variable, char          )
     #   Image data       (  variable, variable      )
     def send_image(self, images):
-        if not isinstance(images, list):
-            images = [images]
+        with self.lock:
+            if not isinstance(images, list):
+                images = [images]
 
-        # logging.info("--> Sending MRD_MESSAGE_ISMRMRD_IMAGE (1022) (%d images)", len(images))
-        for image in images:
-            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_IMAGE))
-            image.serialize_into(self.socket.send)
+            logging.info("--> Sending MRD_MESSAGE_ISMRMRD_IMAGE (1022) (%d images)", len(images))
+            for image in images:
+                self.sentImages += 1
+                self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_IMAGE))
+                image.serialize_into(self.socket.send)
 
-        # Explicit version of serialize_into() for more verbose debugging
-        # self.socket.send(image.getHead())
-        # self.socket.send(constants.MrdMessageAttribLength.pack(len(image.attribute_string)))
-        # self.socket.send(bytes(image.attribute_string, 'utf-8'))
-        # self.socket.send(bytes(image.data))
+            # Explicit version of serialize_into() for more verbose debugging
+            # self.socket.send(image.getHead())
+            # self.socket.send(constants.MrdMessageAttribLength.pack(len(image.attribute_string)))
+            # self.socket.send(bytes(image.attribute_string, 'utf-8'))
+            # self.socket.send(bytes(image.data))
 
     def read_image(self):
-        # logging.info("<-- Received MRD_MESSAGE_ISMRMRD_IMAGE (1022)")
+        self.recvImages += 1
+        logging.info("<-- Received MRD_MESSAGE_ISMRMRD_IMAGE (1022)")
         # return ismrmrd.Image.deserialize_from(self.read)
 
         # Explicit version of deserialize_from() for more verbose debugging
@@ -280,7 +317,10 @@ class Connection:
         logging.debug("   Reading in %d bytes of attributes", attribute_length.value)
 
         attribute_bytes = self.read(attribute_length.value)
-        logging.debug("   Attributes: %s", attribute_bytes.decode('utf-8'))
+        if (attribute_length.value > 25000):
+            logging.debug("   Attributes (truncated): %s", attribute_bytes[0:24999].decode('utf-8'))
+        else:
+            logging.debug("   Attributes: %s", attribute_bytes.decode('utf-8'))
 
         image = ismrmrd.Image(header_bytes, attribute_bytes.decode('utf-8'))
 
@@ -296,7 +336,10 @@ class Connection:
 
         image.data.ravel()[:] = np.frombuffer(data_bytes, dtype=ismrmrd.get_dtype_from_data_type(image.data_type))
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             image.attribute_string = ismrmrd.Meta.deserialize(image.attribute_string.split('\x00',1)[0]).serialize()  # Strip off null teminator
             self.dset.append_image("images_%d" % image.image_series_index, image)
 
@@ -309,15 +352,25 @@ class Connection:
     #   Fixed header     ( 240 bytes, mixed         )
     #   Waveform data    (  variable, uint32_t      )
     def send_waveform(self, waveform):
-        # # logging.info("--> Sending MRD_MESSAGE_ISMRMRD_WAVEFORM (1026)")
-        self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_WAVEFORM))
-        waveform.serialize_into(self.socket.send)
+        with self.lock:
+            self.sentWaveforms += 1
+            if (self.sentWaveforms == 1) or (self.sentWaveforms % 100 == 0):
+                logging.info("--> Sending MRD_MESSAGE_ISMRMRD_WAVEFORM (1026) (total: %d)", self.sentWaveforms)
+
+            self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_WAVEFORM))
+            waveform.serialize_into(self.socket.send)
 
     def read_waveform(self):
-        # logging.info("<-- Received MRD_MESSAGE_ISMRMRD_WAVEFORM (1026)")
+        self.recvWaveforms += 1
+        if (self.recvWaveforms == 1) or (self.recvWaveforms % 100 == 0):
+            logging.info("<-- Received MRD_MESSAGE_ISMRMRD_WAVEFORM (1026) (total: %d)", self.recvWaveforms)
+
         waveform = ismrmrd.Waveform.deserialize_from(self.read)
 
-        if (self.savedata is True):
+        if self.savedata is True:
+            if self.dset is None:
+                self.create_save_file()
+
             self.dset.append_waveform(waveform)
 
         return waveform

@@ -87,14 +87,14 @@ def process(connection, config, metadata):
     try:
         for acq_ctr, item in enumerate(connection):
 
-            # Insert acquisition protocol, if Pulseq data
-            if prot_file is not None:
-                insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
-
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+
+                # Insert acquisition protocol, if Pulseq data
+                if prot_file is not None:
+                    insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -129,7 +129,7 @@ def process(connection, config, metadata):
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None: # WIP: currently not working
-                    # sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
                 # Accumulate all imaging readouts in a group
@@ -251,17 +251,19 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
             nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -g -m 1 -I'
         else:
-            nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, nx, nz)
+            nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -m 1 -I'
 
         sensmaps = bart(1, nufft_config, trj, data) # nufft
+        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
         if sensmaps.ndim == 2:
             sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
         else:
             sensmaps = cfftn(sensmaps, [0, 1, 2])
+        
         while sensmaps.ndim < 4:
             sensmaps = sensmaps[...,np.newaxis]
-        sensmaps = bart(1, ecalib_config, data)  # ESPIRiT calibration
+        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)

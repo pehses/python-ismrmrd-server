@@ -105,6 +105,10 @@ def process(connection, config, metadata):
                     for acq in noiseGroup:
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
+                    if noise_data.shape[0] == 1:
+                        noiseGroup.clear()
+                        print("Single Coil data. No prewhintening.")
+                        continue
                     # calculate pre-whitening matrix
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
@@ -172,8 +176,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
 
     # Take sensmaps from Jemris
     if sensmaps is None and sensmaps_jemris:
+        print("Use simulated coil sensitivity maps from Jemris.")
         sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
-        if nz==2: # 2D
+        if nz==1: # 2D
             sensmaps = sensmaps[group[0].idx.slice]
             sensmaps = np.transpose(sensmaps[np.newaxis], [2,1,0,3]) # [x,y,1,coils]
         else: # 3D

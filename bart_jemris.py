@@ -96,6 +96,16 @@ def process(connection, config, metadata):
                 if prot_file is not None:
                     insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
 
+                # Jemris sensitivity maps
+                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+                    sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))
+                    if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
+                        continue
+                    sens_fov = item.user_int[0]
+                    sensmap_coil = intp_sensmaps(sensmap_coil, sens_fov, metadata)
+                    sensmaps_jemris.append(sensmap_coil)
+                    continue
+
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
@@ -106,11 +116,9 @@ def process(connection, config, metadata):
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
                     if noise_data.shape[0] == 1:
-                        noiseGroup.clear()
-                        print("Single Coil data. No prewhintening.")
-                        continue
-                    # calculate pre-whitening matrix
-                    dmtx = calculate_prewhitening(noise_data)
+                        print("Single Coil data. No prewhitening.")
+                    else:
+                        dmtx = calculate_prewhitening(noise_data) # calculate pre-whitening matrix
                     del(noise_data)
                     noiseGroup.clear()
                 
@@ -119,20 +127,11 @@ def process(connection, config, metadata):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
-                # Jemris sensitivity maps
-                elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
-                    sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))
-                    if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
-                        continue
-                    sens_fov = item.user_int[0]
-                    sensmap_coil = intp_sensmaps(sensmap_coil, sens_fov, metadata)
-                    sensmaps_jemris.append(sensmap_coil)
-                    continue
-                # Sensitivity maps from calibration scan - WIP: not tested yet
+                # Sensitivity maps from calibration scan
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
-                elif sensmaps[item.idx.slice] is None: # WIP: currently not working
+                elif sensmaps[item.idx.slice] is None:
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 

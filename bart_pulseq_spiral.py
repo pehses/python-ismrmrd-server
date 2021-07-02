@@ -36,7 +36,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process_spiral(connection, config, metadata):
+def process_spiral(connection, config, metadata, prot_file):
   
     slc_sel = None
 
@@ -45,18 +45,7 @@ def process_spiral(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    protFolder_local = "/tmp/local/pulseq_protocols" # Protocols mountpoint (not at the scanner)
-    prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
-
-    # Check if local protocol folder is available - if not use protFolder (scanner)
-    date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-    protFolder_loc = os.path.join(protFolder_local, date)
-    if os.path.exists(protFolder_loc):
-        protFolder = protFolder_loc
-
     # Insert protocol header
-    prot_file = protFolder + "/" + prot_filename
     insert_hdr(prot_file, metadata)
     
     logging.info("Config: \n%s", config)

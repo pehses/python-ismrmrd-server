@@ -24,7 +24,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process(connection, config, metadata):
+def process(connection, config, metadata, prot_file=None):
   
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
@@ -32,20 +32,13 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
     
     logging.info("Config: \n%s", config)
-
-    # Check if Pulseq or Jemris data
-    try:
-        protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-        prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
-        prot_file = protFolder + "/" + prot_filename
-        print("Reconstruction of scanner data.")
-    except:
-        prot_file = None
-        print("Reconstruction of simulated data.")
-    
+  
     # Insert header, if Pulseq data
     if prot_file is not None:
+        print("Reconstruction of scanner data.")
         insert_hdr(prot_file, metadata)
+    else:
+        print("Reconstruction of simulated data.")
 
     # Check for GPU availability
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':

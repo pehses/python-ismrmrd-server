@@ -20,8 +20,17 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-def process_cartesian(connection, config, metadata):
+def process_cartesian(connection, config, metadata, prot_file):
+
     logging.info("Config: \n%s", config)
+
+    # Insert protocol header
+    insert_hdr(prot_file, metadata)
+
+    # Create folder, if necessary
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Metadata should be MRD formatted header, but may be a string
     # if it failed conversion earlier
@@ -42,26 +51,6 @@ def process_cartesian(connection, config, metadata):
 
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
-
-    # Create folder, if necessary
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
-
-    protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    protFolder_local = "/tmp/local/pulseq_protocols" # Protocols mountpoint (not at the scanner)
-    prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
-
-    # Check if local protocol folder is available - if not use protFolder (scanner)
-    date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-    protFolder_loc = os.path.join(protFolder_local, date)
-
-    if os.path.exists(protFolder_loc):
-        protFolder = protFolder_loc
-
-    # Insert protocol header
-    prot_file = protFolder + "/" + prot_filename
-    insert_hdr(prot_file, metadata)
 
     # Continuously parse incoming data parsed from MRD messages
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1

@@ -7,7 +7,6 @@ import numpy as np
 import base64
 
 from bart import bart
-# from PowerGridPy import PowerGridIsmrmrd
 import subprocess
 from cfft import cfftn, cifftn
 
@@ -50,20 +49,23 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
+    # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    protFolder_local = "/tmp/local/pulseq_protocols" # Protocols mountpoint (not at the scanner)
     prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
-    if skope:
-        prot_filename += "_skopetraj"
+    prot_file = protFolder + "/" + prot_filename + ".h5"
 
-    # Check if local protocol folder is available - if not use protFolder (scanner)
-    date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-    protFolder_loc = os.path.join(protFolder_local, date)
-    if os.path.exists(protFolder_loc):
-        protFolder = protFolder_loc
+    # Check if local protocol folder is available, if protocol is not in dependency protocol folder
+    if not os.path.isfile(prot_file):
+        protFolder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
+        date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
+        protFolder_loc = os.path.join(protFolder_local, date)
+        prot_file_loc = protFolder_loc + "/" + prot_filename + ".h5"
+        if os.path.isfile(prot_file_loc):
+            prot_file = prot_file_loc
+        else:
+            raise ValueError("No protocol file available.")
 
     # Insert protocol header
-    prot_file = protFolder + "/" + prot_filename
     insert_hdr(prot_file, metadata)
 
     # Get additional arrays from protocol file - e.g. for diffusion imaging
@@ -535,6 +537,9 @@ def process_acs(group, config, metadata, dmtx=None):
         else:
             print("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
+
+        refimg = cifftn(data, [0,1,2])
+        np.save(debugFolder + "/" + "refimg.npy", refimg)
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)

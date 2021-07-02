@@ -56,7 +56,7 @@ def process(connection, config, metadata):
         pass
         import importlib
         importlib.reload(bart_jemris)
-        logging.info("Starting cartesian reconstruction.")
+        logging.info("Starting JEMRIS reconstruction.")
         bart_jemris.process(connection, config, metadata, prot_file)
     else:
         raise ValueError('Trajectory type not recognized')

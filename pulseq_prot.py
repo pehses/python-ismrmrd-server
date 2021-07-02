@@ -38,11 +38,12 @@ def insert_hdr(prot_file, metadata):
     prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
 
     # user parameters
-    dset_udbl = metadata.userParameters.userParameterDouble
-    prot_udbl = prot_hdr.userParameters.userParameterDouble
-    for ix, param in enumerate(prot_udbl):
-        dset_udbl[ix].name = param.name
-        dset_udbl[ix].value_ = param.value_
+    if prot_hdr.userParameters is not None:
+        dset_udbl = metadata.userParameters.userParameterDouble
+        prot_udbl = prot_hdr.userParameters.userParameterDouble
+        for ix, param in enumerate(prot_udbl):
+            dset_udbl[ix].name = param.name
+            dset_udbl[ix].value_ = param.value_
 
     # encoding
     dset_e1 = metadata.encoding[0]

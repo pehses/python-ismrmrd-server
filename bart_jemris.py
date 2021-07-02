@@ -33,7 +33,7 @@ def process(connection, config, metadata, prot_file=None):
     
     logging.info("Config: \n%s", config)
   
-    # Insert header, if Pulseq data
+    # Check if Pulseq or simulated data
     if prot_file is not None:
         print("Reconstruction of scanner data.")
         insert_hdr(prot_file, metadata)
@@ -76,6 +76,7 @@ def process(connection, config, metadata, prot_file=None):
     sensmaps = [None] * n_slc
     sensmaps_jemris = []
     dmtx = None
+    simu = True
 
     try:
         for acq_ctr, item in enumerate(connection):
@@ -88,9 +89,9 @@ def process(connection, config, metadata, prot_file=None):
                 # Insert acquisition protocol, if Pulseq data
                 if prot_file is not None:
                     insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
-
-                # Jemris sensitivity maps
-                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+                    simu = False
+                # Jemris sensitivity maps - only if simulated data (ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is set in scanner data for some reason)
+                elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
                     sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))
                     if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
                         continue
@@ -135,7 +136,8 @@ def process(connection, config, metadata, prot_file=None):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu)
+                    group = acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice]
+                    images = process_raw(group, config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu, simu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice].clear() # free memory
@@ -148,7 +150,7 @@ def process(connection, config, metadata, prot_file=None):
 # Process Data
 #########################
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False):
+def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -200,6 +202,12 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     while np.ndim(data) < 3:
         data = data[..., np.newaxis]
     
+    # Normalize and convert to int16
+    if not simu:
+        data *= 32767/data.max()
+        data = np.around(data)
+        data = data.astype(np.int16)
+
     logging.debug("Image data is size %s" % (data.shape,))
     if group[0].idx.slice == 0:
         np.save(debugFolder + "/" + "img.npy", data)
@@ -290,7 +298,7 @@ def sort_data(group, metadata, dmtx=None):
             sig.append(apply_prewhitening(acq.data, dmtx))
 
         # trajectory
-        traj = np.swapaxes(acq.traj,0,1) # [samples, dims] to [dims, samples]
+        traj = np.swapaxes(acq.traj,0,1)[:3] # [samples, dims] to [dims, samples]
         traj[0] *= fov_x / (2*np.pi) # rad/mm -> bart (dimensionless)
         traj[1] *= fov_y / (2*np.pi)
         traj[2] *= fov_z / (2*np.pi)

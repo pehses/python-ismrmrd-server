@@ -198,7 +198,7 @@
                 <xsl:if test="siemens/MEAS/sKSpace/ucTrajectory = 4">
                     <trajectoryDescription>
                         <!-- <identifier>HargreavesVDS2000</identifier> -->
-                        <identifier>EhsesSpiral2020</identifier>
+                        <identifier>EhsesSpiral2021</identifier>
                         <userParameterLong>
                             <name>interleaves</name>
                             <value>
@@ -220,21 +220,45 @@
                             </value>
                         </userParameterLong>
                         <userParameterLong>
-                            <name>dephRampUp</name>
+                            <name>fSpiralOS_reinterpret_cast_to_int32</name>
                             <value>
                                 <xsl:value-of select="siemens/MEAS/aulServicePara[3]" />
                             </value>
                         </userParameterLong>
                         <userParameterLong>
-                            <name>dephFlatTop</name>
+                            <name>packed_spiralOS_radius_1</name>
                             <value>
                                 <xsl:value-of select="siemens/MEAS/aulServicePara[4]" />
                             </value>
                         </userParameterLong>
                         <userParameterLong>
-                            <name>fSpiralOS_reinterpret_cast_to_int32</name>
+                            <name>packed_spiralOS_radius_2</name>
                             <value>
                                 <xsl:value-of select="siemens/MEAS/aulServicePara[5]" />
+                            </value>
+                        </userParameterLong>
+                        <userParameterLong>
+                            <name>dephRampUp</name>
+                            <value>
+                                <xsl:value-of select="siemens.YAPS.alRegridRampupTime" />
+                            </value>
+                        </userParameterLong>
+                        <userParameterLong>
+                            <name>dephRampDown</name>
+                            <value>
+                                <xsl:value-of select="siemens.YAPS.alRegridRampdownTime" />
+                            </value>
+                        </userParameterLong>
+                        <userParameterLong>
+                            <name>dephFlatTop</name>
+                            <value>
+                                <xsl:value-of select="siemens.YAPS.alRegridFlattopTime" />
+                            </value>
+                        </userParameterLong>
+                        <userParameterLong>
+                            <name>dephAmplitude</name>
+                            <value>
+                                <xsl:value-of select="siemens.YAPS.aflRegridADCDuration" />
                             </value>
                         </userParameterLong>
                         <!-- <userParameterLong>

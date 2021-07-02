@@ -517,9 +517,9 @@ def process_acs(group, config, metadata, dmtx=None):
         
         # print(data.shape)
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
         # sensmaps = bart(1, 'ecalib -m 1 -I', data)  # ESPIRiT calibration
 
         if zfill:
@@ -554,9 +554,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     # if sensmaps is None: # assume that this is a fully sampled scan (wip: only use autocalibration region in center k-space)
         # sensmaps = bart(1, 'ecalib -m 1 -I ', data)  # ESPIRiT calibration
 
-    force_pics = True
+    force_pics = False
     if sensmaps is None and force_pics:
-        sensmaps = bart(1, 'nufft -i -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
+        sensmaps = bart(1, 'nufft -i -m 30 -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
         # sensmaps = bart(1, 'ecalib -m 1 -I -r 32 -k 8', sensmaps)  # ESPIRiT calibration
         sensmaps = bart(1, 'ecalib -m 1 -I', sensmaps)  # ESPIRiT calibration
@@ -565,7 +565,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
         logging.debug("no pics necessary, just do standard recon")
             
         # bart nufft with nominal trajectory
-        data = bart(1, 'nufft -i -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
+        data = bart(1, 'nufft -i -m 30 -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
 
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))

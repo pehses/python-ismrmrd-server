@@ -111,7 +111,7 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
                     continue
                 elif sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
                 acqGroup[item.idx.contrast][item.idx.slice].append(item)
@@ -120,7 +120,7 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], prot_arrays, gpu)
+                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], prot_arrays, gpu)
                     logging.debug("Sending image to client:\n%s", image)
                     connection.send_image(image)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
@@ -162,8 +162,8 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
                 logging.info("Processing a group of k-space data (untriggered)")
                 if sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx)
-                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice])
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx)
+                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
                 logging.debug("Sending image to client:\n%s", image)
                 connection.send_image(image)
                 acqGroup = []
@@ -236,7 +236,7 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     return kspace
 
 
-def process_acs(group, config, metadata, dmtx=None, gpu=False):
+def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
@@ -259,7 +259,7 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
         return None
 
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu=False):
+def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu=False):
 
     data = sort_into_kspace(group, metadata, dmtx)
     data = remove_os(data)

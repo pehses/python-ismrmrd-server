@@ -180,7 +180,7 @@ def process(connection, config, metadata):
                         continue
                     elif sensmaps[item.idx.slice] is None:
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx) # [nx,ny,nz,nc]
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) # [nx,ny,nz,nc]
                         acsGroup[item.idx.slice].clear()
 
                     # Process imaging scans - deal with ADC segments
@@ -516,7 +516,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     return images
 
-def process_acs(group, config, metadata, dmtx=None):
+def process_acs(group, metadata, dmtx=None):
     """ Process reference scans for parallel imaging calibration
     """
     if len(group)>0:

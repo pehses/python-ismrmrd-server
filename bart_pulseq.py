@@ -23,6 +23,11 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process(connection, config, metadata):
   
+    # Create debug folder, if necessary
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
+
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
     prot_file = protFolder + "/" + prot_filename + ".h5"

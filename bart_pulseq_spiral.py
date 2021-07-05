@@ -49,11 +49,6 @@ def process_spiral(connection, config, metadata, prot_file):
 
     slc_sel = None
 
-    # Create folder, if necessary
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
-
     # Insert protocol header
     insert_hdr(prot_file, metadata)
     

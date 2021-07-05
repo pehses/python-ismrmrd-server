@@ -32,11 +32,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     
     slc_sel = None
 
-    # Create folder, if necessary
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
-
     # Insert protocol header
     insert_hdr(prot_file, metadata)
     
@@ -402,7 +397,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False, pr
         
         if fid_unfilt is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(fid_unfilt[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 3
                 image.slice = 0
@@ -411,7 +406,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False, pr
         
         if ref_volt is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 4
                 image.slice = 0
@@ -436,7 +431,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False, pr
             images.append(image)
         
         if fid_unfilt is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(fid_unfilt[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 3
             image.slice = 0
@@ -444,7 +439,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False, pr
             images.append(image)
         
         if ref_volt is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 4
             image.slice = 0

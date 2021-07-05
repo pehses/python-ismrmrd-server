@@ -180,23 +180,51 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # calculate sensitivity maps from imaging data, if selected
-    force_pics = False
-    if sensmaps is None and force_pics:
+    force_pi = False
+    if sensmaps is None and force_pi:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         if data.shape[-1] != nc:
             sensmaps = sensmaps[...,np.newaxis]
         sensmaps = cfftn(sensmaps, [k for k in range(len(data)-1)]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
+    # Check if data is sampled on Cartesian grid
+    cart_grid = True
+    for k in range(trj.shape[2]):
+        if(np.allclose(trj[0],trj[0,0]) or np.allclose(trj[1],trj[1,0])):
+            continue
+        else:
+            cart_grid = False
+            break
+    if cart_grid:
+        for k in range(trj.shape[1]):
+            if(np.allclose(trj[0],trj[0,0]) or np.allclose(trj[1],trj[1,0])):
+                continue
+            else:
+                cart_grid = False
+                break
+
     # Recon
-    if sensmaps is None:
-        data = bart(1, nufft_config, trj, data) # nufft
-        if nc != 1:
+    if cart_grid:
+        print("Cartesian acquisition. Do normal FFT.")
+        data = data[0]
+        data = data.reshape([nx,ny,nz,nc])
+        data = cifftn(data, axes=[0,1,2])
+        data = data[:,::-1]
+        if sensmaps is None:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+        else:
+            np.sum(np.conj(sensmaps) * data, axis=-1) / np.sqrt(np.sum(abs(sensmaps)**2), axis=-1) # Roemer coil combination
     else:
-        data = bart(1, pics_config , trj, data, sensmaps)
-    data = np.abs(data)
-    data = data[:,::-1] # correct orientation
+        print("Non-Cartesian acquisition. Do BART reconstruction.")
+        if sensmaps is None:
+            data = bart(1, nufft_config, trj, data) # nufft
+            if nc != 1:
+                data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+        else:
+            data = bart(1, pics_config , trj, data, sensmaps)
+        data = np.abs(data)
+        data = data[:,::-1] # correct orientation
 
     # make sure that data is at least 3D
     while np.ndim(data) < 3:

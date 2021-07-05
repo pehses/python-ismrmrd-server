@@ -113,12 +113,14 @@ def DREAM_filter_fid(alpha=60., beta=6., tr=3e-3, t1=2., ti=None):
     # base signal equation for FID
     Sstst = np.sin(beta) * (1 - np.exp(-tr / t1)) / (1 - np.cos(beta) * np.exp(-tr / t1))
     S0 = np.sin(beta) * np.cos(alpha)**2
-
-    r1s = 1/t1 - np.log(np.cos(beta))/tr
     
+    r1s = 1/t1 - np.log(np.cos(beta))/tr
     # filt = 1/(1 + Sstst/S0*(np.exp(r1s*ti)-1))
     filt = S0/(S0 + Sstst*(np.exp(r1s*ti)-1.))
-    filt[np.isnan(ti)] = 0
+    if filt is None:
+        filt = 0
+    #filt[np.isnan(ti)] = 0
+    print(filt)
     
     return filt
 
@@ -154,7 +156,7 @@ def global_filter(ste, fid, ti, alpha=60, beta=6, tr=3e-3, t1=2., blur_read=Fals
         ste = applyFilter(ste, filt_ro, axes=[2])
 
     # filter fid in k-space
-    return calc_fa(abs(ste), abs(fid))
+    return calc_fa(abs(ste), abs(fid)), abs(fid)
 
 # def local_filter(ste, fid, ti, alpha=60, beta=6, tr=3e-3, t1=2., blur_read=False, fmap=None, nbins=40, niter=2, store_iter = False):
 

@@ -60,5 +60,3 @@ def process(connection, config, metadata):
         bart_jemris.process(connection, config, metadata, prot_file)
     else:
         raise ValueError('Trajectory type not recognized')
-
-

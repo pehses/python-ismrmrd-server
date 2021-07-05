@@ -190,27 +190,36 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
 
     # Check if data is sampled on Cartesian grid
     cart_grid = True
-    for k in range(trj.shape[2]):
-        if(np.allclose(trj[0],trj[0,0]) or np.allclose(trj[1],trj[1,0])):
+    for k in range(trj.shape[1]):
+        # readout and phase encode could be either x or y
+        if(np.allclose(trj[0,k],trj[0,k,0], atol=1e-2) or np.allclose(trj[1,k],trj[1,k,0], atol=1e-2)):
             continue
         else:
             cart_grid = False
             break
     if cart_grid:
-        for k in range(trj.shape[1]):
-            if(np.allclose(trj[0],trj[0,0]) or np.allclose(trj[1],trj[1,0])):
+        for k in range(trj.shape[2]):
+            if(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) or np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2)):
                 continue
             else:
                 cart_grid = False
                 break
+    if cart_grid and nz > 1:
+        # assume 2nd phase encode is on z
+        trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
+        for k in range(trj[3]):
+            if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
+                continue
+            else:
+                cart_grid = False
 
     # Recon
     if cart_grid:
         print("Cartesian acquisition. Do normal FFT.")
         data = data[0]
-        data = data.reshape([nx,ny,nz,nc])
+        data = data.reshape([nx,ny,nz,nc], order='f')
         data = cifftn(data, axes=[0,1,2])
-        data = data[:,::-1]
+        data = data[:,::-1] # seems to be necessary for correct orientation
         if sensmaps is None:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
         else:

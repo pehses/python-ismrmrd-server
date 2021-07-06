@@ -74,7 +74,6 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
     # for B1 Dream map
     if "dream" in prot_arrays:
         process_raw.imagesets = [None] * n_contr
-        process_raw.fid_unfiltered = True
     
     # different contrasts need different scaling
     process_raw.imascale = [None] * 256
@@ -315,13 +314,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             if dream.size > 2 :                                 # without filter: dream = ([ste_contr,flip_angle_ste])
                 logging.info("Global filter approach")
                 
-                # save unfiltered fid if wanted
-                if process_raw.fid_unfiltered:
-                    logging.debug("fid_unfiltered to scanner")
-                    fid_unfilt = fid.copy()
-                    np.save(debugFolder + "/" + "fid_unf.npy", fid_unfilt)
-                else:
-                    fid_unfilt = None
                 # move from [nx,ny,nz] to [ny,nz,nx]
                 ste = np.transpose(ste,[1,2,0])
                 fid = np.transpose(fid,[1,2,0])
@@ -348,7 +340,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 data = fid_filt.copy()
             else:
                 fa_map = calc_fa(abs(ste), abs(fid))
-                fid_unfilt = None
             
             fa_map *= dil
             current_refvolt = metadata.userParameters.userParameterDouble[5].value_
@@ -369,11 +360,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             process_raw.imagesets = [None] * n_contr # free list
         else:
             fa_map = None
-            fid_unfilt = None
             ref_volt = None
     else:
         fa_map = None
-        fid_unfilt = None
         ref_volt = None
         logging.info("no dream B1 mapping")
 
@@ -420,20 +409,11 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 image.attribute_string = xml
                 images.append(image)
         
-        if fid_unfilt is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 3
-                image.slice = 0
-                image.attribute_string = xml
-                images.append(image)
-        
         if ref_volt is not None:
             for par in range(n_par):
                 image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
-                image.image_series_index = 4
+                image.image_series_index = 3
                 image.slice = 0
                 image.attribute_string = xml
                 images.append(image)
@@ -454,18 +434,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             image.attribute_string = xml
             images.append(image)
         
-        if fid_unfilt is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 3
-            image.slice = 0
-            image.attribute_string = xml
-            images.append(image)
-        
         if ref_volt is not None:
             image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 4
+            image.image_series_index = 3
             image.slice = 0
             image.attribute_string = xml
             images.append(image)

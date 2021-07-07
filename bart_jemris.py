@@ -35,10 +35,10 @@ def process(connection, config, metadata, prot_file=None):
   
     # Check if Pulseq or simulated data
     if prot_file is not None:
-        print("Reconstruction of scanner data.")
+        logging.debug("Reconstruction of scanner data.")
         insert_hdr(prot_file, metadata)
     else:
-        print("Reconstruction of simulated data.")
+        logging.debug("Reconstruction of simulated data.")
 
     # Check for GPU availability
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -110,9 +110,12 @@ def process(connection, config, metadata, prot_file=None):
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
                     if noise_data.shape[0] == 1:
-                        print("Single Coil data. No prewhitening.")
+                        logging.debug("Single Coil data. No prewhitening.")
                     else:
                         dmtx = calculate_prewhitening(noise_data) # calculate pre-whitening matrix
+                        if np.isnan(dmtx).any():
+                            logging.debug("Dont use noise whitening matrix as it is nan. Check if noise was added in simulation.")
+                            dmtx = None
                     del(noise_data)
                     noiseGroup.clear()
                 
@@ -168,15 +171,18 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 
-    # Check if data is on Cartesian grid
-    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz])
-
     # force parallel imaging recon by calculating sensitivity maps from raw data
     force_pi = False
-
-    # Take sensmaps from Jemris
-    if sensmaps is None and sensmaps_jemris and not force_pi:
-        print("Use simulated coil sensitivity maps from Jemris.")
+    if sensmaps is None and force_pi:
+        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        if sensmaps.shape[-1] != nc:
+            sensmaps = sensmaps[...,np.newaxis]
+        sensmaps = cfftn(sensmaps, [k for k in range(data.ndim-1)]) # back to k-space
+        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
+        
+    # Take sensmaps from Jemris, if more than one coil was simulated
+    if sensmaps is None and sensmaps_jemris and nc>1:
         sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
         if nz==1: # 2D
             sensmaps = sensmaps[group[0].idx.slice]
@@ -185,35 +191,16 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
             sensmaps = np.transpose(sensmaps, [2,1,0,3]) # [x,y,z,coils]
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
-    # calculate sensitivity maps from imaging data, if selected
-    if sensmaps is None and force_pi:
-        if cart_grid:
-            sensmaps = data[0]
-            sensmaps = sensmaps.reshape([nx,ny,nz,nc], order='f')
-            sensmaps = bart(1, ecalib_config, sensmaps)
-        else:
-            sensmaps = bart(1, nufft_config, trj, data) # nufft
-            if sensmaps.shape[-1] != nc:
-                sensmaps = sensmaps[...,np.newaxis]
-            sensmaps = cfftn(sensmaps, [k for k in range(data.ndim-1)]) # back to k-space
-            sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
-
     # Recon
-    if cart_grid:
-        print("Cartesian acquisition. Do normal FFT.")
+    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid
+    if cart_grid and sensmaps is None:
+        logging.debug("Cartesian acquisition and no sensivity maps. Do normal FFT.")
         data = data[0]
         data = data.reshape([nx,ny,nz,nc], order='f')
         data = cifftn(data, axes=[0,1,2])
-        if sensmaps is None:
-            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
-        else:
-            nom = np.sum(np.conj(sensmaps) * data, axis=-1)
-            denom = np.sqrt(np.sum(abs(sensmaps)**2, axis=-1))
-            data = np.divide(nom, denom, out=np.zeros_like(nom), where=denom!=0) # Roemer coil combination
-            data = np.abs(data)
+        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
-        print("Non-Cartesian acquisition. Do BART reconstruction.")
+        print("Non-Cartesian acquisition or sensitivity maps provided. Do BART reconstruction.")
         if sensmaps is None:
             data = bart(1, nufft_config, trj, data) # nufft
             if nc != 1:
@@ -279,7 +266,6 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
-        nc = data.shape[-1]
 
         if gpu:
             nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
@@ -288,24 +274,16 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
             nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -m 1 -I'
 
-        # Check if data is on Cartesian grid
-        cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz])
-
-        if cart_grid:
-            sensmaps = data[0]
-            sensmaps = sensmaps.reshape([nx,ny,nz,nc], order='f')
-            sensmaps = bart(1, ecalib_config, sensmaps)
+        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
+        if sensmaps.ndim == 2:
+            sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
         else:
-            sensmaps = bart(1, nufft_config, trj, data) # nufft
-            np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
-            if sensmaps.ndim == 2:
-                sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
-            else:
-                sensmaps = cfftn(sensmaps, [0, 1, 2])
-            
-            while sensmaps.ndim < 4:
-                sensmaps = sensmaps[...,np.newaxis]
-            sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+            sensmaps = cfftn(sensmaps, [0, 1, 2])
+        
+        while sensmaps.ndim < 4:
+            sensmaps = sensmaps[...,np.newaxis]
+        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
@@ -373,7 +351,7 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
 
     # Cut out measurement fov
     if fov_x > sens_fov or fov_y > sens_fov or fov_z > sens_fov:
-        print("WARNING: Sensitivity map FOV is smaller than measurement FOV")
+        logging.debug("WARNING: Sensitivity map FOV is smaller than measurement FOV")
     slc_x = (sens_fov-fov_x)//2
     slc_y = (sens_fov-fov_y)//2
     slc_z = (sens_fov-fov_z)//2

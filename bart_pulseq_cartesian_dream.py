@@ -7,29 +7,26 @@ import os
 import itertools
 import logging
 import numpy as np
-from cfft import cfftn, cifftn
+from cfft import cifftn, cfftn
 import base64
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, fov_shift, calc_rotmat, pcs_to_gcs, remove_os
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from DreamMap import global_filter, calc_fa
+
+from skimage import filters
+import scipy
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-def process_cartesian(connection, config, metadata, prot_file):
-
-    # Check protocol arrays to process with possible subscript
-    prot_arrays = get_ismrmrd_arrays(prot_file)
-    if "dream" in prot_arrays:
-        import bart_pulseq_cartesian_dream
-        import importlib
-        importlib.reload(bart_pulseq_cartesian_dream)
-        bart_pulseq_cartesian_dream.process_cartesian_dream(connection, config, metadata, prot_file)
-        return
-
+def process_cartesian_dream(connection, config, metadata, prot_file):
+    
+    logging.debug("in process_cartesian_dream")
+    
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 
@@ -72,7 +69,15 @@ def process_cartesian(connection, config, metadata, prot_file):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * 256
     dmtx = None
+    
+    # read protocol arrays
+    prot_arrays = get_ismrmrd_arrays(prot_file)
 
+    # for B1 Dream map
+    if "dream" in prot_arrays:
+        process_raw.imagesets = [None] * n_contr
+        process_raw.fid_unfiltered = True
+    
     # different contrasts need different scaling
     process_raw.imascale = [None] * 256
 
@@ -117,7 +122,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], config, metadata, dmtx, sensmaps[item.idx.slice], prot_arrays, gpu)
                     logging.debug("Sending image to client:\n%s", image)
                     connection.send_image(image)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
@@ -256,7 +261,7 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
         return None
 
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, config, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu=False):
 
     data = sort_into_kspace(group, metadata, dmtx)
     data = remove_os(data)
@@ -274,7 +279,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     if sensmaps is None:
         logging.debug("no pics necessary, just do standard fft")
         data = cifftn(data, axes=(0, 1, 2))
-        
+
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
@@ -285,6 +290,94 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
         data = np.abs(data)
 
     logging.debug("Image data is size %s" % (data.shape,))
+    
+    # B1 Map calculation (Dream approach)
+    if 'dream' in prot_arrays: #dream = ([ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1])
+        dream = prot_arrays['dream']
+        n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+        
+        process_raw.imagesets[group[0].idx.contrast] = data.copy()
+        full_set_check = all(elem is not None for elem in process_raw.imagesets)
+        if full_set_check:
+            logging.info("B1 map calculation using Dream")
+            ste = np.asarray(process_raw.imagesets[int(dream[0])])
+            fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])])
+            
+            #image processing filter
+            dil = np.zeros(fid.shape)
+            for nz in range(fid.shape[-1]):
+                # otsu
+                val = filters.threshold_otsu(fid[:,:,nz])
+                otsu = fid[:,:,nz] > val
+                # fill holes
+                imfill = scipy.ndimage.morphology.binary_fill_holes(otsu) * 1
+                # dilation
+                dil[:,:,nz] = scipy.ndimage.morphology.binary_dilation(imfill)
+            
+            if dream.size > 2 :                                 # without filter: dream = ([ste_contr,flip_angle_ste])
+                logging.info("Global filter approach")
+                
+                # save unfiltered fid if wanted
+                if process_raw.fid_unfiltered:
+                    logging.debug("fid_unfiltered to scanner")
+                    fid_unfilt = fid.copy()
+                    np.save(debugFolder + "/" + "fid_unf.npy", fid_unfilt)
+                else:
+                    fid_unfilt = None
+                # move from [nx,ny,nz] to [ny,nz,nx]
+                ste = np.transpose(ste,[1,2,0])
+                fid = np.transpose(fid,[1,2,0])
+
+                # Blurring compensation parameters
+                alpha = dream[1]     # preparation FA
+                tr = dream[2]        # [s]
+                beta = dream[3]      # readout FA
+                dummies = dream[4]   # number of dummy scans before readout echo train starts
+                # T1 estimate:
+                t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
+                # TI estimate (the time after DREAM preparation after which each k-space line is acquired):
+                ti = np.zeros([metadata.encoding[0].encodedSpace.matrixSize.y, metadata.encoding[0].encodedSpace.matrixSize.z])
+                for i,acq in enumerate(group):
+                    ti[acq.idx.kspace_encode_step_1, acq.idx.kspace_encode_step_2] = i
+                ti = tr * (dummies + ti) # [s]
+                np.save(debugFolder + "/" + "ti.npy", ti)
+                # Global filter:
+                fa_map,fid_filt = global_filter(ste, fid, ti, alpha, beta, tr, t1)
+                fa_map = np.transpose(fa_map, [2,0,1])
+                # fid = fid_filt:
+                fid_filt = np.transpose(fid_filt, [2,0,1])
+                np.save(debugFolder + "/" + "fid_filt.npy", fid_filt)
+                data = fid_filt.copy()
+            else:
+                fa_map = calc_fa(abs(ste), abs(fid))
+                fid_unfilt = None
+            
+            fa_map *= dil
+            current_refvolt = metadata.userParameters.userParameterDouble[5].value_
+            nom_fa = dream[1]
+            logging.info("current_refvolt = %sV und nom_fa = %s°^" % (current_refvolt, nom_fa))
+            ref_volt = current_refvolt * (nom_fa/fa_map)
+            
+            fa_map = np.around(fa_map)
+            fa_map = fa_map.astype(np.int16)
+            np.save(debugFolder + "/" + "fa.npy", fa_map)
+            logging.debug("fa map is size %s" % (fa_map.shape,))
+            
+            ref_volt = np.around(ref_volt)
+            ref_volt = ref_volt.astype(np.int16)
+            np.save(debugFolder + "/" + "ref_volt.npy", ref_volt)
+            logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
+            
+            process_raw.imagesets = [None] * n_contr # free list
+        else:
+            fa_map = None
+            fid_unfilt = None
+            ref_volt = None
+    else:
+        fa_map = None
+        fid_unfilt = None
+        ref_volt = None
+        logging.info("no dream B1 mapping")
 
     # Normalize and convert to int16
     # save one scaling in 'static' variable
@@ -308,24 +401,77 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, gpu=False):
     # Format as ISMRMRD image data
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    
     n_par = data.shape[-1]
     images = []
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
-            image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+            image.image_index = 1 + group[0].idx.contrast * n_par + par
+            image.image_series_index = 1
             image.slice = 0
             image.attribute_string = xml
             images.append(image)
 
+        if fa_map is not None:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
+                image.image_index = 1 + par
+                image.image_series_index = 2
+                image.slice = 0
+                image.attribute_string = xml
+                images.append(image)
+        
+        if fid_unfilt is not None:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(fid_unfilt[...,par].T, acquisition=group[0])
+                image.image_index = 1 + par
+                image.image_series_index = 3
+                image.slice = 0
+                image.attribute_string = xml
+                images.append(image)
+        
+        if ref_volt is not None:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
+                image.image_index = 1 + par
+                image.image_series_index = 4
+                image.slice = 0
+                image.attribute_string = xml
+                images.append(image)
+        
     else:
         image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+        image.image_series_index = 1
         image.slice = 0
         image.attribute_string = xml
         images.append(image)
+
+        if fa_map is not None:
+            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 2
+            image.slice = 0
+            image.attribute_string = xml
+            images.append(image)
+        
+        if fid_unfilt is not None:
+            image = ismrmrd.Image.from_array(fid_unfilt[...,0].T, acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 3
+            image.slice = 0
+            image.attribute_string = xml
+            images.append(image)
+        
+        if ref_volt is not None:
+            image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 4
+            image.slice = 0
+            image.attribute_string = xml
+            images.append(image)
+
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))

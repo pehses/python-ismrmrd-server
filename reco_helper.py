@@ -169,10 +169,9 @@ def fov_shift(sig, shift):
 def fov_shift_spiral(sig, trj, shift, matr_sz):
     """ 
     shift field of view of spiral data
-    sig:  rawdata [ncha, nsamples]
-    trj:    trajectory [3, nsamples]
-    # shift:   shift [x_shift, y_shift] in voxel
-    shift:   shift [y_shift, x_shift] in voxel
+    sig: raw data [ncha, nsamples]
+    trj: trajectory [3, nsamples]
+    shift: shift [x_shift, y_shift] in voxel
     matr_sz: matrix size of reco
     """
 
@@ -181,12 +180,13 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
         return sig
 
     kmax = matr_sz/2
-    sig *= np.exp(-1j*(shift[1]*np.pi*trj[0]/kmax+shift[0]*np.pi*trj[1]/kmax))[np.newaxis]
+    sig *= np.exp(-1j*(shift[0]*np.pi*trj[0]/kmax+shift[1]*np.pi*trj[1]/kmax))[np.newaxis]
 
     return sig
 
 # the fov-shift from the Pulseq sequence is not correct 
 # tried to reapply it with the predicted trajectory, but also doesnt work properly
+# need to consider one grad_raster_time delay - in which direction???
 def fov_shift_spiral_reapply(acq, base_trj, matr_sz, res):
     """ 
     shift field of view of spiral data
@@ -245,3 +245,4 @@ def filt_ksp(kspace, traj, filt_fac=0.95):
         filt[-filt_len:] = hamming(2*filt_len)[filt_len:]
 
     return kspace * filt
+    

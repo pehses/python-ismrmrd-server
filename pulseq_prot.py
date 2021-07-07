@@ -6,6 +6,7 @@ Includes trajectory prediction with the GIRF
 import ismrmrd
 import numpy as np
 import os
+import logging
 from reco_helper import calc_rotmat, gcs_to_dcs, dcs_to_gcs, intp_axis
 
 def insert_hdr(prot_file, metadata): 
@@ -19,11 +20,14 @@ def insert_hdr(prot_file, metadata):
     # Read protocol
     #---------------------------
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 
@@ -33,22 +37,15 @@ def insert_hdr(prot_file, metadata):
 
     prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
 
-    dset_udbl = metadata.userParameters.userParameterDouble
-    prot_udbl = prot_hdr.userParameters.userParameterDouble
-    dset_udbl[0].name = prot_udbl[0].name # dwellTime_us
-    dset_udbl[0].value_ = prot_udbl[0].value_
-    dset_udbl[1].name = prot_udbl[1].name # traj_delay (additional delay of trajectory [s])
-    dset_udbl[1].value_ = prot_udbl[1].value_
-    dset_udbl[2].name = prot_udbl[2].name # nsegments
-    dset_udbl[2].value_ = prot_udbl[2].value_
-    dset_udbl[3].name = prot_udbl[3].name # t_min (initial time for B0-correction)
-    dset_udbl[3].value_ = prot_udbl[3].value_
-    try: 
-        dset_udbl[4].name = prot_udbl[4].name # os_region - this factor determines the part of kspace that is used for reconstruction of phase maps
-        dset_udbl[4].value_ = prot_udbl[4].value_
-    except:
-        pass
+    # user parameters
+    if prot_hdr.userParameters is not None:
+        dset_udbl = metadata.userParameters.userParameterDouble
+        prot_udbl = prot_hdr.userParameters.userParameterDouble
+        for ix, param in enumerate(prot_udbl):
+            dset_udbl[ix].name = param.name
+            dset_udbl[ix].value_ = param.value_
 
+    # encoding
     dset_e1 = metadata.encoding[0]
     prot_e1 = prot_hdr.encoding[0]
     dset_e1.trajectory = prot_e1.trajectory
@@ -89,6 +86,10 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.contrast.minimum = prot_e1.encodingLimits.contrast.minimum
         dset_e1.encodingLimits.contrast.maximum = prot_e1.encodingLimits.contrast.maximum
         dset_e1.encodingLimits.contrast.center = prot_e1.encodingLimits.contrast.center
+    if prot_e1.encodingLimits.segment is not None:
+        dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
+        dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
+        dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
 
     prot.close()
 
@@ -98,11 +99,14 @@ def get_ismrmrd_arrays(prot_file):
 
     """
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 
@@ -117,7 +121,7 @@ def get_ismrmrd_arrays(prot_file):
 
     return arr
 
-def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
+def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=True):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
@@ -133,11 +137,14 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
     # Read protocol
     #---------------------------
 
+    if (os.path.splitext(prot_file)[1] == ''):
+        prot_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file+'.hdf5', create_if_needed=False)
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     except:
+        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file+'.h5', create_if_needed=False)
+            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
 
@@ -165,7 +172,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
     dset_acq.idx.set = prot_acq.idx.set
     dset_acq.idx.segment = prot_acq.idx.segment
 
-    # flags - WIP: this is not the complete list of flags - if needed, flags can be added
+    # flags
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
@@ -187,47 +194,44 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True):
         prot.close()
         return
 
-    # calculate trajectory with GIRF prediction - trajectory is stored only in first segment
+    # deal with noncartesian trajectories
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
-        # some parameters from the header
+        
+        # calculate full number of samples
         nsamples = dset_acq.number_of_samples
-        nsegments = prot_hdr.userParameters.userParameterDouble[2].value_
+        try:
+            # preferred parameter for segments, user parameter is kept for compatibility
+            nsegments = prot_hdr.encoding[0].encodingLimits.segment.maximum + 1
+        except:
+            nsegments = prot_hdr.userParameters.userParameterDouble[2].value_
         nsamples_full = int(nsamples*nsegments+0.5)
-        nsamples_max = 65535 # number_of_samples is a uint16, so we cannot store a higher number here
+        nsamples_max = 65535
         if nsamples_full > nsamples_max:
             raise ValueError("The number of samples exceed the maximum allowed number of 65535 (uint16 maximum).")
-
-        dwelltime = 1e-6*prot_hdr.userParameters.userParameterDouble[0].value_ # [s]
-        try:
-            t_min = prot_hdr.userParameters.userParameterDouble[3].value_ # [s]
-            t_vec = t_min + dwelltime * np.arange(nsamples_full) # time vector for B0 correction
-        except:
-            # just a fallback for older versions, where t_min was not saved in the protocol
-            t_vec = None
-
+       
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
-        dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+        dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
-        # calculate trajectory with GIRF or take trajectory from protocol
-        # check if number of samples equals number of trajectory points and check maximum of trajectory value (should be a pretty robust check)
+        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol
+        # check should be a pretty robust
         if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
-            reco_trj = prot_acq.traj[:,:3] # trajectory (aligned to ADC) from the protocol file
+            reco_trj = prot_acq.traj[:,:3]
             base_trj = reco_trj.copy()
         else:
-            reco_trj, base_trj = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
+            reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
+            dset_acq.traj[:,4] = k0.copy()
 
-        dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
+        # fill extended part of data with zeros
+        dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
-        if t_vec is not None:
-            dset_acq.traj[:,3] = t_vec
-        else:
-            dset_acq.traj[:,3] = np.zeros(nsamples_full)
+        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector
 
         prot.close()
     
-    return base_trj
+    if return_basetrj:
+        return base_trj
  
 
 def calc_traj(acq, hdr, ncol):
@@ -279,13 +283,22 @@ def calc_traj(acq, hdr, ncol):
 
     # gradient prediction
     pred_grad = grad_pred(grad_phys, girf)
+    k0 = pred_grad[0] # 0th order field [T]
+    pred_grad = pred_grad[1:]
 
     # rotate back to logical system
     pred_grad = dcs_to_gcs(pred_grad, rotmat)
 
-    # calculate trajectory 
-    pred_trj = np.cumsum(pred_grad.real, axis=1)
-    base_trj = np.cumsum(grad, axis=1)
+    # calculate global phase term k0 [rad]
+    k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
+
+    # calculate trajectory [1/m]
+    pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
+    base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
+
+    # scale with FOV for BART & PowerGrid recon
+    pred_trj *= 1e-3 * fov
+    base_trj *= 1e-3 * fov
 
     # set z-axis if trajectory is two-dimensional
     if dims == 2:
@@ -297,19 +310,16 @@ def calc_traj(acq, hdr, ncol):
     # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
     gradtime += dt_grad/2 - dt_skope/2
 
-    # proper scaling
-    pred_trj *= dt_grad * gammabar * (1e-3 * fov)
-    base_trj *= dt_grad * gammabar * (1e-3 * fov)
-
     # align trajectory to scanner ADC
     base_trj = intp_axis(adctime, gradtime, base_trj, axis=1)
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+    k0 = intp_axis(adctime, gradtime, k0, axis=0)
 
     # switch array order to [samples, dims]
     pred_trj = np.swapaxes(pred_trj,0,1)
     base_trj = np.swapaxes(base_trj,0,1)
 
-    return pred_trj, base_trj
+    return pred_trj, base_trj, k0
 
 def grad_pred(grad, girf):
     """
@@ -318,24 +328,27 @@ def grad_pred(grad, girf):
     Parameters:
     ------------
     grad: nominal gradient [dims, samples]
-    girf: gradient impulse response function [input dims, output dims (incl k0), samples]
+    girf: gradient impulse response function [input dims, output dims (incl k0), samples] in frequency space
     """
     ndim = grad.shape[0]
     grad_sampl = grad.shape[-1]
     girf_sampl = girf.shape[-1]
 
-    # remove k0 from girf:
-    girf = girf[:,1:]
-
     # zero-fill grad to number of girf samples (add check?)
-    grad = np.concatenate([grad.copy(), np.zeros([ndim, girf_sampl-grad_sampl])], axis=-1)
+    if girf_sampl > grad_sampl:
+        grad = np.concatenate([grad.copy(), np.zeros([ndim, girf_sampl-grad_sampl])], axis=-1)
+    if grad_sampl > girf_sampl:
+        logging.debug("WARNING: GIRF is interpolated, check trajectory result carefully.")
+        oldgrid = np.linspace(0,girf_sampl,girf_sampl)
+        newgrid = np.linspace(0,girf_sampl,grad_sampl)
+        girf = intp_axis(newgrid, oldgrid, girf, axis=-1)
 
     # FFT
     grad = np.fft.fftshift(np.fft.fft(np.fft.ifftshift(grad, axes=-1), axis=-1), axes=-1)
 
     # apply girf to nominal gradients
-    pred_grad = np.zeros_like(grad)
-    for dim in range(ndim):
+    pred_grad = np.zeros_like(girf[0])
+    for dim in range(ndim+1):
         pred_grad[dim]=np.sum(grad*girf[np.newaxis,:ndim,dim,:], axis=1)
 
     # IFFT

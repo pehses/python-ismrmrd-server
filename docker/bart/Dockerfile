@@ -53,8 +53,9 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && git clone https://github.com/mrirecon/bart \
-     && cd bart \
+     && wget https://github.com/mrirecon/bart/archive/v0.7.00.tar.gz \
+     && tar xzvf v0.7.00.tar.gz \
+     && cd bart-0.7.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
@@ -100,14 +101,14 @@ RUN mkdir -p /opt/code/pythonpath
 ENV PYTHONPATH "${PYTHONPATH}:/opt/code/pythonpath"
 
 # copy bart python interface to pythonpath
-COPY --from=mrd_converter /opt/code/bart/python/* /opt/code/pythonpath/
+COPY --from=mrd_converter /opt/code/bart-0.7.00/python/* /opt/code/pythonpath/
 
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke \
-     && pip3 install --no-cache-dir pyxb h5py
+     && pip3 install --no-cache-dir pyxb h5py scikit-image
 
 RUN  mkdir -p /opt/code
 
@@ -115,6 +116,7 @@ RUN  cd /opt/code \
      && pip3 install SpiralTraj* \
      && rm SpiralTraj*
 
+# ISMRMRD Python - above this version the .value_ method of userParameters changes to .value
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python.git \
      && cd /opt/code/ismrmrd-python \

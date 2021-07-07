@@ -171,8 +171,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     # Check if data is on Cartesian grid
     cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz])
 
+    # force parallel imaging recon by calculating sensitivity maps from raw data
+    force_pi = False
+
     # Take sensmaps from Jemris
-    if sensmaps is None and sensmaps_jemris:
+    if sensmaps is None and sensmaps_jemris and not force_pi:
         print("Use simulated coil sensitivity maps from Jemris.")
         sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
         if nz==1: # 2D
@@ -183,7 +186,6 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # calculate sensitivity maps from imaging data, if selected
-    force_pi = True
     if sensmaps is None and force_pi:
         if cart_grid:
             sensmaps = data[0]
@@ -206,7 +208,6 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         if sensmaps is None:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
         else:
-            np.save(debugFolder + "/" + "data.npy", data)
             nom = np.sum(np.conj(sensmaps) * data, axis=-1)
             denom = np.sqrt(np.sum(abs(sensmaps)**2, axis=-1))
             data = np.divide(nom, denom, out=np.zeros_like(nom), where=denom!=0) # Roemer coil combination

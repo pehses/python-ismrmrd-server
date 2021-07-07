@@ -160,13 +160,16 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     nc = data.shape[-1]
 
     if gpu:
-        nufft_config = 'nufft -g -i -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 15 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
     else:
-        nufft_config = 'nufft -i -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 15 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
+
+    # Check if data is on Cartesian grid
+    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz])
 
     # Take sensmaps from Jemris
     if sensmaps is None and sensmaps_jemris:
@@ -180,38 +183,19 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # calculate sensitivity maps from imaging data, if selected
-    force_pi = False
+    force_pi = True
     if sensmaps is None and force_pi:
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
-        if data.shape[-1] != nc:
-            sensmaps = sensmaps[...,np.newaxis]
-        sensmaps = cfftn(sensmaps, [k for k in range(len(data)-1)]) # back to k-space
-        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
-
-    # Check if data is sampled on Cartesian grid
-    cart_grid = True
-    for k in range(trj.shape[1]):
-        # readout and phase encode could be either x or y
-        if(np.allclose(trj[0,k],trj[0,k,0], atol=1e-2) or np.allclose(trj[1,k],trj[1,k,0], atol=1e-2)):
-            continue
+        if cart_grid:
+            sensmaps = data[0]
+            sensmaps = sensmaps.reshape([nx,ny,nz,nc], order='f')
+            sensmaps = bart(1, ecalib_config, sensmaps)
         else:
-            cart_grid = False
-            break
-    if cart_grid:
-        for k in range(trj.shape[2]):
-            if(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) or np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2)):
-                continue
-            else:
-                cart_grid = False
-                break
-    if cart_grid and nz > 1:
-        # assume 2nd phase encode is on z
-        trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
-        for k in range(trj[3]):
-            if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
-                continue
-            else:
-                cart_grid = False
+            sensmaps = bart(1, nufft_config, trj, data) # nufft
+            if sensmaps.shape[-1] != nc:
+                sensmaps = sensmaps[...,np.newaxis]
+            sensmaps = cfftn(sensmaps, [k for k in range(data.ndim-1)]) # back to k-space
+            sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
     if cart_grid:
@@ -219,11 +203,14 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         data = data[0]
         data = data.reshape([nx,ny,nz,nc], order='f')
         data = cifftn(data, axes=[0,1,2])
-        data = data[:,::-1] # seems to be necessary for correct orientation
         if sensmaps is None:
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
         else:
-            np.sum(np.conj(sensmaps) * data, axis=-1) / np.sqrt(np.sum(abs(sensmaps)**2), axis=-1) # Roemer coil combination
+            np.save(debugFolder + "/" + "data.npy", data)
+            nom = np.sum(np.conj(sensmaps) * data, axis=-1)
+            denom = np.sqrt(np.sum(abs(sensmaps)**2, axis=-1))
+            data = np.divide(nom, denom, out=np.zeros_like(nom), where=denom!=0) # Roemer coil combination
+            data = np.abs(data)
     else:
         print("Non-Cartesian acquisition. Do BART reconstruction.")
         if sensmaps is None:
@@ -233,7 +220,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         else:
             data = bart(1, pics_config , trj, data, sensmaps)
         data = np.abs(data)
-        data = data[:,::-1] # correct orientation
+
+    # seems to be necessary for correct orientation
+    data = data[:,::-1]
 
     # make sure that data is at least 3D
     while np.ndim(data) < 3:
@@ -289,6 +278,8 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
+        nc = data.shape[-1]
+
         if gpu:
             nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -g -m 1 -I'
@@ -296,16 +287,24 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
             nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -m 1 -I'
 
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
-        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
-        if sensmaps.ndim == 2:
-            sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
+        # Check if data is on Cartesian grid
+        cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz])
+
+        if cart_grid:
+            sensmaps = data[0]
+            sensmaps = sensmaps.reshape([nx,ny,nz,nc], order='f')
+            sensmaps = bart(1, ecalib_config, sensmaps)
         else:
-            sensmaps = cfftn(sensmaps, [0, 1, 2])
-        
-        while sensmaps.ndim < 4:
-            sensmaps = sensmaps[...,np.newaxis]
-        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+            sensmaps = bart(1, nufft_config, trj, data) # nufft
+            np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
+            if sensmaps.ndim == 2:
+                sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
+            else:
+                sensmaps = cfftn(sensmaps, [0, 1, 2])
+            
+            while sensmaps.ndim < 4:
+                sensmaps = sensmaps[...,np.newaxis]
+            sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
@@ -336,9 +335,6 @@ def sort_data(group, metadata, dmtx=None):
 
         # trajectory
         traj = np.swapaxes(acq.traj,0,1)[:3] # [samples, dims] to [dims, samples]
-        traj[0] *= fov_x / (2*np.pi) # rad/mm -> bart (dimensionless)
-        traj[1] *= fov_y / (2*np.pi)
-        traj[2] *= fov_z / (2*np.pi)
         trj.append(traj)
    
     # convert lists to numpy arrays
@@ -390,3 +386,38 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
     sensmap_coil = resize(sensmap_coil.real, newshape, anti_aliasing=True) + 1j*resize(sensmap_coil.imag, newshape, anti_aliasing=True)
 
     return sensmap_coil
+
+################################
+# Check if data is sampled on Cartesian grid
+################################
+
+def check_cart_grid(trj, matr_sz):
+    nx = matr_sz[0]
+    ny = matr_sz[1]
+    nz = matr_sz[2]
+
+    cart_grid = True
+    for k in range(trj.shape[1]):
+        # readout and phase encode could be either x or y
+        if(np.allclose(trj[0,k],trj[0,k,0], atol=1e-2) or np.allclose(trj[1,k],trj[1,k,0], atol=1e-2)):
+            continue
+        else:
+            cart_grid = False
+            break
+    if cart_grid:
+        for k in range(trj.shape[2]):
+            if(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) or np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2)):
+                continue
+            else:
+                cart_grid = False
+                break
+    if cart_grid and nz > 1:
+        # assume 2nd phase encode is on z
+        trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
+        for k in range(trj[3]):
+            if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
+                continue
+            else:
+                cart_grid = False
+
+    return cart_grid

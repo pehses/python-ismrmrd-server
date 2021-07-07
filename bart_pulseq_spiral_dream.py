@@ -30,6 +30,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process_spiral_dream(connection, config, metadata, prot_file):
     
+    logging.debug("Spiral DREAM reconstruction")
+    
     slc_sel = None
 
     # Insert protocol header
@@ -83,7 +85,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
     # for B1 Dream map
     process_raw.imagesets = [None] * n_contr
-    process_raw.fid_unfiltered = True
+    process_raw.rawdata = [None] * n_contr
     
     # different contrasts need different scaling
     process_raw.imascale = [None] * n_contr
@@ -222,10 +224,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
-    if prot_arrays['dream'].size > 2 :
-        logging.info("fid filter activated")
-        data_fid = data.copy() # for b1 filter
-    
     if gpu:
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
@@ -235,66 +233,40 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
-    force_pics = False
-    if sensmaps is None and force_pics:
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
-        sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
-        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
-
-    if sensmaps is None:
-        logging.debug("no pics necessary, just do standard recon")
-            
-        # bart nufft
-        data = bart(1, nufft_config, trj, data) # nufft
-        
-        # Sum of squares coil combination
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
-    else:
-        data = bart(1, pics_config , trj, data, sensmaps)
-        data = np.abs(data)
-        # make sure that data is at least 3d:
-        while np.ndim(data) < 3:
-            data = data[..., np.newaxis]
-    
-    if nz > rNz:
-        # remove oversampling in slice direction
-        data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
-
-    logging.debug("Image data is size %s" % (data.shape,))
-    
     # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
     dream = prot_arrays['dream']
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    process_raw.rawdata[group[0].idx.contrast] = data.copy() # complex rawdata of the two contrasts
+    
+    if (group[0].idx.contrast == int(n_contr-1-dream[0])) and (dream.size > 2): # if not Ste and global filter is activated -> no reconstruction of unfiltered fid
+        logging.info("fid filter activated")
+    else:
+        if sensmaps is None:                
+            # bart nufft
+            data = bart(1, nufft_config, trj, data)
+            # Sum of squares coil combination
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
+        else:
+            data = bart(1, pics_config , trj, data, sensmaps)
+            data = np.abs(data)
+            # make sure that data is at least 3d:
+        while np.ndim(data) < 3:
+            data = data[..., np.newaxis]
+        if nz > rNz:
+            # remove oversampling in slice direction
+            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+    
+        logging.debug("Image data is size %s" % (data.shape,))
     
     process_raw.imagesets[group[0].idx.contrast] = data.copy()
     full_set_check = all(elem is not None for elem in process_raw.imagesets)
     if full_set_check:
         logging.info("B1 map calculation using Dream")
         ste = np.asarray(process_raw.imagesets[int(dream[0])])
-        fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])])
-        
-        # image processing filter for fa-map
-        dil = np.zeros(fid.shape)
-        for nz in range(fid.shape[-1]):
-            # otsu
-            val = filters.threshold_otsu(fid[:,:,nz])
-            otsu = fid[:,:,nz] > val
-            # fill holes
-            imfill = morph.binary_fill_holes(otsu) * 1
-            # dilation
-            dil[:,:,nz] = morph.binary_dilation(imfill)
         
         if dream.size > 2 : # without filter: dream = ([ste_contr,flip_angle_ste])
             logging.info("Global filter approach")
-            
-            # save unfiltered fid if wanted
-            if process_raw.fid_unfiltered:
-                logging.debug("fid_unfiltered to scanner")
-                fid_unfilt = fid.copy()
-            else:
-                fid_unfilt = None
-            
             # Blurring compensation parameters
             alpha = dream[1]     # preparation FA
             tr = dream[2]        # [s]
@@ -304,36 +276,47 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
             # TI estimate (the time after DREAM preparation after which each k-space line is acquired):
             ti = 0
-            mean_alpha = calc_fa(ste.mean(), fid.mean())
+            ste_data = np.asarray(process_raw.rawdata[int(dream[0])])
+            fid_data = np.asarray(process_raw.rawdata[int(n_contr-1-dream[0])])
+            mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
+
             mean_beta = mean_alpha / alpha * beta
             for i,acq in enumerate(group):
                 ti = tr * (dummies + i) # [s]
                 # Global filter:
                 filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
                 # apply filter:
-                data_fid[:,:,i,:] *= filt
+                fid_data[:,:,i,:] *= filt
             # reco of fid:
             if sensmaps is None:
-                # bart nufft
-                fid = bart(1, nufft_config, trj, data_fid) # nufft
-                # Sum of squares coil combination
+                fid = bart(1, nufft_config, trj, fid_data)
                 fid = np.sqrt(np.sum(np.abs(fid)**2, axis=-1))
             else:
-                fid = bart(1, pics_config , trj, data_fid, sensmaps)
+                fid = bart(1, pics_config , trj, fid_data, sensmaps)
                 fid = np.abs(fid)
-                # make sure that data is at least 3d:
-                while np.ndim(fid) < 3:
+            while np.ndim(fid) < 3:
                     fid = fid[..., np.newaxis]         
             if nz > rNz:
-                # remove oversampling in slice direction
                 fid = fid[:,:,(nz - rNz)//2:-(nz - rNz)//2]
             # fa map:
             fa_map = calc_fa(abs(ste), abs(fid))
             data = fid.copy()
         else:
-            fa_map = calc_fa(abs(ste), abs(fid))
-            fid_unfilt = None
-        
+            fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
+       
+        # image processing filter for fa-map (use of filtered or unfiltered fid)
+        dil = np.zeros(fid.shape)
+        for nz in range(fid.shape[-1]):
+            # otsu
+            val = filters.threshold_otsu(fid[:,:,nz])
+            otsu = fid[:,:,nz] > val
+            # fill holes
+            imfill = morph.binary_fill_holes(otsu) * 1
+            # dilation
+            dil[:,:,nz] = morph.binary_dilation(imfill)
+                
+        # fa map:
+        fa_map = calc_fa(abs(ste), abs(fid))
         fa_map *= dil
         current_refvolt = metadata.userParameters.userParameterDouble[5].value_
         nom_fa = dream[1]
@@ -349,9 +332,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
         
         process_raw.imagesets = [None] * n_contr # free list
+        process_raw.rawdata   = [None] * n_contr # free list
     else:
         fa_map = None
-        fid_unfilt = None
         ref_volt = None
     
     # Normalize and convert to int16
@@ -395,20 +378,11 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                 image.attribute_string = xml
                 images.append(image)
         
-        if fid_unfilt is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(fid_unfilt[...,par].T, acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 3
-                image.slice = 0
-                image.attribute_string = xml
-                images.append(image)
-        
         if ref_volt is not None:
             for par in range(n_par):
                 image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
-                image.image_series_index = 4
+                image.image_series_index = 3
                 image.slice = 0
                 image.attribute_string = xml
                 images.append(image)
@@ -430,18 +404,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             image.attribute_string = xml
             images.append(image)
         
-        if fid_unfilt is not None:
-            image = ismrmrd.Image.from_array(fid_unfilt[...,0].T, acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 3
-            image.slice = 0
-            image.attribute_string = xml
-            images.append(image)
-        
         if ref_volt is not None:
             image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 4
+            image.image_series_index = 3
             image.slice = 0
             image.attribute_string = xml
             images.append(image)

@@ -25,6 +25,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process_cartesian_dream(connection, config, metadata, prot_file):
 
+    logging.debug("DREAM reconstruction")
+
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 

@@ -187,20 +187,22 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
 # the fov-shift from the Pulseq sequence is not correct 
 # tried to reapply it with the predicted trajectory, but also doesnt work properly
 # need to consider one grad_raster_time delay - in which direction???
-def fov_shift_spiral_reapply(acq, base_trj, matr_sz, res):
+def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     """ 
-    shift field of view of spiral data
+    re-apply FOV shift on spiral/noncartesian data
     first undo field of view shift with nominal, then reapply with predicted trajectory
+
+    IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
+               of the scanner is lagging behind be one gradient raster time (10 us).
+               For GIRF predicted Pulseq trajectories this is done in pulseq_prot.py
 
     acq: ISMRMRD acquisition
     base_trj: nominal trajectory
     matr_sz: matrix size
     res: resolution 
     """
-    rotmat = calc_rotmat(acq)
-    shift = pcs_to_gcs(np.asarray(acq.position), rotmat) / res
-    sig = acq.data[:]
-    pred_trj = acq.traj[:] # [samples, dims]
+    pred_trj = np.swapaxes(pred_trj,0,1) # [dims, samples]
+    base_trj = np.swapaxes(base_trj,0,1)
 
     if (abs(shift[0]) < 1e-2) and (abs(shift[1]) < 1e-2):
         # nothing to do
@@ -209,10 +211,10 @@ def fov_shift_spiral_reapply(acq, base_trj, matr_sz, res):
     kmax = int(matr_sz/2+0.5)
 
     # undo FOV shift from nominal traj
-    sig *= np.exp(-1j*(shift[0]*np.pi*base_trj[:,0]/kmax-shift[1]*np.pi*base_trj[:,1]/kmax))
+    sig *= np.exp(1j*(shift[0]*np.pi*base_trj[0]/kmax+shift[1]*np.pi*base_trj[1]/kmax))[np.newaxis]
 
     # redo FOV shift with predicted traj
-    sig *= np.exp(1j*(shift[0]*np.pi*pred_trj[:,0]/kmax-shift[1]*np.pi*pred_trj[:,1]/kmax))
+    sig *= np.exp(-1j*(shift[0]*np.pi*pred_trj[0]/kmax+shift[1]*np.pi*pred_trj[1]/kmax))[np.newaxis]
 
     return sig
 

@@ -72,7 +72,10 @@ def process(connection, config, metadata):
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
     # define variables for FOV shift
-    nsegments = metadata.userParameters.userParameterDouble[2].value_
+    try:
+        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
+    except:
+        nsegments = metadata.userParameters.userParameterDouble[2].value_
     matr_sz = metadata.encoding[0].encodedSpace.matrixSize.x
     res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz
 
@@ -533,10 +536,10 @@ def process_acs(group, metadata, dmtx=None):
         data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 8 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
             print("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 8 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
 
         refimg = cifftn(data, [0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)

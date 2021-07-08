@@ -157,9 +157,15 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
     prot_acq = prot.read_acquisition(acq_ctr)
 
     # Standard rotation matrix for Pulseq
-    dset_acq.phase_dir[:] = prot_acq.phase_dir[:]
-    dset_acq.read_dir[:] = prot_acq.read_dir[:]
-    dset_acq.slice_dir[:] = prot_acq.slice_dir[:]
+    # dset_acq.phase_dir[:] = prot_acq.phase_dir[:]
+    # dset_acq.read_dir[:] = prot_acq.read_dir[:]
+    # dset_acq.slice_dir[:] = prot_acq.slice_dir[:]
+
+    # WIP: matrix from measurement, that is converted to the right order based on test measurements
+    tmp = -1* np.asarray(dset_acq.phase_dir[:])
+    dset_acq.phase_dir[:] = np.asarray(dset_acq.read_dir[:])
+    dset_acq.read_dir[:] = tmp
+    dset_acq.slice_dir[:] = -1 * np.asarray(dset_acq.slice_dir[:])
 
     # encoding counters
     dset_acq.idx.kspace_encode_step_1 = prot_acq.idx.kspace_encode_step_1
@@ -311,7 +317,8 @@ def calc_traj(acq, hdr, ncol):
     gradtime += dt_grad/2 - dt_skope/2
 
     # align trajectory to scanner ADC
-    base_trj = intp_axis(adctime, gradtime, base_trj, axis=1)
+    # shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
+    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) 
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
     k0 = intp_axis(adctime, gradtime, k0, axis=0)
 

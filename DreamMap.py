@@ -120,7 +120,6 @@ def DREAM_filter_fid(alpha=60., beta=6., tr=3e-3, t1=2., ti=None):
     if filt is None:
         filt = 0
     #filt[np.isnan(ti)] = 0
-    print(filt)
     
     return filt
 

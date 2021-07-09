@@ -390,7 +390,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        logging.debug("image.image_index= %s" % (image.image_index))
         image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
         image.slice = 0
         image.attribute_string = xml

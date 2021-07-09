@@ -156,12 +156,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
 
     prot_acq = prot.read_acquisition(acq_ctr)
 
-    # Standard rotation matrix for Pulseq
-    # dset_acq.phase_dir[:] = prot_acq.phase_dir[:]
-    # dset_acq.read_dir[:] = prot_acq.read_dir[:]
-    # dset_acq.slice_dir[:] = prot_acq.slice_dir[:]
-
-    # WIP: matrix from measurement, that is converted to the right order based on test measurements
+    # convert positions for correct rotation matrix - this was experimentally validated on 20210709
+    # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
     tmp = -1* np.asarray(dset_acq.phase_dir[:])
     dset_acq.phase_dir[:] = np.asarray(dset_acq.read_dir[:])
     dset_acq.read_dir[:] = tmp
@@ -226,7 +222,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
             reco_trj = prot_acq.traj[:,:3]
             base_trj = reco_trj.copy()
         else:
-            reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full) # [samples, dims]
+            rotmat = calc_rotmat(dset_acq)
+            reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full, rotmat) # [samples, dims]
             dset_acq.traj[:,4] = k0.copy()
 
         # fill extended part of data with zeros
@@ -240,7 +237,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
         return base_trj
  
 
-def calc_traj(acq, hdr, ncol):
+def calc_traj(acq, hdr, ncol, rotmat):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
         acq: acquisition from hdf5 protocol file
@@ -256,7 +253,6 @@ def calc_traj(acq, hdr, ncol):
     dims = grad.shape[0]
 
     fov = hdr.encoding[0].reconSpace.fieldOfView_mm.x
-    rotmat = calc_rotmat(acq)
     dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value_
     
     # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI

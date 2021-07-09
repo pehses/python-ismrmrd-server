@@ -214,7 +214,7 @@ def process(connection, config, metadata):
                         # filter signal to avoid Gibbs Ringing
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
                         
-                        # Correct the global phase
+                        # Correct the global phase - WIP: phase navigators not working correctly atm
                         if offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]

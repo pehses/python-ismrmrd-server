@@ -229,7 +229,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
-        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector
+        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
         prot.close()
     

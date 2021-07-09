@@ -9,7 +9,8 @@ import base64
 from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, fov_shift_spiral, fov_shift, remove_os
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os
+from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 from reco_helper import filt_ksp
 from DreamMap import calc_fa, DREAM_filter_fid
 
@@ -77,7 +78,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     sensmaps = [None] * n_slc
     old_grid = []
     dmtx = None
-    base_trj_ = []
     refscans = [None] * n_slc
 
     # read protocol arrays
@@ -90,6 +90,14 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     # different contrasts need different scaling
     process_raw.imascale = [None] * n_contr
     
+    # parameters for reapplying FOV shift
+    try:
+        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
+    except:
+        nsegments = metadata.userParameters.userParameterDouble[2].value_
+    matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
+    res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
+
     try:
         for acq_ctr, item in enumerate(connection):
 
@@ -99,9 +107,8 @@ def process_spiral_dream(connection, config, metadata, prot_file):
             if isinstance(item, ismrmrd.Acquisition):
 
                 # insert acquisition protocol
+                # base_trj is used to correct FOV shift (see below)
                 base_trj = insert_acq(prot_file, item, acq_ctr)
-                if base_trj is not None: # base_trj is calculated e.g. for future trajectory comparisons
-                    base_trj_.append(base_trj)
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -146,11 +153,20 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)
+
+                    # for reapplying FOV shift (see below)
+                    pred_trj = item.traj[:]
+                    rotmat = calc_rotmat(item)
+                    shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
                 else:
                     # append data to first segment of ADC group
                     idx_lower = item.idx.segment * item.number_of_samples
                     idx_upper = (item.idx.segment+1) * item.number_of_samples
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:,idx_lower:idx_upper] = item.data[:]
+                if item.idx.segment == nsegments - 1:
+                    # Reapply FOV Shift with predicted trajectory
+                    sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
+                    acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -418,12 +434,14 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        # fov shift
-        rotmat = calc_rotmat(group[0])
-        if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
-        res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        data = fov_shift(data, shift)
+        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+        #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
+        # rotmat = calc_rotmat(group[0])
+        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
+        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
+        # data = fov_shift(data, shift)
 
         data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
 
@@ -469,9 +487,11 @@ def sort_spiral_data(group, metadata, dmtx=None):
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
         
-        # fov shift - use trajectory with x and y NOT switched
-        shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
-        sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
+        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+        #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
+        # shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
+        # sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
         
     np.save(debugFolder + "/" + "enc.npy", enc)
     

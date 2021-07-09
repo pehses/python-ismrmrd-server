@@ -10,7 +10,7 @@ from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os
-from reco_helper import fov_shift_spiral, fov_shift, fov_shift_spiral_reapply
+from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox
@@ -91,8 +91,8 @@ def process_spiral(connection, config, metadata, prot_file):
         nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
     except:
         nsegments = metadata.userParameters.userParameterDouble[2].value_
-    res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
+    res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     try:
         for acq_ctr, item in enumerate(connection):
@@ -139,6 +139,8 @@ def process_spiral(connection, config, metadata, prot_file):
 
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)
+
+                    # for reapplying FOV shift (see below)
                     pred_trj = item.traj[:]
                     rotmat = calc_rotmat(item)
                     shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
@@ -148,8 +150,9 @@ def process_spiral(connection, config, metadata, prot_file):
                     idx_upper = (item.idx.segment+1) * item.number_of_samples
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:,idx_lower:idx_upper] = item.data[:]
                 if item.idx.segment == nsegments - 1:
+                    # Reapply FOV Shift with predicted trajectory
                     sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
-                    acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig,pred_trj,base_trj,shift,nx)
+                    acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -311,6 +314,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
         # rotmat = calc_rotmat(group[0])
         # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
         # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
@@ -324,8 +328,8 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
 
         refimg = cifftn(data,axes=[0,1,2])
-
         np.save(debugFolder + "/" + "refimg.npy", refimg)
+
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -366,6 +370,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
         # shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
         # sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
 

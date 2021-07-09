@@ -196,10 +196,11 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
                of the scanner is lagging behind be one gradient raster time (10 us).
                For GIRF predicted Pulseq trajectories this is done in pulseq_prot.py
 
-    acq: ISMRMRD acquisition
-    base_trj: nominal trajectory
-    matr_sz: matrix size
-    res: resolution 
+    sig: signal data (dimensions as in ISMRMRD) 
+    pred_traj: predicted trajectory (dimensions as in ISMRMRD) 
+    base_trj: nominal trajectory (dimensions as in ISMRMRD)
+    shift: shift [x_shift, y_shift] in voxel
+    matr_sz: matrix size [x,y]
     """
     pred_trj = np.swapaxes(pred_trj,0,1) # [dims, samples]
     base_trj = np.swapaxes(base_trj,0,1)
@@ -208,13 +209,14 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
         # nothing to do
         return sig
 
-    kmax = int(matr_sz/2+0.5)
+    kmax_x = int(matr_sz[0]/2+0.5)
+    kmax_y = int(matr_sz[1]/2+0.5)
 
     # undo FOV shift from nominal traj
-    sig *= np.exp(1j*(shift[0]*np.pi*base_trj[0]/kmax+shift[1]*np.pi*base_trj[1]/kmax))[np.newaxis]
+    sig *= np.exp(1j*(shift[0]*np.pi*base_trj[0]/kmax_x+shift[1]*np.pi*base_trj[1]/kmax_y))[np.newaxis]
 
     # redo FOV shift with predicted traj
-    sig *= np.exp(-1j*(shift[0]*np.pi*pred_trj[0]/kmax+shift[1]*np.pi*pred_trj[1]/kmax))[np.newaxis]
+    sig *= np.exp(-1j*(shift[0]*np.pi*pred_trj[0]/kmax_x+shift[1]*np.pi*pred_trj[1]/kmax_y))[np.newaxis]
 
     return sig
 

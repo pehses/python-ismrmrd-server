@@ -11,20 +11,12 @@ import subprocess
 from cfft import cfftn, cifftn
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, fov_shift_spiral, fov_shift, remove_os, filt_ksp
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
+from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
+
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
-
-Short Comments on FOV Shifting and rotations:
-    - Translational shifts should not be acticvated in the GUI, when using the Pulseq Sequence.
-      However in-plane FOV shifts can be selected also without activating FOV positioning and are applied in this reco.
-
-    - Rotations are not yet possible as only the standard rotation matrix for Pulseq is considered and taken from the protocol dile.
-      The standard rotation matrix was obtained by simulating predefined gradients.
-      To implement rotations selected in the GUI, the correct rotation matrix has to be obtained from the dataset ISMRMRD file coming from the scanner.
-      However, that rotation matrix seems to be incorrect, as it switches phase and read gradients. It seems like an additional transformation would have to be applied.
-
 """
 
 # Folder for sharing data/debugging
@@ -71,13 +63,13 @@ def process(connection, config, metadata):
     # Get additional arrays from protocol file - e.g. for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
-    # define variables for FOV shift
+    # parameters for reapplying FOV shift
     try:
         nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
     except:
         nsegments = metadata.userParameters.userParameterDouble[2].value_
-    matr_sz = metadata.encoding[0].encodedSpace.matrixSize.x
-    res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz
+    matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
+    res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     # parameters for B0 correction
     dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
@@ -126,7 +118,6 @@ def process(connection, config, metadata):
     sensmaps = [None] * n_slc
     dmtx = None
     offres = None 
-    base_trj_ = []
 
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
@@ -144,11 +135,8 @@ def process(connection, config, metadata):
             if isinstance(item, ismrmrd.Acquisition):
 
                 # insert acquisition protocol
-                # base_trj is calculated e.g. for future trajectory comparisons
-                # WIP: or to revert the FOV shift from the Pulseq sequence (delay von + oder - einer grad raster time beachten)
+                # base_trj is used to correct FOV shift (see below)
                 base_trj = insert_acq(prot_file, item, acq_ctr)
-                if base_trj is not None:
-                    base_trj_.append(base_trj)
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -189,9 +177,14 @@ def process(connection, config, metadata):
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
                         nsamples = item.number_of_samples
-                        t_vec = t_min + dwelltime * np.arange(nsamples)
+                        t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
+
+                        # for reapplying FOV shift (see below)
+                        pred_trj = item.traj[:]
+                        rotmat = calc_rotmat(item)
+                        shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -205,14 +198,18 @@ def process(connection, config, metadata):
                         else:
                             data = apply_prewhitening(acqGroup[item.idx.slice][item.idx.contrast][-1].data[:], dmtx)
 
-                        # In-Plane FOV-shift
-                        rotmat = calc_rotmat(item)
-                        shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
-                        traj = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
-                        data = fov_shift_spiral(data, traj, shift, matr_sz)
+                        # Reapply FOV Shift with predicted trajectory
+                        data = fov_shift_spiral_reapply(data, pred_trj, base_trj, shift, matr_sz)
+                        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+                        #--- However leave this code to fall back to reco shifts, if problems occur ---#
+                        #--- and for reconstruction of old data                                     ---#
+                        # rotmat = calc_rotmat(item)
+                        # shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
+                        # data = fov_shift_spiral(data, traj, shift, matr_sz[0])
 
                         # filter signal to avoid Gibbs Ringing
-                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
+                        traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
+                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
                         # Correct the global phase - WIP: phase navigators not working correctly atm
                         if offres is not None:
@@ -526,12 +523,14 @@ def process_acs(group, metadata, dmtx=None):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        # fov shift
-        rotmat = calc_rotmat(group[0])
-        if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan has no rotmat in protocol
-        res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        data = fov_shift(data, shift)
+        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+        #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
+        # rotmat = calc_rotmat(group[0])
+        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan has no rotmat in protocol
+        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
+        # data = fov_shift(data, shift)
 
         data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':

@@ -11,7 +11,7 @@ from cfft import cfftn, cifftn
 import base64
 
 from bart import bart
-from reco_helper import calculate_prewhitening, apply_prewhitening, fov_shift, calc_rotmat, pcs_to_gcs, remove_os
+from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
 
 # Folder for sharing data/debugging
@@ -238,12 +238,14 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        # fov shift
-        rotmat = calc_rotmat(group[0])
-        if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if Pulseq rotmat not in protocol
-        res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        data = fov_shift(data, shift)
+        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+        #--- However leave this code to fall back to reco shifts, if problems occur ---#
+        #--- and for reconstruction of old data                                     ---#
+        # rotmat = calc_rotmat(group[0])
+        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if Pulseq rotmat not in protocol
+        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
+        # data = fov_shift(data, shift)
 
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
@@ -261,12 +263,14 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     data = sort_into_kspace(group, metadata, dmtx)
     data = remove_os(data)
 
-    # fov shift
-    rotmat = calc_rotmat(group[0])
-    if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if Pulseq rotmat not in protocol
-    res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-    shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-    data = fov_shift(data, shift)
+    #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
+    #--- However leave this code to fall back to reco shifts, if problems occur ---#
+    #--- and for reconstruction of old data                                     ---#
+    # rotmat = calc_rotmat(group[0])
+    # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if Pulseq rotmat not in protocol
+    # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+    # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
+    # data = fov_shift(data, shift)
 
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)

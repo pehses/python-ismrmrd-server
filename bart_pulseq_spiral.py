@@ -87,10 +87,7 @@ def process_spiral(connection, config, metadata, prot_file):
     process_raw.imascale = [None] * 256
 
     # parameters for reapplying FOV shift
-    try:
-        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-    except:
-        nsegments = metadata.userParameters.userParameterDouble[2].value_
+    nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
     matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 

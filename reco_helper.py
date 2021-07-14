@@ -196,9 +196,9 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
                of the scanner is lagging behind be one gradient raster time (10 us).
                For GIRF predicted Pulseq trajectories this is done in pulseq_prot.py
 
-    sig: signal data (dimensions as in ISMRMRD) 
-    pred_traj: predicted trajectory (dimensions as in ISMRMRD) 
-    base_trj: nominal trajectory (dimensions as in ISMRMRD)
+    sig: signal data (dimensions as in ISMRMRD [coils, samples]) 
+    pred_traj: predicted trajectory (dimensions as in ISMRMRD [samples, dims]) 
+    base_trj: nominal trajectory (dimensions as in ISMRMRD [samples, dims])
     shift: shift [x_shift, y_shift] in voxel
     matr_sz: matrix size [x,y]
     """

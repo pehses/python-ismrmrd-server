@@ -90,6 +90,12 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
         dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
         dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
+    else:
+        # compatibility with older datasets, where the segment encoding limit parameter was not used
+        try:
+            dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value_ - 1
+        except:
+            pass
 
     prot.close()
 
@@ -203,7 +209,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
         # calculate full number of samples
         nsamples = dset_acq.number_of_samples
         try:
-            # preferred parameter for segments, user parameter is kept for compatibility
+            # user parameter is kept for compatibility (see insert_hdr)
             nsegments = prot_hdr.encoding[0].encodingLimits.segment.maximum + 1
         except:
             nsegments = prot_hdr.userParameters.userParameterDouble[2].value_

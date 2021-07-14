@@ -64,10 +64,7 @@ def process(connection, config, metadata):
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
     # parameters for reapplying FOV shift
-    try:
-        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-    except:
-        nsegments = metadata.userParameters.userParameterDouble[2].value_
+    nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
     matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
@@ -205,7 +202,7 @@ def process(connection, config, metadata):
                         #--- and for reconstruction of old data                                     ---#
                         # rotmat = calc_rotmat(item)
                         # shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
-                        # data = fov_shift_spiral(data, traj, shift, matr_sz[0])
+                        # data = fov_shift_spiral(data, np.swapaxes(pred_trj,0,1), shift, matr_sz[0])
 
                         # filter signal to avoid Gibbs Ringing
                         traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)

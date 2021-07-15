@@ -213,7 +213,7 @@ def process(connection, config, metadata):
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                             global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
-                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(1j*global_phs)
+                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
                             offres = None
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):

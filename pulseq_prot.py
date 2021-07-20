@@ -97,6 +97,11 @@ def insert_hdr(prot_file, metadata):
         except:
             pass
 
+    # acceleration
+    if prot_e1.parallelImaging is not None:
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
+
     prot.close()
 
 def get_ismrmrd_arrays(prot_file):

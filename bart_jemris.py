@@ -155,6 +155,9 @@ def process(connection, config, metadata, prot_file=None):
 
 def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
+    force_pi = False # force parallel imaging recon by calculating sensitivity maps from raw data
+    use_jemris_sens = True # take sensmaps from Jemris - problem: orientation is not clear, depends on how kspace is acquired -> sensmaps might have to be rotated
+
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -163,16 +166,15 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     nc = data.shape[-1]
 
     if gpu:
-        nufft_config = 'nufft -g -i -m 15 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 8 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
     else:
-        nufft_config = 'nufft -i -m 15 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 8 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 
-    # force parallel imaging recon by calculating sensitivity maps from raw data
-    force_pi = False
+    # Optional: Calculate sensmaps from raw data if selected
     if sensmaps is None and force_pi:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         if sensmaps.shape[-1] != nc:
@@ -181,11 +183,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         
-    # Take sensmaps from Jemris, if more than one coil was simulated
-    if sensmaps is None and sensmaps_jemris and nc>1:
+    # Optional: Take sensmaps from Jemris, if available
+    if use_jemris_sens and sensmaps_jemris:
         sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
         if nz==1: # 2D
-            sensmaps = sensmaps[group[0].idx.slice]
+            sensmaps = sensmaps[0]
             sensmaps = np.transpose(sensmaps[np.newaxis], [2,1,0,3]) # [x,y,1,coils]
         else: # 3D
             sensmaps = np.transpose(sensmaps, [2,1,0,3]) # [x,y,z,coils]
@@ -193,14 +195,15 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
 
     # Recon
     cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid
+    cart_grid = False # always use bart
     if cart_grid and sensmaps is None:
-        logging.debug("Cartesian acquisition and no sensivity maps. Do normal FFT.")
+        logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
         data = data[0]
         data = data.reshape([nx,ny,nz,nc], order='f')
         data = cifftn(data, axes=[0,1,2])
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
-        print("Non-Cartesian acquisition or sensitivity maps provided. Do BART reconstruction.")
+        print("Do BART reconstruction.")
         if sensmaps is None:
             data = bart(1, nufft_config, trj, data) # nufft
             if nc != 1:

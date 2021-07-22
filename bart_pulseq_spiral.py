@@ -128,11 +128,11 @@ def process_spiral(connection, config, metadata, prot_file):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
+                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
+                        acsGroup[item.idx.slice].clear()
                     continue
-                elif sensmaps[item.idx.slice] is None:
-                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
-                    acsGroup[item.idx.slice].clear()
 
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)

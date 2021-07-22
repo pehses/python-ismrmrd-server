@@ -166,11 +166,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     nc = data.shape[-1]
 
     if gpu:
-        nufft_config = 'nufft -g -i -m 8 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
     else:
-        nufft_config = 'nufft -i -m 8 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 

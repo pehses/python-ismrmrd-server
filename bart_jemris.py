@@ -166,11 +166,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     nc = data.shape[-1]
 
     if gpu:
-        nufft_config = 'nufft -g -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, ny, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
     else:
-        nufft_config = 'nufft -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, ny, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -i 50 -t'
 
@@ -194,7 +194,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
-    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid
+    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid // not used
     cart_grid = False # always use bart
     if cart_grid and sensmaps is None:
         logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
@@ -203,7 +203,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         data = cifftn(data, axes=[0,1,2])
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
-        print("Do BART reconstruction.")
+        logging.debug("Do BART reconstruction.")
         if sensmaps is None:
             data = bart(1, nufft_config, trj, data) # nufft
             if nc != 1:
@@ -301,10 +301,6 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
 
 def sort_data(group, metadata, dmtx=None):
     
-    fov_x = metadata.encoding[0].reconSpace.fieldOfView_mm.x
-    fov_y = metadata.encoding[0].reconSpace.fieldOfView_mm.y
-    fov_z = metadata.encoding[0].reconSpace.fieldOfView_mm.z
-
     sig = list()
     trj = list()
     for acq in group:

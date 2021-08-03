@@ -95,6 +95,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
+    base_trj = None
     try:
         for acq_ctr, item in enumerate(connection):
 
@@ -105,7 +106,9 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_trj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr)
+                if base_traj is not None:
+                    base_trj = base_traj
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):

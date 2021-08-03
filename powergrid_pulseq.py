@@ -123,6 +123,7 @@ def process(connection, config, metadata):
     else:
         shotimgs = None
 
+    base_trj = None
     try:
         for acq_ctr, item in enumerate(connection):
 
@@ -133,7 +134,9 @@ def process(connection, config, metadata):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_trj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr)
+                if base_traj is not None:
+                    base_trj = base_traj
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):

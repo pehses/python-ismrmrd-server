@@ -57,7 +57,7 @@ def process(connection, config, metadata):
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
         bart_pulseq_cartesian.process_cartesian(connection, config, metadata, prot_file)
-    elif trajtype == 'other': # WIP: support Jemris sequences (not tested yet)
+    elif trajtype == 'other':
         pass
         import importlib
         importlib.reload(bart_jemris)

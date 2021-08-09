@@ -181,7 +181,7 @@ def process(connection, config, metadata):
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
 
-                        # for reapplying FOV shift (see below)
+                        # variables for reapplying FOV shift (see below)
                         pred_trj = item.traj[:]
                         rotmat = calc_rotmat(item)
                         shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
@@ -227,8 +227,7 @@ def process(connection, config, metadata):
                         if shotimgs is not None:
                             shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps[item.idx.slice])
 
-                # When all acquisitions are processed, write them to file for PowerGrid Reco,
-                # which returns images that are sent back to the client.
+                # Process acquisitions with PowerGrid
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
                     logging.info("Processing a group of k-space data")
                     images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel)
@@ -371,7 +370,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
-    ts = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # one time segment per ms
+    ts = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
     dset_tmp.close()
     acqGroup.clear() # free memory
 

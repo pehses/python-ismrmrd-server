@@ -123,6 +123,11 @@ def process(connection, config, metadata):
     else:
         shotimgs = None
 
+    if 'Directions' in prot_arrays:
+        dirs = prot_arrays['Directions']
+
+    phs = None
+    phs_ref = [None] * n_slc
     base_trj = None
     try:
         for acq_ctr, item in enumerate(connection):
@@ -152,17 +157,34 @@ def process(connection, config, metadata):
                     del(noise_data)
                     noiseGroup.clear()
                 
-                # Check for additional flags
+                # Phase correction scans (WIP: phase navigators not working correctly atm) & sync scans
+                long_nav = True
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
-                    if slc_sel is None or item.idx.slice == slc_sel:
-                        # calculate global phase slope from phase correction scans 
-                        data = item.data[:]
-                        phsdiff = data[:,1:] * np.conj(data[:,:-1])
-                        phsdiff = np.angle(np.sum(phsdiff))  # weighted sum over coils
-                        offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
+                    if long_nav:
+                        # long navigator
+                        if phs is None:
+                            phs = []
+                        phs.append(item.data[:])
+                    else:
+                        # short navigator
+                        if item.idx.contrast == 0:
+                            phs_ref[item.idx.slice] = item.data[:]
+                        else:
+                            data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
+                            phsdiff = data[:,1:] * np.conj(data[:,:-1]) # calculate global phase slope
+                            phsdiff = np.angle(np.sum(phsdiff))  # sum weights coils by signal magnitude
+                            offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
+                
+                # Calculate phase term from phase correction scans
+                if type(phs) == list:
+                    phs = np.asarray(phs)
+                    phs = np.swapaxes(phs,0,1) # [coils, 4*segments, samples]
+                    phs = phs.reshape([phs.shape[0], phs.shape[1]//nsegments, phs.shape[2]*nsegments])
+                    phs = phs * np.conj(phs[:,0,np.newaxis]) # subtract reference phase
+                    phs = np.unwrap(np.angle(np.sum(phs,axis=0)[1:])) # weight coils
 
                 if slc_sel is None or item.idx.slice == slc_sel:
                     # Process reference scans
@@ -212,11 +234,14 @@ def process(connection, config, metadata):
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
                         # Correct the global phase - WIP: phase navigators not working correctly atm
+                        if long_nav and item.idx.contrast > 0:
+                            phs_dir = np.sum(phs * dirs[item.idx.contrast-1,:,np.newaxis], axis=0)
+                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phs_dir)
                         if offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                             global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
-                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
+                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
                             offres = None
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
@@ -292,6 +317,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Write header
+    sms_factor = metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+    if sms_factor > 1:
+        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
+        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
     if slc_sel is not None:
         metadata.encoding[0].encodingLimits.slice.maximum = 0
     if avg_before:
@@ -317,7 +346,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     if slc_sel is not None:
         sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
     else:
-        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - only tested for 2D, nx/ny might be changed depending on orientation
+        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
+        if sms_factor > 1:
+            sens_cpy = sens.copy()
+            sens = np.zeros([sens_cpy.shape[0]//sms_factor, sens_cpy.shape[1], sens_cpy.shape[2]*sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]])
+            for slc in range(sens_cpy.shape[0]):
+                sens[slc%sms_factor,:,slc//sms_factor] = sens_cpy[slc,:,0] # reshaping for sms imaging, sensmaps for one acquisition are stored at nz
+            sens = np.swapaxes(sens,0,2)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary
@@ -412,7 +447,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
     try:
-        subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # logging.debug(process.stdout)
     except subprocess.CalledProcessError as e:
         logging.debug(e.stdout)
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")

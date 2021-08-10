@@ -349,10 +349,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
         if sms_factor > 1:
             sens_cpy = sens.copy()
-            sens = np.zeros([sens_cpy.shape[0]//sms_factor, sens_cpy.shape[1], sens_cpy.shape[2]*sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]])
+            slices_eff = sens_cpy.shape[0]//sms_factor
+            sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=np.complex128)
             for slc in range(sens_cpy.shape[0]):
-                sens[slc%sms_factor,:,slc//sms_factor] = sens_cpy[slc,:,0] # reshaping for sms imaging, sensmaps for one acquisition are stored at nz
-            sens = np.swapaxes(sens,0,2)
+                sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] # reshaping for sms imaging, sensmaps for one acquisition are stored at nz
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary

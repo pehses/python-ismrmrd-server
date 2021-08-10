@@ -168,11 +168,11 @@ def process(connection, config, metadata):
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                         acsGroup[item.idx.slice].append(item)
+                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) # [nx,ny,nz,nc]
+                            acsGroup[item.idx.slice].clear()
                         continue
-                    elif sensmaps[item.idx.slice] is None:
-                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) # [nx,ny,nz,nc]
-                        acsGroup[item.idx.slice].clear()
 
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
@@ -421,13 +421,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     data = np.load(pg_dir + "/images_pg.npy")
     data = np.abs(data)
 
-    ### old implementation with pybind
-    # data = PowerGridIsmrmrd(inFile=tmp_file, outFile=debug_pg+"/img", timesegs=20, niter=10, nShots=n_shots, beta=0, 
-                                # ts_adapt=False, TSInterp='hanning', FourierTrans='NUFFT', pcSENSE=pcSENSE)
-    # shapes = data["shapes"] 
-    # data = np.asarray(data["img_data"]).reshape(shapes)
-    # data = np.abs(data)
-
     """
     """
 
@@ -531,7 +524,7 @@ def process_acs(group, metadata, dmtx=None):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
+        data = np.swapaxes(data,0,1) # in gre_refscan sequence read and phase are changed
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?

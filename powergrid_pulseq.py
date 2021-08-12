@@ -171,9 +171,10 @@ def process(connection, config, metadata):
                             phs_ref[item.idx.slice] = item.data[:]
                         else:
                             data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
-                            phsdiff = data[:,1:] * np.conj(data[:,:-1]) # calculate global phase slope
-                            phsdiff = np.angle(np.sum(phsdiff))  # sum weights coils by signal magnitude
-                            offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
+                            data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
+                            phs =  np.unwrap(np.angle(data_sum)) # calculate global phase slope
+                            phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
+                            offres = phs_slope / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -405,7 +406,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
-    ts = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
+    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
     acqGroup.clear() # free memory
 
@@ -424,15 +427,18 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
+    mpi = True
+    temp_intp = 'hanning' # hanning / histo / minmax
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts // 2
+
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
-    mpi = True
     pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
     import psutil
     cores = psutil.cpu_count(logical = False) # number of physical cores
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:

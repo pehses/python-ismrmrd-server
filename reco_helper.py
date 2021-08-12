@@ -24,7 +24,7 @@ def calculate_prewhitening(noise, scale_factor=1.0):
     R /= np.mean(abs(np.diag(R)))
     R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
     # R = sqrtm(np.linalg.inv(R))
-    R = np.linalg.cholesky(np.linalg.inv(R))
+    R = np.linalg.inv(np.linalg.cholesky(R))
 
     return R
 

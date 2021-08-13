@@ -461,7 +461,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     # Image data is saved as .npy
     data = np.load(pg_dir + "/images_pg.npy")
-    data = np.abs(data)
+    # data = np.abs(data) # WIP: Save as complex for now as script is not running @scanner
 
     """
     """
@@ -482,8 +482,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
     if n_bval > 0:
         shp = data.shape
-        b0 = np.expand_dims(data[:,0], 1)
-        diffw_imgs = data[:,1:].reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        b0 = np.expand_dims(np.abs(data[:,0]), 1)
+        diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
         dsets.append(b0)
         dsets.append(diffw_imgs)
     else:
@@ -498,10 +498,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         dsets.append(adc_maps)
 
     # Normalize and convert to int16
-    for k in range(len(dsets)):
-        dsets[k] *= 32767 * 0.8 / dsets[k].max()
-        dsets[k] = np.around(dsets[k])
-        dsets[k] = dsets[k].astype(np.int16)
+    # for k in range(len(dsets)):
+    #     dsets[k] *= 32767 * 0.8 / dsets[k].max()
+    #     dsets[k] = np.around(dsets[k])
+    #     dsets[k] = dsets[k].astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -572,10 +572,10 @@ def process_acs(group, metadata, dmtx=None):
         data = np.swapaxes(data,0,1) # in gre_refscan sequence read and phase are changed
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data) # ESPIRiT calibration (c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24))
         else:
             print("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data)  # ESPIRiT calibration
 
         refimg = cifftn(data, [0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)

@@ -156,7 +156,7 @@ def process(connection, config, metadata, prot_file=None):
 def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
     force_pi = False # force parallel imaging recon by calculating sensitivity maps from raw data
-    use_jemris_sens = True # take sensmaps from Jemris - problem: orientation is not clear, depends on how kspace is acquired -> sensmaps might have to be rotated
+    use_jemris_sens = True # take sensmaps from Jemris
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y

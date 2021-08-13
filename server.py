@@ -8,10 +8,6 @@ import multiprocessing
 import ismrmrd.xsd
 import importlib
 
-import simplefft
-import invertcontrast
-import analyzeflow
-
 class Server:
     """
     Something something docstring.
@@ -76,10 +72,13 @@ class Server:
             # Decide what program to use based on config
             # If not one of these explicit cases, try to load file matching name of config
             if (config == "simplefft"):
+                import simplefft
+                importlib.reload(simplefft)
                 logging.info("Starting simplefft processing based on config")
                 simplefft.process(connection, config, metadata)
             elif (config == "bart_pics"):
                 import bart_pics
+                importlib.reload(bart_pics)
                 logging.info("Starting simplefft_bart processing based on config")
                 bart_pics.process(connection, config, metadata)
             elif (config == "bart_spiral"):
@@ -103,9 +102,13 @@ class Server:
                 logging.info("Starting powergrid_pulseq processing based on config")
                 powergrid_pulseq.process(connection, config, metadata)
             elif (config == "invertcontrast"):
+                import invertcontrast
+                importlib.reload(invertcontrast)
                 logging.info("Starting invertcontrast processing based on config")
                 invertcontrast.process(connection, config, metadata)
             elif (config == "analyzeflow"):
+                import analyzeflow
+                importlib.reload(analyzeflow)
                 logging.info("Starting analyzeflow processing based on config")
                 analyzeflow.process(connection, config, metadata)
             elif (config == "null"):

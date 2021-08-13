@@ -504,11 +504,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         dsets[k] = dsets[k].astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
-        meta = ismrmrd.Meta({'DataRole':               'Image',
-                            'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                            'WindowCenter':           '16384',
-                            'WindowWidth':            '32768'})
-        xml = meta.serialize()
+    meta = ismrmrd.Meta({'DataRole':               'Image',
+                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                        'WindowCenter':           '16384',
+                        'WindowWidth':            '32768',
+                        'PG_Options':              pg_opts,
+                        'Field Map':               fmap['name'].item()})
+
+    xml = meta.serialize()
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):

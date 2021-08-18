@@ -116,15 +116,16 @@ def process(connection, config, metadata):
     dmtx = None
     offres = None 
 
-    if "b_values" in prot_arrays and n_intl > 1:
-        # we use the contrast index here to get the PhaseMaps into the correct order
-        # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
-    else:
-        shotimgs = None
+    shotimgs = None
+    if "b_values" in prot_arrays:
+        bvals = prot_arrays['b_values']
+        if n_intl > 1:
+            # we use the contrast index here to get the PhaseMaps into the correct order
+            # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
+            shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
 
     if 'Directions' in prot_arrays:
-        dirs = prot_arrays['Directions']
+        diff_dirs = prot_arrays['Directions']
 
     phs = None
     phs_ref = [None] * n_slc
@@ -235,8 +236,11 @@ def process(connection, config, metadata):
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
                         # Correct the global phase - WIP: phase navigators not working correctly atm
-                        if long_nav and item.idx.contrast > 0:
-                            phs_dir = np.sum(phs * dirs[item.idx.contrast-1,:,np.newaxis], axis=0)
+                        if long_nav and phs is not None and item.idx.contrast > 0:
+                            bval_ix = (item.idx.contrast - 1) // len(diff_dirs) + 1
+                            frac_bval = np.sqrt(bvals[bval_ix] / max(bvals))
+                            diff_dir = (item.idx.contrast - 1) % len(diff_dirs)
+                            phs_dir = np.sum(phs * diff_dirs[diff_dir,:,np.newaxis], axis=0) * frac_bval
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phs_dir)
                         if offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
@@ -319,6 +323,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     # Write header
     sms_factor = metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+    if sms_factor > 1 and slc_sel is not None:
+        raise ValueError("SMS reconstruction is not possible for single slices.")
     if sms_factor > 1:
         metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
         metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
@@ -461,7 +467,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     # Image data is saved as .npy
     data = np.load(pg_dir + "/images_pg.npy")
-    # data = np.abs(data) # WIP: Save as complex for now as script is not running @scanner
+    data = np.abs(data)
 
     """
     """
@@ -498,10 +504,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         dsets.append(adc_maps)
 
     # Normalize and convert to int16
-    # for k in range(len(dsets)):
-    #     dsets[k] *= 32767 * 0.8 / dsets[k].max()
-    #     dsets[k] = np.around(dsets[k])
-    #     dsets[k] = dsets[k].astype(np.int16)
+    for k in range(len(dsets)):
+        dsets[k] *= 32767 * 0.8 / dsets[k].max()
+        dsets[k] = np.around(dsets[k])
+        dsets[k] = dsets[k].astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',

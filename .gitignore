@@ -6,7 +6,7 @@
 *.tar
 *.zip
 data/
-.vscode
+.vscode/settings.json
 docker/bart_cuda/spiraltraj/
 docker/bart/spiraltraj/
 docker/bart_pg_cpu/spiraltraj/

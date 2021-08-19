@@ -44,6 +44,8 @@ def process(connection, config, metadata):
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
+    if skope:
+        prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
@@ -355,11 +357,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     else:
         sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
         if sms_factor > 1:
-            sens_cpy = sens.copy()
-            slices_eff = sens_cpy.shape[0]//sms_factor
-            sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=np.complex128)
-            for slc in range(sens_cpy.shape[0]):
-                sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] # reshaping for sms imaging, sensmaps for one acquisition are stored at nz
+            sens = reshape_sens_sms(sens, sms_factor)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary
@@ -796,3 +794,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     kspace = np.transpose(kspace, [3, 0, 1, 2])
 
     return kspace
+
+def reshape_sens_sms(sens, sms_factor):
+    # WIP: is this correct???
+    # reshape sensmaps array for sms imaging, sensmaps for one acquisition are stored at nz
+    sens_cpy = sens.copy() # [slices, coils, nz, ny, nx]
+    slices_eff = sens_cpy.shape[0]//sms_factor
+    sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=np.complex128)
+    for slc in range(sens_cpy.shape[0]):
+        sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] 
+    return sens

@@ -800,7 +800,7 @@ def reshape_sens_sms(sens, sms_factor):
     # reshape sensmaps array for sms imaging, sensmaps for one acquisition are stored at nz
     sens_cpy = sens.copy() # [slices, coils, nz, ny, nx]
     slices_eff = sens_cpy.shape[0]//sms_factor
-    sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=np.complex128)
+    sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=sens_cpy.dtype)
     for slc in range(sens_cpy.shape[0]):
         sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] 
     return sens

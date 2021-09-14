@@ -315,10 +315,14 @@ def calc_traj(acq, hdr, ncol, rotmat):
 
     # set z-axis if trajectory is two-dimensional
     if dims == 2:
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z
+        sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+        if sms_factor > 1:
+            nz = sms_factor
+        else:
+            nz = hdr.encoding[0].encodedSpace.matrixSize.z
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
-        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])
+        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])            
 
     # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
     gradtime += dt_grad/2 - dt_skope/2

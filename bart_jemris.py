@@ -9,9 +9,9 @@ from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
 from pulseq_prot import insert_hdr, insert_acq
 
-""" Reconstruction of simulation data from Jemris with the BART toolbox
-    WIP: support also Pulseq data acquired with Jemris sequences
-
+""" Reconstruction of simulation data from Jemris
+    and of scanner data acquired with JEMRIS sequences
+    with the BART toolbox    
 """
 
 

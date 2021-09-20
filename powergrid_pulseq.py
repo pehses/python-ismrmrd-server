@@ -160,35 +160,21 @@ def process(connection, config, metadata):
                     del(noise_data)
                     noiseGroup.clear()
                 
-                # Phase correction scans (WIP: phase navigators not working correctly atm) & sync scans
-                long_nav = True
+                # Phase correction scans (WIP: phase navigators not working correctly atm)
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
-                    if long_nav:
-                        # long navigator
-                        if phs is None:
-                            phs = []
-                        phs.append(item.data[:])
+                    if item.idx.contrast == 0:
+                        phs_ref[item.idx.slice] = item.data[:]
                     else:
-                        # short navigator
-                        if item.idx.contrast == 0:
-                            phs_ref[item.idx.slice] = item.data[:]
-                        else:
-                            data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
-                            data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
-                            phs =  np.unwrap(np.angle(data_sum)) # calculate global phase slope
-                            phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
-                            offres = phs_slope / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
+                        data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
+                        data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
+                        phs =  np.unwrap(np.angle(data_sum)) # calculate global phase slope
+                        phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
+                        offres = phs_slope / 1e-6 # 1 us dwelltime of phase correction scans
                     continue
+
+                # Skope sync scans
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
-                
-                # Calculate phase term from phase correction scans
-                if type(phs) == list:
-                    phs = np.asarray(phs)
-                    phs = np.swapaxes(phs,0,1) # [coils, 4*segments, samples]
-                    phs = phs.reshape([phs.shape[0], phs.shape[1]//nsegments, phs.shape[2]*nsegments])
-                    phs = phs * np.conj(phs[:,0,np.newaxis]) # subtract reference phase
-                    phs = np.unwrap(np.angle(np.sum(phs,axis=0)[1:])) # weight coils
 
                 if slc_sel is None or item.idx.slice == slc_sel:
                     # Process reference scans
@@ -238,12 +224,6 @@ def process(connection, config, metadata):
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
                         # Correct the global phase - WIP: phase navigators not working correctly atm
-                        if long_nav and phs is not None and item.idx.contrast > 0:
-                            bval_ix = (item.idx.contrast - 1) // len(diff_dirs) + 1
-                            frac_bval = np.sqrt(bvals[bval_ix] / max(bvals))
-                            diff_dir = (item.idx.contrast - 1) % len(diff_dirs)
-                            phs_dir = np.sum(phs * diff_dirs[diff_dir,:,np.newaxis], axis=0) * frac_bval
-                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*phs_dir)
                         if offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]

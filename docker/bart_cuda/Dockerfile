@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.1-devel-ubuntu20.04 AS mrd_converter
+FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS mrd_converter
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -52,19 +52,19 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && git clone https://github.com/mavel101/bart.git \
+     && git clone https://github.com/mrirecon/bart \
      && cd bart \
-     && git checkout makefile_mv \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
      && echo CUDA=1 >> Makefile.local \
      && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
+     && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
      && make install
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM nvidia/cuda:11.1-devel-ubuntu20.04
+FROM nvidia/cuda:11.4.2-runtime-ubuntu20.04
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
 ENV TZ=Europe/Berlin
@@ -135,5 +135,8 @@ RUN  rm -r /root/.cache/pip
 RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
 RUN chmod +x /usr/bin/start_server
 
+# Expose all GPU to docker
+ENV NVIDIA_VISIBLE_DEVICES all
+ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
 
 CMD ["/usr/bin/start_server"]

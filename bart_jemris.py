@@ -194,8 +194,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
-    # cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid // not used
-    cart_grid = False # always use bart
+    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid
     if cart_grid and sensmaps is None:
         logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
         data = data[0]
@@ -277,13 +276,18 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
             nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
             ecalib_config = 'ecalib -m 1 -I'
 
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
-        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
-        if sensmaps.ndim == 2:
-            sensmaps = cfftn(sensmaps, [0, 1]) # back to k-space
+        # Check if data is on Cartesian grid, if yes we can directly use k-space data for ESPIRiT calibration
+        cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) 
+        if cart_grid:
+            sensmaps = bart(1, 'resize -c 0 %d 1 %d 2 %d'%(nx, ny, nz), data) # zero-pad
         else:
-            sensmaps = cfftn(sensmaps, [0, 1, 2])
-        
+            sensmaps = bart(1, nufft_config, trj, data) # nufft
+            np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
+            if sensmaps.ndim == 2:
+                sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
+            else:
+                sensmaps = cfftn(sensmaps, [0, 1, 2])
+            
         while sensmaps.ndim < 4:
             sensmaps = sensmaps[...,np.newaxis]
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration

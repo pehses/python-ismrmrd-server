@@ -9,9 +9,9 @@ from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
 from pulseq_prot import insert_hdr, insert_acq
 
-""" Reconstruction of simulation data from Jemris with the BART toolbox
-    WIP: support also Pulseq data acquired with Jemris sequences
-
+""" Reconstruction of simulation data from Jemris
+    and of scanner data acquired with JEMRIS sequences
+    with the BART toolbox    
 """
 
 
@@ -88,7 +88,7 @@ def process(connection, config, metadata, prot_file=None):
 
                 # Insert acquisition protocol, if Pulseq data
                 if prot_file is not None:
-                    insert_acq(prot_file, item, acq_ctr, return_basetrj=False)
+                    insert_acq(prot_file, item, acq_ctr, metadata, return_basetrj=False)
                     simu = False
                 # Jemris sensitivity maps - only if simulated data (ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is set in scanner data for some reason)
                 elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
@@ -156,7 +156,7 @@ def process(connection, config, metadata, prot_file=None):
 def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
     force_pi = False # force parallel imaging recon by calculating sensitivity maps from raw data
-    use_jemris_sens = True # take sensmaps from Jemris
+    use_jemris_sens = True # take sensmaps from Jemris if no reference scan was used and sensitivities were not calculated from raw data
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -184,7 +184,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         
     # Optional: Take sensmaps from Jemris, if available
-    if use_jemris_sens and sensmaps_jemris:
+    if sensmaps is None and use_jemris_sens and sensmaps_jemris:
         sensmaps = np.stack(sensmaps_jemris).T # [z,y,x,coils]
         if nz==1: # 2D
             sensmaps = sensmaps[0]
@@ -194,7 +194,7 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
-    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid // not used
+    # cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid // not used
     cart_grid = False # always use bart
     if cart_grid and sensmaps is None:
         logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
@@ -392,7 +392,7 @@ def check_cart_grid(trj, matr_sz):
     if cart_grid and nz > 1:
         # assume 2nd phase encode is on z
         trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
-        for k in range(trj[3]):
+        for k in range(trj_tmp[3]):
             if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
                 continue
             else:

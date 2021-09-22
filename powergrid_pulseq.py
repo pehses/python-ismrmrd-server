@@ -44,6 +44,8 @@ def process(connection, config, metadata):
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
+    if skope:
+        prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
@@ -116,13 +118,19 @@ def process(connection, config, metadata):
     dmtx = None
     offres = None 
 
-    if "b_values" in prot_arrays and n_intl > 1:
-        # we use the contrast index here to get the PhaseMaps into the correct order
-        # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
-    else:
-        shotimgs = None
+    shotimgs = None
+    if "b_values" in prot_arrays:
+        bvals = prot_arrays['b_values']
+        if n_intl > 1:
+            # we use the contrast index here to get the PhaseMaps into the correct order
+            # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
+            shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
 
+    if 'Directions' in prot_arrays:
+        diff_dirs = prot_arrays['Directions']
+
+    phs = None
+    phs_ref = [None] * n_slc
     base_trj = None
     try:
         for acq_ctr, item in enumerate(connection):
@@ -134,7 +142,7 @@ def process(connection, config, metadata):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -152,15 +160,19 @@ def process(connection, config, metadata):
                     del(noise_data)
                     noiseGroup.clear()
                 
-                # Check for additional flags
+                # Phase correction scans (WIP: phase navigators not working correctly atm)
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
-                    if slc_sel is None or item.idx.slice == slc_sel:
-                        # calculate global phase slope from phase correction scans 
-                        data = item.data[:]
-                        phsdiff = data[:,1:] * np.conj(data[:,:-1])
-                        phsdiff = np.angle(np.sum(phsdiff))  # weighted sum over coils
-                        offres = phsdiff / 1e-6 # 1us dwelltime of phase correction scans -> WIP: maybe put it in the user parameters
+                    if item.idx.contrast == 0:
+                        phs_ref[item.idx.slice] = item.data[:]
+                    else:
+                        data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
+                        data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
+                        phs =  np.unwrap(np.angle(data_sum)) # calculate global phase slope
+                        phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
+                        offres = phs_slope / 1e-6 # 1 us dwelltime of phase correction scans
                     continue
+                
+                # Skope sync scans
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
 
@@ -216,7 +228,7 @@ def process(connection, config, metadata):
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                             global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
-                            # acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
+                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
                             offres = None
 
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
@@ -292,6 +304,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Write header
+    sms_factor = metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+    if sms_factor > 1 and slc_sel is not None:
+        raise ValueError("SMS reconstruction is not possible for single slices.")
+    if sms_factor > 1:
+        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
+        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
     if slc_sel is not None:
         metadata.encoding[0].encodingLimits.slice.maximum = 0
     if avg_before:
@@ -305,6 +323,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         raise ValueError("No field map file in dependency folder. Field map should be .npz file containing the field map and field map regularisation parameters")
     fmap = np.load(fmap_path, allow_pickle=True)
     fmap_data = fmap['fmap']
+    # fmap_data = np.zeros_like(fmap_data)
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
 
@@ -317,7 +336,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     if slc_sel is not None:
         sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
     else:
-        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - only tested for 2D, nx/ny might be changed depending on orientation
+        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
+        if sms_factor > 1:
+            sens = reshape_sens_sms(sens, sms_factor)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Calculate phase maps from shot images and append if necessary
@@ -370,7 +391,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
-    ts = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
+    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
     acqGroup.clear() # free memory
 
@@ -389,15 +412,18 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
+    mpi = True
+    temp_intp = 'hanning' # hanning / histo / minmax
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts // 2
+
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
-    mpi = True
     pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
     import psutil
     cores = psutil.cpu_count(logical = False) # number of physical cores
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I hanning -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:
@@ -412,7 +438,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
     try:
-        subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # logging.debug(process.stdout)
     except subprocess.CalledProcessError as e:
         logging.debug(e.stdout)
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
@@ -440,8 +467,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
     if n_bval > 0:
         shp = data.shape
-        b0 = np.expand_dims(data[:,0], 1)
-        diffw_imgs = data[:,1:].reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        b0 = np.expand_dims(np.abs(data[:,0]), 1)
+        diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
         dsets.append(b0)
         dsets.append(diffw_imgs)
     else:
@@ -462,11 +489,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         dsets[k] = dsets[k].astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
-        meta = ismrmrd.Meta({'DataRole':               'Image',
-                            'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                            'WindowCenter':           '16384',
-                            'WindowWidth':            '32768'})
-        xml = meta.serialize()
+    meta = ismrmrd.Meta({'DataRole':               'Image',
+                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                        'WindowCenter':           '16384',
+                        'WindowWidth':            '32768',
+                        'PG_Options':              pg_opts,
+                        'Field Map':               fmap['name'].item()})
+
+    xml = meta.serialize()
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):
@@ -527,10 +557,10 @@ def process_acs(group, metadata, dmtx=None):
         data = np.swapaxes(data,0,1) # in gre_refscan sequence read and phase are changed
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data) # ESPIRiT calibration (c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24))
         else:
             print("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data)  # ESPIRiT calibration
 
         refimg = cifftn(data, [0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)
@@ -745,3 +775,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     kspace = np.transpose(kspace, [3, 0, 1, 2])
 
     return kspace
+
+def reshape_sens_sms(sens, sms_factor):
+    # WIP: is this correct???
+    # reshape sensmaps array for sms imaging, sensmaps for one acquisition are stored at nz
+    sens_cpy = sens.copy() # [slices, coils, nz, ny, nx]
+    slices_eff = sens_cpy.shape[0]//sms_factor
+    sens = np.zeros([slices_eff, sens_cpy.shape[1], sms_factor, sens_cpy.shape[3], sens_cpy.shape[4]], dtype=sens_cpy.dtype)
+    for slc in range(sens_cpy.shape[0]):
+        sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] 
+    return sens

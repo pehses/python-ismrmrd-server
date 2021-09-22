@@ -132,7 +132,7 @@ def get_ismrmrd_arrays(prot_file):
 
     return arr
 
-def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=True):
+def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return_basetrj=True):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
@@ -158,8 +158,6 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
             prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq protocol file not found.')
-
-    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
 
     #---------------------------
     # Process acquisition
@@ -215,9 +213,9 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
         nsamples = dset_acq.number_of_samples
         try:
             # user parameter is kept for compatibility (see insert_hdr)
-            nsegments = prot_hdr.encoding[0].encodingLimits.segment.maximum + 1
+            nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
         except:
-            nsegments = prot_hdr.userParameters.userParameterDouble[2].value_
+            nsegments = metadata.userParameters.userParameterDouble[2].value_
         nsamples_full = int(nsamples*nsegments+0.5)
         nsamples_max = 65535
         if nsamples_full > nsamples_max:
@@ -234,7 +232,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
             base_trj = reco_trj.copy()
         else:
             rotmat = calc_rotmat(dset_acq)
-            reco_trj, base_trj, k0 = calc_traj(prot_acq, prot_hdr, nsamples_full, rotmat) # [samples, dims]
+            reco_trj, base_trj, k0 = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
             dset_acq.traj[:,4] = k0.copy()
 
         # fill extended part of data with zeros
@@ -242,7 +240,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, noncartesian=True, return_basetrj=T
         dset_acq.traj[:,:3] = reco_trj.copy()
         dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
-        prot.close()
+    prot.close()
     
     if return_basetrj:
         return base_trj
@@ -252,7 +250,7 @@ def calc_traj(acq, hdr, ncol, rotmat):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
         acq: acquisition from hdf5 protocol file
-        hdr: header from hdf5 protocol file
+        hdr: protocol header
         ncol: number of samples
     """
     
@@ -315,10 +313,14 @@ def calc_traj(acq, hdr, ncol, rotmat):
 
     # set z-axis if trajectory is two-dimensional
     if dims == 2:
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z
+        sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+        if sms_factor > 1:
+            nz = sms_factor
+        else:
+            nz = hdr.encoding[0].encodedSpace.matrixSize.z
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
-        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])
+        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])            
 
     # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
     gradtime += dt_grad/2 - dt_skope/2

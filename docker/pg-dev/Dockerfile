@@ -1,5 +1,4 @@
 FROM ubuntu:20.04 AS mrd_converter
-CMD nvidia-smi
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 

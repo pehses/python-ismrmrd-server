@@ -1,5 +1,4 @@
-FROM nvidia/cuda:11.1-devel-ubuntu20.04 AS mrd_converter
-CMD nvidia-smi
+FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS mrd_converter
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -56,22 +55,18 @@ RUN cd /opt/code \
     && make install
 
 # compile & install the bart MRI toolbox
-# use own version of BART where CUDA path is correct
-# in this version the path for cfl exchange file can also be set (e.g. to shared memory location)
 RUN  cd /opt/code \
-     && git clone https://github.com/mavel101/bart.git \
+     && git clone https://github.com/mrirecon/bart \
      && cd bart \
-     && git checkout makefile_mv \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
      && echo CUDA=1 >> Makefile.local \
      && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
+     && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
      && make install
      # && echo ENABLE_MEM_CFL=1 >> Makefile.local \
-     # && echo ISMRMRD=1 > Makefile.local \
-     # && export ISMRMRD_HOME=/usr/local \
 
 ### Dependencies for PowerGrid ###
 
@@ -156,8 +151,7 @@ RUN  cd /opt/code \
      
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM nvidia/cuda:11.1-devel-ubuntu20.04
-CMD nvidia-smi
+FROM nvidia/cuda:11.4.2-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 

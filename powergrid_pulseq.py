@@ -142,7 +142,7 @@ def process(connection, config, metadata):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -171,7 +171,7 @@ def process(connection, config, metadata):
                         phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
                         offres = phs_slope / 1e-6 # 1 us dwelltime of phase correction scans
                     continue
-
+                
                 # Skope sync scans
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -323,6 +323,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         raise ValueError("No field map file in dependency folder. Field map should be .npz file containing the field map and field map regularisation parameters")
     fmap = np.load(fmap_path, allow_pickle=True)
     fmap_data = fmap['fmap']
+    # fmap_data = np.zeros_like(fmap_data)
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
 

@@ -106,7 +106,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
                 if base_traj is not None:
                     base_trj = base_traj
 

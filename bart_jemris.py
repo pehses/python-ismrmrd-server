@@ -392,7 +392,7 @@ def check_cart_grid(trj, matr_sz):
     if cart_grid and nz > 1:
         # assume 2nd phase encode is on z
         trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
-        for k in range(trj_tmp[3]):
+        for k in range(trj_tmp.shape[3]):
             if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
                 continue
             else:

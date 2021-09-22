@@ -29,15 +29,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process_spiral(connection, config, metadata, prot_file):
   
-    # Check protocol arrays to process with possible subscript
-    prot_arrays = get_ismrmrd_arrays(prot_file)
-    if "dream" in prot_arrays:
-        import bart_pulseq_spiral_dream
-        import importlib
-        importlib.reload(bart_pulseq_spiral_dream)
-        bart_pulseq_spiral_dream.process_spiral_dream(connection, config, metadata, prot_file)
-        return
-
+    # Set a slice for single slice reconstruction
     slc_sel = None
 
     # Insert protocol header

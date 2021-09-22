@@ -21,15 +21,6 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process_cartesian(connection, config, metadata, prot_file):
 
-    # Check protocol arrays to process with possible subscript
-    prot_arrays = get_ismrmrd_arrays(prot_file)
-    if "dream" in prot_arrays:
-        import bart_pulseq_cartesian_dream
-        import importlib
-        importlib.reload(bart_pulseq_cartesian_dream)
-        bart_pulseq_cartesian_dream.process_cartesian_dream(connection, config, metadata, prot_file)
-        return
-
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 

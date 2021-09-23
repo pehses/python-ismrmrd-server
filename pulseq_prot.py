@@ -202,6 +202,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         return
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)
+        dset_acq.resize(trajectory_dimensions=prot_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
+        dset_acq.traj[:] = prot_acq.traj[:]
         prot.close()
         return
 

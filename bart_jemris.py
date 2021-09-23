@@ -163,6 +163,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     
     data, trj = sort_data(group, dmtx)
+    logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, data.shape))
     nc = data.shape[-1]
 
     if gpu:
@@ -194,22 +195,14 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
-    cart_grid = check_cart_grid(trj)
-    if cart_grid and sensmaps is None:
-        logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
-        data = data[0]
-        data = data.reshape([nx,ny,nz,nc], order='f')
-        data = cifftn(data, axes=[0,1,2])
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+    logging.debug("Do BART reconstruction.")
+    if sensmaps is None:
+        data = bart(1, nufft_config, trj, data) # nufft
+        if nc != 1:
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
-        logging.debug("Do BART reconstruction.")
-        if sensmaps is None:
-            data = bart(1, nufft_config, trj, data) # nufft
-            if nc != 1:
-                data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
-        else:
-            data = bart(1, pics_config , trj, data, sensmaps)
-        data = np.abs(data)
+        data = bart(1, pics_config , trj, data, sensmaps)
+    data = np.abs(data)
 
     # correct orientation at scanner
     data = np.swapaxes(data, 0, 1)
@@ -276,17 +269,12 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
             nufft_config = 'nufft -i -l 0.001 -t'
             ecalib_config = 'ecalib -m 1 -I'
 
-        cart_grid = check_cart_grid(trj)
-        if cart_grid:
-            sensmaps = data.copy()
-            logging.debug("ACS data on Cartesian grid. Skip nufft.")
-        if not cart_grid:
-            sensmaps = bart(1, nufft_config, trj, data) # nufft
-            np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
-            if sensmaps.ndim == 2:
-                sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
-            else:
-                sensmaps = cfftn(sensmaps, [0, 1, 2])
+        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
+        if sensmaps.ndim == 2:
+            sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
+        else:
+            sensmaps = cfftn(sensmaps, [0, 1, 2])
             
         while sensmaps.ndim < 4:
             sensmaps = sensmaps[...,np.newaxis]
@@ -334,7 +322,6 @@ def sort_data(group, dmtx=None):
     # rearrange trj & sig for bart
     trj = np.transpose(trj, [1, 2, 0]) # [3, ncol, nacq]
     sig = np.transpose(sig, [2, 0, 1])[np.newaxis] # [1, ncol, nacq, ncha]
-    logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, sig.shape))
     
     np.save(debugFolder + "/" + "trj.npy", trj)
     np.save(debugFolder + "/" + "raw.npy", sig)
@@ -378,7 +365,7 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
     return sensmap_coil
 
 ################################
-# Check if data is sampled on Cartesian grid
+# Check if data is sampled on Cartesian grid - atm this is not used, as sorting the data into a Cartesian grid is complicated
 ################################
 
 def check_cart_grid(trj):

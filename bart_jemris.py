@@ -365,38 +365,64 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
     return sensmap_coil
 
 ################################
-# Check if data is sampled on Cartesian grid - atm this is not used, as sorting the data into a Cartesian grid is complicated
+# Check if data is sampled on Cartesian grid
+# atm this is not used, as the check might be not robust enough and sorting the data into a correct Cartesian grid is complicated
 ################################
 
-def check_cart_grid(trj):
+def check_cart_grid(trj, phs_enc):
 
     """ Check if trajectory is on Cartesian grid
-    This check cant detect CAIPIRINHA shifts, but then we will need sensitivities and do BART reco anyways...
+
     trj: trajectory [dims, readout, phase]
+    phs_enc: list with number of phase encoding steps [PE1, PE2]
     """
+
+    pe1 = phs_enc[0]
+    pe2 = phs_enc[1]
+    if pe2 > 1:
+        dim3 = True
+    else:
+        dim3 = False
+    
+    axes = [0,1,2]
+    # if 2D, one dimension does not change
+    if np.allclose(trj[0], trj[0,0,0], atol=1e-2):
+        axes.remove(0)
+        dim3 = False
+    if np.allclose(trj[1], trj[1,0,0], atol=1e-2):
+        axes.remove(1)
+        dim3 = False
+    if np.allclose(trj[2], trj[2,0,0], atol=1e-2):
+        axes.remove(2)
+        dim3 = False
 
     cart_grid = True
     # check readout direction
     for k in range(trj.shape[1]):
-        if np.allclose(trj[0,k,:],trj[0,k,0], atol=1e-2):
-            continue
-        elif np.allclose(trj[1,k,:],trj[1,k,0], atol=1e-2):
-            continue
-        elif np.allclose(trj[2,k,:],trj[2,k,0], atol=1e-2):
-            continue
-        else:
-            cart_grid = False
-            break
-    if cart_grid:
-        # check phase encoding directions - does not check between 2 phase encoding directions, so e.g. Caipirinha shifts are not covered -> will still return True
-        for k in range(trj.shape[2]):
-            if(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) and np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2)):
-                continue
-            elif(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) and np.allclose(trj[2,:,k],trj[2,0,k], atol=1e-2)):
-                continue
-            elif(np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2) and np.allclose(trj[2,:,k],trj[2,0,k], atol=1e-2)):
+        for ax in axes:
+            if np.allclose(trj[ax,k,:],trj[ax,k,0], atol=1e-2):
+                readout = ax
                 continue
             else:
                 cart_grid = False
                 break
+    if cart_grid:
+        # check 1st phase encoding direction
+        axes.remove(readout)
+        for k in range(trj.shape[2]):
+            for ax in axes:
+                if np.allclose(trj[ax,:,k],trj[ax,0,k], atol=1e-2):
+                    phs_enc1 = ax
+                    continue
+                else:
+                    cart_grid = False
+                    break
+    if cart_grid and dim3:
+        axes.remove(phs_enc1)
+        trj_tmp = trj.reshape([trj.shape[0],trj.shape[1],pe1,pe2], order='f')
+        for k in range(trj_tmp.shape[3]):
+            if(np.allclose(trj_tmp[axes[0],:,:,k],trj_tmp[axes[0],0,0,k], atol=1e-2)):
+                continue
+            else:
+                cart_grid = False
     return cart_grid

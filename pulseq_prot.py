@@ -202,8 +202,10 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         return
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)
+        # for Jemris reconstructions we always need the trajectory, even if its Cartesian
         dset_acq.resize(trajectory_dimensions=prot_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
-        dset_acq.traj[:] = prot_acq.traj[:]
+        if dset_acq.traj.shape[-1] > 0:
+            dset_acq.traj[:] = prot_acq.traj[:]
         prot.close()
         return
 
@@ -225,6 +227,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
        
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
+
+        # resize data - traj_dims: [kx,ky,kz,t,(GIRF-)k0]
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
         # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol

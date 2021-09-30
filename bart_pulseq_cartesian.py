@@ -83,7 +83,7 @@ def process_cartesian(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                insert_acq(prot_file, item, acq_ctr, metadata, noncartesian=False)
+                insert_acq(prot_file, item, acq_ctr, metadata, noncartesian=False, return_basetrj=False)
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)

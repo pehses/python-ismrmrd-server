@@ -94,7 +94,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr)
+                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -304,15 +304,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # rotmat = calc_rotmat(group[0])
-        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
-        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        # data = fov_shift(data, shift)
-
         data = np.swapaxes(data,0,1) # in my Pulseq gre_refscan sequence read and phase are changed atm
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
@@ -359,12 +350,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
-
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
-        # sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
 
     np.save(debugFolder + "/" + "enc.npy", enc)
     

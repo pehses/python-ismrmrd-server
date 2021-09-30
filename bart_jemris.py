@@ -129,7 +129,7 @@ def process(connection, config, metadata, prot_file=None):
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
                 # Accumulate all imaging readouts in a group
@@ -140,7 +140,7 @@ def process(connection, config, metadata, prot_file=None):
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
                     group = acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice]
-                    images = process_raw(group, config, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu, simu)
+                    images = process_raw(group, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu, simu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice].clear() # free memory
@@ -153,7 +153,7 @@ def process(connection, config, metadata, prot_file=None):
 # Process Data
 #########################
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
+def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
     force_pi = False # force parallel imaging recon by calculating sensitivity maps from raw data
     use_jemris_sens = True # take sensmaps from Jemris if no reference scan was used and sensitivities were not calculated from raw data
@@ -162,7 +162,8 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     
-    data, trj = sort_data(group, metadata, dmtx)
+    data, trj = sort_data(group, dmtx)
+    logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, data.shape))
     nc = data.shape[-1]
 
     if gpu:
@@ -194,22 +195,14 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     # Recon
-    cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) # Check if data is on Cartesian grid
-    if cart_grid and sensmaps is None:
-        logging.debug("Non accelerated data on Cartesian grid. Do normal FFT.")
-        data = data[0]
-        data = data.reshape([nx,ny,nz,nc], order='f')
-        data = cifftn(data, axes=[0,1,2])
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+    logging.debug("Do BART reconstruction.")
+    if sensmaps is None:
+        data = bart(1, nufft_config, trj, data) # nufft
+        if nc != 1:
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
     else:
-        logging.debug("Do BART reconstruction.")
-        if sensmaps is None:
-            data = bart(1, nufft_config, trj, data) # nufft
-            if nc != 1:
-                data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
-        else:
-            data = bart(1, pics_config , trj, data, sensmaps)
-        data = np.abs(data)
+        data = bart(1, pics_config , trj, data, sensmaps)
+    data = np.abs(data)
 
     # correct orientation at scanner
     data = np.swapaxes(data, 0, 1)
@@ -261,36 +254,37 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, sensmaps_jemr
 
     return images
 
-def process_acs(group, config, metadata, dmtx=None, gpu=False):
+def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
-        data, trj = sort_data(group, metadata, dmtx)
+        data, trj = sort_data(group, dmtx)
 
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
         if gpu:
-            nufft_config = 'nufft -g -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
+            nufft_config = 'nufft -g -i -l 0.001 -t'
             ecalib_config = 'ecalib -g -m 1 -I'
         else:
-            nufft_config = 'nufft -i -l 0.001 -t -d %d:%d:%d'%(nx, ny, nz)
+            nufft_config = 'nufft -i -l 0.001 -t'
             ecalib_config = 'ecalib -m 1 -I'
 
-        # Check if data is on Cartesian grid, if yes we can directly use k-space data for ESPIRiT calibration
-        cart_grid = check_cart_grid(trj, matr_sz=[nx,ny,nz]) 
-        if cart_grid:
-            sensmaps = bart(1, 'resize -c 0 %d 1 %d 2 %d'%(nx, ny, nz), data) # zero-pad
+        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
+        if sensmaps.ndim == 2:
+            sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
         else:
-            sensmaps = bart(1, nufft_config, trj, data) # nufft
-            np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
-            if sensmaps.ndim == 2:
-                sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
-            else:
-                sensmaps = cfftn(sensmaps, [0, 1, 2])
+            sensmaps = cfftn(sensmaps, [0, 1, 2])
             
         while sensmaps.ndim < 4:
             sensmaps = sensmaps[...,np.newaxis]
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+
+        from skimage.transform import resize
+        
+        # Resize to full matrix
+        newshape = [nx, ny, nz, sensmaps.shape[-1]]
+        sensmaps = resize(sensmaps.real, newshape, anti_aliasing=True) + 1j*resize(sensmaps.imag, newshape, anti_aliasing=True)
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
@@ -303,7 +297,7 @@ def process_acs(group, config, metadata, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_data(group, metadata, dmtx=None):
+def sort_data(group, dmtx=None):
     
     sig = list()
     trj = list()
@@ -322,11 +316,12 @@ def sort_data(group, metadata, dmtx=None):
     # convert lists to numpy arrays
     trj = np.asarray(trj) # current size: (nacq, 3, ncol)
     sig = np.asarray(sig) # current size: (nacq, ncha, ncol)
+    if trj.ndim == 2: trj = trj[np.newaxis]
+    if sig.ndim == 2: sig = sig[np.newaxis]
 
     # rearrange trj & sig for bart
     trj = np.transpose(trj, [1, 2, 0]) # [3, ncol, nacq]
     sig = np.transpose(sig, [2, 0, 1])[np.newaxis] # [1, ncol, nacq, ncha]
-    logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, sig.shape))
     
     np.save(debugFolder + "/" + "trj.npy", trj)
     np.save(debugFolder + "/" + "raw.npy", sig)
@@ -371,35 +366,63 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
 
 ################################
 # Check if data is sampled on Cartesian grid
+# atm this is not used, as the check might be not robust enough and sorting the data into a correct Cartesian grid is complicated
 ################################
 
-def check_cart_grid(trj, matr_sz):
-    nx = matr_sz[0]
-    ny = matr_sz[1]
-    nz = matr_sz[2]
+def check_cart_grid(trj, phs_enc):
+
+    """ Check if trajectory is on Cartesian grid
+
+    trj: trajectory [dims, readout, phase]
+    phs_enc: list with number of phase encoding steps [PE1, PE2]
+    """
+
+    pe1 = phs_enc[0]
+    pe2 = phs_enc[1]
+    if pe2 > 1:
+        dim3 = True
+    else:
+        dim3 = False
+    
+    axes = [0,1,2]
+    # if 2D, one dimension does not change
+    if np.allclose(trj[0], trj[0,0,0], atol=1e-2):
+        axes.remove(0)
+        dim3 = False
+    if np.allclose(trj[1], trj[1,0,0], atol=1e-2):
+        axes.remove(1)
+        dim3 = False
+    if np.allclose(trj[2], trj[2,0,0], atol=1e-2):
+        axes.remove(2)
+        dim3 = False
 
     cart_grid = True
+    # check readout direction
     for k in range(trj.shape[1]):
-        # readout and phase encode could be either x or y
-        if(np.allclose(trj[0,k],trj[0,k,0], atol=1e-2) or np.allclose(trj[1,k],trj[1,k,0], atol=1e-2)):
-            continue
-        else:
-            cart_grid = False
-            break
-    if cart_grid:
-        for k in range(trj.shape[2]):
-            if(np.allclose(trj[0,:,k],trj[0,0,k], atol=1e-2) or np.allclose(trj[1,:,k],trj[1,0,k], atol=1e-2)):
+        for ax in axes:
+            if np.allclose(trj[ax,k,:],trj[ax,k,0], atol=1e-2):
+                readout = ax
                 continue
             else:
                 cart_grid = False
                 break
-    if cart_grid and nz > 1:
-        # assume 2nd phase encode is on z
-        trj_tmp = trj.reshape([3,nx,ny,nz], order='f')
+    if cart_grid:
+        # check 1st phase encoding direction
+        axes.remove(readout)
+        for k in range(trj.shape[2]):
+            for ax in axes:
+                if np.allclose(trj[ax,:,k],trj[ax,0,k], atol=1e-2):
+                    phs_enc1 = ax
+                    continue
+                else:
+                    cart_grid = False
+                    break
+    if cart_grid and dim3:
+        axes.remove(phs_enc1)
+        trj_tmp = trj.reshape([trj.shape[0],trj.shape[1],pe1,pe2], order='f')
         for k in range(trj_tmp.shape[3]):
-            if(np.allclose(trj_tmp[2,:,:,k],trj_tmp[2,0,0,k], atol=1e-2)):
+            if(np.allclose(trj_tmp[axes[0],:,:,k],trj_tmp[axes[0],0,0,k], atol=1e-2)):
                 continue
             else:
                 cart_grid = False
-
     return cart_grid

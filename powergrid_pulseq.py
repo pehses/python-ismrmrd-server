@@ -43,7 +43,7 @@ def process(connection, config, metadata):
 
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value_)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
     if skope:
         prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
@@ -223,10 +223,13 @@ def process(connection, config, metadata):
                         traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
-                        # Correct the global phase - WIP: phase navigators not working correctly atm
+                        # Correct the global phase
+                        k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
+                        if skope:
+                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*k0)
+                        # WIP: phase navigators not working correctly atm
                         if offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
-                            k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                             global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
                             offres = None

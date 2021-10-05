@@ -29,7 +29,7 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = metadata.userParameters.userParameterString[0].value_ # protocol filename from Siemens protocol parameter tFree
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value_)[0] # protocol filename from Siemens protocol parameter tFree
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder

@@ -278,13 +278,14 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
             
         while sensmaps.ndim < 4:
             sensmaps = sensmaps[...,np.newaxis]
-        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+        sensmaps = bart(1, 'resize -c 0 %d 1 %d 2 %d'%(nx, ny, nz), sensmaps)
 
-        from skimage.transform import resize
-        
-        # Resize to full matrix
-        newshape = [nx, ny, nz, sensmaps.shape[-1]]
-        sensmaps = resize(sensmaps.real, newshape, anti_aliasing=True) + 1j*resize(sensmaps.imag, newshape, anti_aliasing=True)
+        # ESPIRiT calibration
+        try:
+            sensmaps = bart(1, ecalib_config, sensmaps)  
+        except: # if the array is too big for the GPU RAM (especially for a large 3D ACS scan) we do it on CPU
+            ecalib_config = 'ecalib -m 1 -I'
+            sensmaps = bart(1, ecalib_config, sensmaps)
 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)

@@ -600,6 +600,7 @@ def process_shots(group, metadata, sensmaps):
     data, trj = sort_spiral_data(group, metadata)
 
     # Interpolate sensitivity maps to lower resolution
+    # WIP: resizing aka interpolating can cause problems - especially when interpolating to a higher resolution
     os_region = metadata.userParameters.userParameterDouble[4].value_
     if np.allclose(os_region,0):
         os_region = 0.25 # use default if no region provided

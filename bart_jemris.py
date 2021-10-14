@@ -3,6 +3,7 @@ import ismrmrd
 import os
 import logging
 import numpy as np
+import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
@@ -225,7 +226,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
     
     images = []
@@ -243,6 +245,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
             image.image_series_index = 1 + + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
@@ -250,6 +255,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     return images

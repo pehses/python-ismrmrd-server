@@ -5,6 +5,7 @@ import itertools
 import logging
 import numpy as np
 import base64
+import ctypes
 
 from bart import bart
 import subprocess
@@ -496,6 +497,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           '16384',
                         'WindowWidth':            '32768',
+                        'Keep_image_geometry':    '1',
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap['name'].item()})
 
@@ -522,6 +524,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                                 if 'Directions' in prot_arrays:
                                     image.user_float[:3] = prot_arrays['Directions'][phs]
                                 image.attribute_string = xml
+                                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                                 images.append(image)
         else:
             # atm only ADC maps
@@ -534,6 +539,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                 image.image_series_index = series_ix
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)

@@ -205,8 +205,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         data = bart(1, pics_config , trj, data, sensmaps)
     data = np.abs(data)
 
-    # correct orientation at scanner
+    # correct orientation at scanner (consistent with ICE)
     data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
 
     # make sure that data is at least 3D
     while np.ndim(data) < 3:

@@ -276,6 +276,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     
         logging.debug("Image data is size %s" % (data.shape,))
     
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     process_raw.imagesets[group[0].idx.contrast] = data.copy()
     full_set_check = all(elem is not None for elem in process_raw.imagesets)
     if full_set_check:
@@ -505,7 +509,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
-        trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
+        trj.append(traj)
         
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#

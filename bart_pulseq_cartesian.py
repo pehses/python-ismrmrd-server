@@ -289,6 +289,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         data = np.abs(data)
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     logging.debug("Image data is size %s" % (data.shape,))
 
     # Normalize and convert to int16
@@ -318,7 +322,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     images = []
     if n_par > 1:
         for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
             image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
             image.slice = 0
@@ -329,7 +333,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
             images.append(image)
 
     else:
-        image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
+        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
         image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
         image.slice = 0

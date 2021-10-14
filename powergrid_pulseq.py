@@ -459,6 +459,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
     data = np.transpose(data, [3,4,2,1,0,5,6,7]).mean(axis=0)
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, -1, -2)
+    data = np.flip(data, (-3,-2,-1))
+
     logging.debug("Image data is size %s" % (data.shape,))
    
     images = []
@@ -712,7 +716,6 @@ def sort_spiral_data(group, metadata):
 
         # trajectory
         traj = np.swapaxes(acq.traj,0,1)[:3] # [dims, samples]
-        traj = traj[[1,0,2],:]  # switch x and y dir for correct orientation
         trj.append(traj)
   
     # convert lists to numpy arrays

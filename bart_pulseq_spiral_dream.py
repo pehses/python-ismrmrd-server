@@ -276,10 +276,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     
         logging.debug("Image data is size %s" % (data.shape,))
     
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 0, 1)
-    data = np.flip(data, (0,1,2))
-
     process_raw.imagesets[group[0].idx.contrast] = data.copy()
     full_set_check = all(elem is not None for elem in process_raw.imagesets)
     if full_set_check:
@@ -354,13 +350,22 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         
         process_raw.imagesets = [None] * n_contr # free list
         process_raw.rawdata   = [None] * n_contr # free list
+
+        # correct orientation at scanner (consistent with ICE)
+        fa_map = np.swapaxes(fa_map, 0, 1)
+        fa_map = np.flip(fa_map, (0,1,2))
+        ref_volt = np.swapaxes(ref_volt, 0, 1)
+        ref_volt = np.flip(ref_volt, (0,1,2))
     else:
         fa_map = None
         ref_volt = None
     
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     # Normalize and convert to int16
     #save one scaling in 'static' variable
-    
     contr = group[0].idx.contrast
     if process_raw.imascale[contr] is None:
         process_raw.imascale[contr] = 0.8 / data.max()
@@ -466,8 +471,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
-
-        data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
 
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration

@@ -293,10 +293,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         data = np.abs(data)
 
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 0, 1)
-    data = np.flip(data, (0,1,2))
-
     logging.debug("Image data is size %s" % (data.shape,))
     
     # B1 Map calculation (Dream approach)
@@ -369,6 +365,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
             
             process_raw.imagesets = [None] * n_contr # free list
+            
+            # correct orientation at scanner (consistent with ICE)
+            fa_map = np.swapaxes(fa_map, 0, 1)
+            fa_map = np.flip(fa_map, (0,1,2))
+            ref_volt = np.swapaxes(ref_volt, 0, 1)
+            ref_volt = np.flip(ref_volt, (0,1,2))
         else:
             fa_map = None
             ref_volt = None
@@ -377,9 +379,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
         ref_volt = None
         logging.info("no dream B1 mapping")
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     # Normalize and convert to int16
     # save one scaling in 'static' variable
-
     contr = group[0].idx.contrast
     if process_raw.imascale[contr] is None:
         process_raw.imascale[contr] = 0.8 / data.max()

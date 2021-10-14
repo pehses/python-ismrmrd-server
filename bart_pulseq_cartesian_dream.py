@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from cfft import cifftn, cfftn
 import base64
+import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os # , fov_shift, calc_rotmat, pcs_to_gcs
@@ -388,7 +389,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
@@ -404,6 +406,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             image.image_series_index = 1
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
         if fa_map is not None:
@@ -413,6 +418,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 image.image_series_index = 2
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
         if ref_volt is not None:
@@ -422,6 +430,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 image.image_series_index = 3
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
     else:
@@ -430,6 +441,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
         image.image_series_index = 1
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
         if fa_map is not None:
@@ -438,6 +452,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             image.image_series_index = 2
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
         
         if ref_volt is not None:
@@ -446,6 +463,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             image.image_series_index = 3
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
 

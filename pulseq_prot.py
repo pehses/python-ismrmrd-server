@@ -236,6 +236,8 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
             reco_trj = prot_acq.traj[:,:3]
             base_trj = reco_trj.copy()
+            if prot_acq.traj.shape[1] > 3:
+                dset_acq.traj[:,4] = prot_acq.traj[:,3] # Skope k0
         else:
             rotmat = calc_rotmat(dset_acq)
             reco_trj, base_trj, k0 = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]

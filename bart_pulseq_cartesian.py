@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from cfft import cfftn, cifftn
 import base64
+import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
@@ -306,7 +307,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
@@ -321,6 +323,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
             image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
     else:
@@ -329,6 +334,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
         image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)

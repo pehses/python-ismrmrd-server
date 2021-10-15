@@ -61,7 +61,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 

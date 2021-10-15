@@ -56,7 +56,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -335,7 +335,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         # fa map:
         fa_map = calc_fa(abs(ste), abs(fid))
         fa_map *= dil
-        current_refvolt = metadata.userParameters.userParameterDouble[5].value_
+        current_refvolt = metadata.userParameters.userParameterDouble[5].value
         nom_fa = dream[1]
         logging.info("current_refvolt = %sV and nom_fa = %s°^" % (current_refvolt, nom_fa))
         ref_volt = current_refvolt * (nom_fa/fa_map)

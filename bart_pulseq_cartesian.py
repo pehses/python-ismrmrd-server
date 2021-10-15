@@ -51,7 +51,7 @@ def process_cartesian(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 

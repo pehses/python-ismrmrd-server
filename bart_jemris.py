@@ -52,7 +52,7 @@ def process(connection, config, metadata, prot_file=None):
     try:
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -66,7 +66,7 @@ def process(connection, config, metadata, prot_file=None):
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
     n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     acqGroup = [[[[[] for _ in range(n_slc)] for _ in range(n_contr)] for _ in range(n_sets)] for _ in range(n_avgs)]
@@ -235,7 +235,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
     n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     # Format as ISMRMRD image data

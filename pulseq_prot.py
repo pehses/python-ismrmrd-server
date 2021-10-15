@@ -43,7 +43,7 @@ def insert_hdr(prot_file, metadata):
         prot_udbl = prot_hdr.userParameters.userParameterDouble
         for ix, param in enumerate(prot_udbl):
             dset_udbl[ix].name = param.name
-            dset_udbl[ix].value_ = param.value_
+            dset_udbl[ix].value = param.value
 
     # encoding
     dset_e1 = metadata.encoding[0]
@@ -93,7 +93,7 @@ def insert_hdr(prot_file, metadata):
     else:
         # compatibility with older datasets, where the segment encoding limit parameter was not used
         try:
-            dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value_ - 1
+            dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
         except:
             pass
 
@@ -219,7 +219,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
             # user parameter is kept for compatibility (see insert_hdr)
             nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
         except:
-            nsegments = metadata.userParameters.userParameterDouble[2].value_
+            nsegments = metadata.userParameters.userParameterDouble[2].value
         nsamples_full = int(nsamples*nsegments+0.5)
         nsamples_max = 65535
         if nsamples_full > nsamples_max:
@@ -270,10 +270,10 @@ def calc_traj(acq, hdr, ncol, rotmat):
     dims = grad.shape[0]
 
     fov = hdr.encoding[0].reconSpace.fieldOfView_mm.x
-    dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value_
+    dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value
     
     # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI
-    gradshift = hdr.userParameters.userParameterDouble[1].value_
+    gradshift = hdr.userParameters.userParameterDouble[1].value
 
     # ADC sampling time
     adctime = dwelltime * np.arange(0.5, ncol)

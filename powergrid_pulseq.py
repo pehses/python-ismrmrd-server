@@ -44,7 +44,7 @@ def process(connection, config, metadata):
 
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value_)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
     if skope:
         prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
@@ -72,8 +72,8 @@ def process(connection, config, metadata):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     # parameters for B0 correction
-    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
-    t_min = metadata.userParameters.userParameterDouble[3].value_ # [s]
+    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value # [s]
+    t_min = metadata.userParameters.userParameterDouble[3].value # [s]
 
     logging.info("Config: \n%s", config)
 
@@ -86,7 +86,7 @@ def process(connection, config, metadata):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -99,8 +99,8 @@ def process(connection, config, metadata):
 
     # Log some measurement parameters
     freq = metadata.experimentalConditions.H1resonanceFrequency_Hz
-    shim_currents = [k.value_ for k in metadata.userParameters.userParameterDouble[6:15]]
-    ref_volt = metadata.userParameters.userParameterDouble[5].value_
+    shim_currents = [k.value for k in metadata.userParameters.userParameterDouble[6:15]]
+    ref_volt = metadata.userParameters.userParameterDouble[5].value
     logging.info(f"Measurement Frequency: {freq}")
     logging.info(f"Shim Currents: {shim_currents}")
     logging.info(f"Reference Voltage: {ref_volt}")
@@ -319,7 +319,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(metadata.toxml())
+    dset_tmp.write_xml_header(metadata.toXML())
 
     # Insert Field Map
     fmap_path = dependencyFolder+"/fmap.npz"
@@ -613,7 +613,7 @@ def process_shots(group, metadata, sensmaps):
 
     # Interpolate sensitivity maps to lower resolution
     # WIP: resizing aka interpolating can cause problems - especially when interpolating to a higher resolution
-    os_region = metadata.userParameters.userParameterDouble[4].value_
+    os_region = metadata.userParameters.userParameterDouble[4].value
     if np.allclose(os_region,0):
         os_region = 0.25 # use default if no region provided
     nx = metadata.encoding[0].encodedSpace.matrixSize.x

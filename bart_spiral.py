@@ -319,7 +319,6 @@ def calc_spiral_traj(ncol, rot_mat, encoding):
     dt_skope = 1e-6
     gammabar = 42.577e6
 
-    print(dir(encoding))
     traj_params = {item.name: item.value for item in encoding.trajectoryDescription.userParameterLong}
     traj_params.update({item.name: item.value for item in encoding.trajectoryDescription.userParameterDouble})
 
@@ -580,6 +579,8 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
         while np.ndim(data) < 3:
             data = data[..., np.newaxis]
     
+    # Flip matrix in RO/PE/3D to be consistent with ICE
+    data = np.flip(data, (0, 1, 2))
     if nz > rNz:
         # remove oversampling in slice direction
         data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]

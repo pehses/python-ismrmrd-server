@@ -321,8 +321,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         else:
             fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
        
-        # image processing filter for fa-map (use of filtered or unfiltered fid)
-        dil = np.zeros(fid.shape)
+        # image mask for fa-map (use of filtered or unfiltered fid)
+        mask = np.zeros(fid.shape)
         for nz in range(fid.shape[-1]):
             # otsu
             val = filters.threshold_otsu(fid[:,:,nz])
@@ -330,20 +330,22 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             # fill holes
             imfill = morph.binary_fill_holes(otsu) * 1
             # dilation
-            dil[:,:,nz] = morph.binary_dilation(imfill)
+            mask[:,:,nz] = morph.binary_dilation(imfill)
                 
         # fa map:
         fa_map = calc_fa(abs(ste), abs(fid))
-        fa_map *= dil
+        # fa_map *= mask
         current_refvolt = metadata.userParameters.userParameterDouble[5].value
         nom_fa = dream[1]
         logging.info("current_refvolt = %sV and nom_fa = %s°^" % (current_refvolt, nom_fa))
         ref_volt = current_refvolt * (nom_fa/fa_map)
         
+        fa_map *= 10 # increase dynamic range
         fa_map = np.around(fa_map)
         fa_map = fa_map.astype(np.int16)
         logging.debug("fa map is size %s" % (fa_map.shape,))
         
+        ref_volt *= 10
         ref_volt = np.around(ref_volt)
         ref_volt = ref_volt.astype(np.int16)
         logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
@@ -380,13 +382,27 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                          'WindowWidth':            '32768',
                          'Keep_image_geometry':    '1'})
     xml = meta.serialize()
+
+    meta2 = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '512',
+                         'WindowWidth':            '1024',
+                         'Keep_image_geometry':    '1'})
+    xml2 = meta2.serialize()
+
+    meta3 = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '4096',
+                         'WindowWidth':            '8192',
+                         'Keep_image_geometry':    '1'})
+    xml3 = meta3.serialize()
     
     images = []
     n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data - WIP: something goes wrong here with indexes
+    # Format as ISMRMRD image data
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
@@ -405,7 +421,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                 image.image_index = 1 + par
                 image.image_series_index = 2
                 image.slice = 0
-                image.attribute_string = xml
+                image.attribute_string = xml2
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
@@ -417,7 +433,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                 image.image_index = 1 + par
                 image.image_series_index = 3
                 image.slice = 0
-                image.attribute_string = xml
+                image.attribute_string = xml3
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
@@ -439,7 +455,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 2
             image.slice = 0
-            image.attribute_string = xml
+            image.attribute_string = xml2
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
@@ -450,7 +466,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 3
             image.slice = 0
-            image.attribute_string = xml
+            image.attribute_string = xml3
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))

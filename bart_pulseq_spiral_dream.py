@@ -321,7 +321,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         else:
             fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
        
-        # image mask for fa-map (use of filtered or unfiltered fid)
+        # image mask for fa-map (use of filtered or unfiltered fid) - not used atm
         mask = np.zeros(fid.shape)
         for nz in range(fid.shape[-1]):
             # otsu

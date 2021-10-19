@@ -321,29 +321,37 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         metadata.encoding[0].encodingLimits.average.maximum = 0
     dset_tmp.write_xml_header(metadata.toXML())
 
-    # Insert Field Map
-    fmap_path = dependencyFolder+"/fmap.npz"
-    if not os.path.exists(fmap_path):
-        raise ValueError("No field map file in dependency folder. Field map should be .npz file containing the field map and field map regularisation parameters")
-    fmap = np.load(fmap_path, allow_pickle=True)
-    fmap_data = fmap['fmap']
-    # fmap_data = np.zeros_like(fmap_data)
-    if slc_sel is not None:
-        fmap_data = fmap_data[slc_sel]
-
-    logging.debug("Field Map name: %s", fmap['name'].item())
-    if 'params' in fmap:
-        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-    dset_tmp.append_array('FieldMap', fmap_data) # dimensions in PowerGrid seem to be [slices/nz,ny,nx]
-
     # Insert Sensitivity Maps
     if slc_sel is not None:
         sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
+        fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
     else:
-        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
+        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
+        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
         if sms_factor > 1:
             sens = reshape_sens_sms(sens, sms_factor)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
+
+    # Insert Field Map
+    fmap_path = dependencyFolder+"/fmap.npz"
+    if not os.path.exists(fmap_path):
+        fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
+        fmap_name = 'NO Field Map'
+        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+    else:
+        fmap = np.load(fmap_path, allow_pickle=True)
+        fmap_name = fmap['name'].item()
+    fmap_data = fmap['fmap']
+    if fmap_shape != list(fmap_data.shape):
+        fmap_data = np.zeros(fmap_shape)
+        logging.debug("Field Map dimensions do not fit. Dont use field map in recon.")
+    if slc_sel is not None:
+        fmap_data = fmap_data[slc_sel]
+
+    logging.debug("Field Map name: %s", fmap_name)
+    if 'params' in fmap:
+        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] collapses to [slices/nz,ny,nx] as slices or nz is always 1 (no multi-slab)
 
     # Calculate phase maps from shot images and append if necessary
     pcSENSE = False
@@ -399,7 +407,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()
-    acqGroup.clear() # free memory
 
     # Define in- and output for PowerGrid
     tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
@@ -503,7 +510,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         'WindowWidth':            '32768',
                         'Keep_image_geometry':    '1',
                         'PG_Options':              pg_opts,
-                        'Field Map':               fmap['name'].item()})
+                        'Field Map':               fmap_name})
 
     xml = meta.serialize()
 
@@ -519,10 +526,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         for slc in range(data.shape[3]):
                             for nz in range(data.shape[4]):
                                 img_ix += 1
-                                image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz])
+                                if slc_sel is None:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc][contr][0])
+                                else:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc_sel][contr][0])
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
-                                image.slice = 0 # WIP: test counting slices, contrasts, ... at scanner
+                                image.slice = slc
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
                                 if 'Directions' in prot_arrays:
@@ -550,6 +560,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
+    acqGroup.clear() # free memory
 
     return images
 

@@ -294,7 +294,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
-    # Format as ISMRMRD image data - WIP: something goes wrong here with indexes
+    # Format as ISMRMRD image data 
+    # WIP: images are not displayed in correct order at the scanner 
+    # WIP: some header info is missing (read out image header from ICE reconstructed images processed with FIRE)
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])

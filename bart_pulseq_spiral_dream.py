@@ -243,12 +243,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     
     if gpu:
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
-        ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
-        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -g -S -e -R T:7:0:.001 -i 50 -t'
     else:
         nufft_config = 'nufft -i -m 20 -l 0.005 -c -t -d %d:%d:%d'%(nx, nx, nz)
-        ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
-        pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -S -e -R T:7:0:.001 -i 50 -t'
 
     # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]

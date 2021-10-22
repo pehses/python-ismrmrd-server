@@ -340,11 +340,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
     else:
         fmap = np.load(fmap_path, allow_pickle=True)
-        fmap_name = fmap['name'].item()
+        if 'name' in fmap:
+            fmap_name = fmap['name'].item()
+        else:
+            fmap_name = 'No name.'
     fmap_data = fmap['fmap']
     if fmap_shape != list(fmap_data.shape):
+        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
         fmap_data = np.zeros(fmap_shape)
-        logging.debug("Field Map dimensions do not fit. Dont use field map in recon.")
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
 
@@ -405,6 +408,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2)}')
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 

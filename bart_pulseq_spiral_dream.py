@@ -5,6 +5,7 @@ import itertools
 import logging
 import numpy as np
 import base64
+import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
@@ -55,7 +56,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -242,12 +243,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     
     if gpu:
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
-        ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
-        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -g -S -e -R T:7:0:.001 -i 50 -t'
     else:
         nufft_config = 'nufft -i -m 20 -l 0.005 -c -t -d %d:%d:%d'%(nx, nx, nz)
-        ecalib_config = 'ecalib -m 1 -I -r 20 -k 6'
-        pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -S -e -R T:7:0:.001 -i 50 -t'
 
     # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
@@ -320,8 +319,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         else:
             fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
        
-        # image processing filter for fa-map (use of filtered or unfiltered fid)
-        dil = np.zeros(fid.shape)
+        # image mask for fa-map (use of filtered or unfiltered fid) - not used atm
+        mask = np.zeros(fid.shape)
         for nz in range(fid.shape[-1]):
             # otsu
             val = filters.threshold_otsu(fid[:,:,nz])
@@ -329,33 +328,44 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             # fill holes
             imfill = morph.binary_fill_holes(otsu) * 1
             # dilation
-            dil[:,:,nz] = morph.binary_dilation(imfill)
+            mask[:,:,nz] = morph.binary_dilation(imfill)
                 
         # fa map:
         fa_map = calc_fa(abs(ste), abs(fid))
-        fa_map *= dil
-        current_refvolt = metadata.userParameters.userParameterDouble[5].value_
+        # fa_map *= mask
+        current_refvolt = metadata.userParameters.userParameterDouble[5].value
         nom_fa = dream[1]
         logging.info("current_refvolt = %sV and nom_fa = %s°^" % (current_refvolt, nom_fa))
         ref_volt = current_refvolt * (nom_fa/fa_map)
         
+        fa_map *= 10 # increase dynamic range
         fa_map = np.around(fa_map)
         fa_map = fa_map.astype(np.int16)
         logging.debug("fa map is size %s" % (fa_map.shape,))
         
+        ref_volt *= 10
         ref_volt = np.around(ref_volt)
         ref_volt = ref_volt.astype(np.int16)
         logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
         
         process_raw.imagesets = [None] * n_contr # free list
         process_raw.rawdata   = [None] * n_contr # free list
+
+        # correct orientation at scanner (consistent with ICE)
+        fa_map = np.swapaxes(fa_map, 0, 1)
+        fa_map = np.flip(fa_map, (0,1,2))
+        ref_volt = np.swapaxes(ref_volt, 0, 1)
+        ref_volt = np.flip(ref_volt, (0,1,2))
     else:
         fa_map = None
         ref_volt = None
     
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     # Normalize and convert to int16
     #save one scaling in 'static' variable
-    
     contr = group[0].idx.contrast
     if process_raw.imascale[contr] is None:
         process_raw.imascale[contr] = 0.8 / data.max()
@@ -367,15 +377,30 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
+
+    meta2 = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '512',
+                         'WindowWidth':            '1024',
+                         'Keep_image_geometry':    '1'})
+    xml2 = meta2.serialize()
+
+    meta3 = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '4096',
+                         'WindowWidth':            '8192',
+                         'Keep_image_geometry':    '1'})
+    xml3 = meta3.serialize()
     
     images = []
     n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data - WIP: something goes wrong here with indexes
+    # Format as ISMRMRD image data
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
@@ -383,24 +408,33 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             image.image_series_index = 1
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
         
         if fa_map is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 2
                 image.slice = 0
-                image.attribute_string = xml
+                image.attribute_string = xml2
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
         if ref_volt is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 3
                 image.slice = 0
-                image.attribute_string = xml
+                image.attribute_string = xml3
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
     else:
@@ -409,22 +443,31 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
         
         if fa_map is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 2
             image.slice = 0
-            image.attribute_string = xml
+            image.attribute_string = xml2
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
         
         if ref_volt is not None:
-            image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 3
             image.slice = 0
-            image.attribute_string = xml
+            image.attribute_string = xml3
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
     return images
@@ -442,8 +485,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
-
-        data = np.swapaxes(data,0,1) # in Pulseq gre_refscan sequence read and phase are changed, might change this in the sequence
 
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
@@ -485,7 +526,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
-        trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
+        trj.append(traj)
         
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#

@@ -5,6 +5,7 @@ import itertools
 import logging
 import numpy as np
 import base64
+import ctypes
 
 from bart import bart
 import subprocess
@@ -43,7 +44,7 @@ def process(connection, config, metadata):
 
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value_)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
     if skope:
         prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
@@ -71,8 +72,8 @@ def process(connection, config, metadata):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     # parameters for B0 correction
-    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value_ # [s]
-    t_min = metadata.userParameters.userParameterDouble[3].value_ # [s]
+    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value # [s]
+    t_min = metadata.userParameters.userParameterDouble[3].value # [s]
 
     logging.info("Config: \n%s", config)
 
@@ -85,7 +86,7 @@ def process(connection, config, metadata):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -98,8 +99,8 @@ def process(connection, config, metadata):
 
     # Log some measurement parameters
     freq = metadata.experimentalConditions.H1resonanceFrequency_Hz
-    shim_currents = [k.value_ for k in metadata.userParameters.userParameterDouble[6:15]]
-    ref_volt = metadata.userParameters.userParameterDouble[5].value_
+    shim_currents = [k.value for k in metadata.userParameters.userParameterDouble[6:15]]
+    ref_volt = metadata.userParameters.userParameterDouble[5].value
     logging.info(f"Measurement Frequency: {freq}")
     logging.info(f"Shim Currents: {shim_currents}")
     logging.info(f"Reference Voltage: {ref_volt}")
@@ -318,31 +319,42 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(metadata.toxml())
-
-    # Insert Field Map
-    fmap_path = dependencyFolder+"/fmap.npz"
-    if not os.path.exists(fmap_path):
-        raise ValueError("No field map file in dependency folder. Field map should be .npz file containing the field map and field map regularisation parameters")
-    fmap = np.load(fmap_path, allow_pickle=True)
-    fmap_data = fmap['fmap']
-    # fmap_data = np.zeros_like(fmap_data)
-    if slc_sel is not None:
-        fmap_data = fmap_data[slc_sel]
-
-    logging.debug("Field Map name: %s", fmap['name'].item())
-    if 'params' in fmap:
-        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-    dset_tmp.append_array('FieldMap', fmap_data) # dimensions in PowerGrid seem to be [slices/nz,ny,nx]
+    dset_tmp.write_xml_header(metadata.toXML())
 
     # Insert Sensitivity Maps
     if slc_sel is not None:
         sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
+        fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
     else:
-        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx] - nz is always 1 as this is a 2D recon
+        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
+        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
         if sms_factor > 1:
             sens = reshape_sens_sms(sens, sms_factor)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
+
+    # Insert Field Map
+    fmap_path = dependencyFolder+"/fmap.npz"
+    if not os.path.exists(fmap_path):
+        fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
+        fmap_name = 'NO Field Map'
+        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+    else:
+        fmap = np.load(fmap_path, allow_pickle=True)
+        if 'name' in fmap:
+            fmap_name = fmap['name'].item()
+        else:
+            fmap_name = 'No name.'
+    fmap_data = fmap['fmap']
+    if fmap_shape != list(fmap_data.shape):
+        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
+        fmap_data = np.zeros(fmap_shape)
+    if slc_sel is not None:
+        fmap_data = fmap_data[slc_sel]
+
+    logging.debug("Field Map name: %s", fmap_name)
+    if 'params' in fmap:
+        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] collapses to [slices/nz,ny,nx] as slices or nz is always 1 (no multi-slab)
 
     # Calculate phase maps from shot images and append if necessary
     pcSENSE = False
@@ -396,9 +408,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2)}')
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()
-    acqGroup.clear() # free memory
 
     # Define in- and output for PowerGrid
     tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
@@ -458,6 +470,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
     data = np.transpose(data, [3,4,2,1,0,5,6,7]).mean(axis=0)
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, -1, -2)
+    data = np.flip(data, (-3,-2,-1))
+
     logging.debug("Image data is size %s" % (data.shape,))
    
     images = []
@@ -496,8 +512,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           '16384',
                         'WindowWidth':            '32768',
+                        'Keep_image_geometry':    '1',
                         'PG_Options':              pg_opts,
-                        'Field Map':               fmap['name'].item()})
+                        'Field Map':               fmap_name})
 
     xml = meta.serialize()
 
@@ -513,15 +530,21 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         for slc in range(data.shape[3]):
                             for nz in range(data.shape[4]):
                                 img_ix += 1
-                                image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz])
+                                if slc_sel is None:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc][contr][0])
+                                else:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc_sel][contr][0])
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
-                                image.slice = 0 # WIP: test counting slices, contrasts, ... at scanner
+                                image.slice = slc
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
                                 if 'Directions' in prot_arrays:
                                     image.user_float[:3] = prot_arrays['Directions'][phs]
                                 image.attribute_string = xml
+                                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                                 images.append(image)
         else:
             # atm only ADC maps
@@ -534,10 +557,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                 image.image_series_index = series_ix
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
+    acqGroup.clear() # free memory
 
     return images
 
@@ -600,7 +627,8 @@ def process_shots(group, metadata, sensmaps):
     data, trj = sort_spiral_data(group, metadata)
 
     # Interpolate sensitivity maps to lower resolution
-    os_region = metadata.userParameters.userParameterDouble[4].value_
+    # WIP: resizing aka interpolating can cause problems - especially when interpolating to a higher resolution
+    os_region = metadata.userParameters.userParameterDouble[4].value
     if np.allclose(os_region,0):
         os_region = 0.25 # use default if no region provided
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
@@ -703,7 +731,6 @@ def sort_spiral_data(group, metadata):
 
         # trajectory
         traj = np.swapaxes(acq.traj,0,1)[:3] # [dims, samples]
-        traj = traj[[1,0,2],:]  # switch x and y dir for correct orientation
         trj.append(traj)
   
     # convert lists to numpy arrays

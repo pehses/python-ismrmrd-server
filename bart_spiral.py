@@ -36,7 +36,7 @@ def process(connection, config, metadata):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -319,8 +319,8 @@ def calc_spiral_traj(ncol, rot_mat, encoding):
     dt_skope = 1e-6
     gammabar = 42.577e6
 
-    traj_params = {item.name: item.value_ for item in encoding.trajectoryDescription.userParameterLong}
-    traj_params.update({item.name: item.value_ for item in encoding.trajectoryDescription.userParameterDouble})
+    traj_params = {item.name: item.value for item in encoding.trajectoryDescription.userParameterLong}
+    traj_params.update({item.name: item.value for item in encoding.trajectoryDescription.userParameterDouble})
 
     nx = encoding.encodedSpace.matrixSize.x
     fov = encoding.reconSpace.fieldOfView_mm.x
@@ -579,6 +579,8 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
         while np.ndim(data) < 3:
             data = data[..., np.newaxis]
     
+    # Flip matrix in RO/PE/3D to be consistent with ICE
+    data = np.flip(data, (0, 1, 2))
     if nz > rNz:
         # remove oversampling in slice direction
         data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]

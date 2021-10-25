@@ -5,6 +5,7 @@ import itertools
 import logging
 import numpy as np
 import base64
+import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
@@ -60,7 +61,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -267,6 +268,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     if group[0].idx.slice == 0:
         np.save(debugFolder + "/" + "img.npy", data)
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     # Normalize and convert to int16
     # save one scaling in 'static' variable
     contr = group[0].idx.contrast
@@ -280,7 +285,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
     
     images = []
@@ -288,7 +294,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
-    # Format as ISMRMRD image data - WIP: something goes wrong here with indexes
+    # Format as ISMRMRD image data 
+    # WIP: images are not displayed in correct order at the scanner 
+    # WIP: some header info is missing (read out image header from ICE reconstructed images processed with FIRE)
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
@@ -296,6 +304,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
             image.image_series_index = 1 + group[0].idx.repetition
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
@@ -303,6 +314,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
         image.image_series_index = 1 + group[0].idx.repetition
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     return images
@@ -321,7 +335,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        data = np.swapaxes(data,0,1) # in my Pulseq gre_refscan sequence read and phase are changed atm
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
@@ -366,7 +379,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
-        trj.append(traj[[1,0,2],:]) # switch x and y dir for correct orientation in FIRE
+        trj.append(traj)
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#

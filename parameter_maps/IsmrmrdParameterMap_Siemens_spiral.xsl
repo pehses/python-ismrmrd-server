@@ -240,25 +240,25 @@
                         <userParameterLong>
                             <name>dephRampUp</name>
                             <value>
-                                <xsl:value-of select="siemens.YAPS.alRegridRampupTime" />
+                                <xsl:value-of select="siemens/YAPS/alRegridRampupTime" />
                             </value>
                         </userParameterLong>
                         <userParameterLong>
                             <name>dephRampDown</name>
                             <value>
-                                <xsl:value-of select="siemens.YAPS.alRegridRampdownTime" />
+                                <xsl:value-of select="siemens/YAPS/alRegridRampdownTime" />
                             </value>
                         </userParameterLong>
                         <userParameterLong>
                             <name>dephFlatTop</name>
                             <value>
-                                <xsl:value-of select="siemens.YAPS.alRegridFlattopTime" />
+                                <xsl:value-of select="siemens/YAPS/alRegridFlattopTime" />
                             </value>
                         </userParameterLong>
                         <userParameterLong>
                             <name>dephAmplitude</name>
                             <value>
-                                <xsl:value-of select="siemens.YAPS.aflRegridADCDuration" />
+                                <xsl:value-of select="siemens/YAPS/aflRegridADCDuration" />
                             </value>
                         </userParameterLong>
                         <!-- <userParameterLong>

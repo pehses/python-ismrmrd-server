@@ -198,7 +198,7 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
-     && pip3 install --no-cache-dir pyxb h5py intel-openmp scipy scikit-image psutil
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image psutil
 
 RUN  mkdir -p /opt/code
 
@@ -211,12 +211,12 @@ RUN  cd /opt/code \
      && pip3 install SpiralTraj* \
      && rm SpiralTraj*
 
-# ISMRMRD Python - above this version the .value_ method of userParameters changes to .value
+# ISMRMRD Python
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python.git \
      && cd /opt/code/ismrmrd-python \
-     && git checkout 80fecd0 \
-     && python3 setup.py install
+     && git checkout v1.9.3 \
+     && pip install .
 
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \

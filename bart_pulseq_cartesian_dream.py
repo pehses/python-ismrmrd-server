@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from cfft import cifftn, cfftn
 import base64
+import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os # , fov_shift, calc_rotmat, pcs_to_gcs
@@ -47,7 +48,7 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -348,7 +349,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 fa_map = calc_fa(abs(ste), abs(fid))
             
             fa_map *= dil
-            current_refvolt = metadata.userParameters.userParameterDouble[5].value_
+            current_refvolt = metadata.userParameters.userParameterDouble[5].value
             nom_fa = dream[1]
             logging.info("current_refvolt = %sV und nom_fa = %s°^" % (current_refvolt, nom_fa))
             ref_volt = current_refvolt * (nom_fa/fa_map)
@@ -364,6 +365,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
             logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
             
             process_raw.imagesets = [None] * n_contr # free list
+            
+            # correct orientation at scanner (consistent with ICE)
+            fa_map = np.swapaxes(fa_map, 0, 1)
+            fa_map = np.flip(fa_map, (0,1,2))
+            ref_volt = np.swapaxes(ref_volt, 0, 1)
+            ref_volt = np.flip(ref_volt, (0,1,2))
         else:
             fa_map = None
             ref_volt = None
@@ -372,9 +379,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
         ref_volt = None
         logging.info("no dream B1 mapping")
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     # Normalize and convert to int16
     # save one scaling in 'static' variable
-
     contr = group[0].idx.contrast
     if process_raw.imascale[contr] is None:
         process_raw.imascale[contr] = 0.8 / data.max()
@@ -388,7 +398,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
@@ -399,53 +410,71 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
     images = []
     if n_par > 1:
         for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par
             image.image_series_index = 1
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
         if fa_map is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 2
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
         if ref_volt is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
+                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 3
                 image.slice = 0
                 image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         
     else:
-        image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
+        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
         image.image_series_index = 1
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
         if fa_map is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 2
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
         
         if ref_volt is not None:
-            image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 3
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
 

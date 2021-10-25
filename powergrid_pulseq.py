@@ -408,7 +408,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2}')
+    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2} rad')
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 

@@ -3,6 +3,7 @@ import ismrmrd
 import os
 import logging
 import numpy as np
+import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
@@ -51,7 +52,7 @@ def process(connection, config, metadata, prot_file=None):
     try:
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -65,7 +66,7 @@ def process(connection, config, metadata, prot_file=None):
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
     n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     acqGroup = [[[[[] for _ in range(n_slc)] for _ in range(n_contr)] for _ in range(n_sets)] for _ in range(n_avgs)]
@@ -204,8 +205,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         data = bart(1, pics_config , trj, data, sensmaps)
     data = np.abs(data)
 
-    # correct orientation at scanner
+    # correct orientation at scanner (consistent with ICE)
     data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
 
     # make sure that data is at least 3D
     while np.ndim(data) < 3:
@@ -225,14 +227,15 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
     
     images = []
     n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set_.maximum + 1
+    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
     n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     # Format as ISMRMRD image data
@@ -243,6 +246,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
             image.image_series_index = 1 + + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
@@ -250,6 +256,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
         image.slice = 0
         image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     return images

@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from cfft import cfftn, cifftn
 import base64
+import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
@@ -43,7 +44,7 @@ def process_cartesian(connection, config, metadata, prot_file):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
+            metadata.encoding[0].trajectory.value, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
             metadata.encoding[0].encodedSpace.matrixSize.z, 
@@ -301,6 +302,10 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         data = np.abs(data)
 
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 0, 1)
+    data = np.flip(data, (0,1,2))
+
     logging.debug("Image data is size %s" % (data.shape,))
 
     # Normalize and convert to int16
@@ -319,7 +324,8 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    '1'})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
@@ -329,28 +335,25 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
     images = []
     if n_par > 1:
         for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
             image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
             image.slice = 0
             image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
     else:
-        image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
+        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
         image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
         image.slice = 0
         image.attribute_string = xml
-        images.append(image)
-
-    # B0 mapping example - only 2D atm
-    if fmap is not None:
-        image = ismrmrd.Image.from_array(fmap.T, acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 2 + group[0].idx.repetition # contains image series index, e.g. different contrasts
-        image.slice = 0
-        image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)

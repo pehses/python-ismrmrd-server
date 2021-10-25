@@ -38,7 +38,7 @@ def apply_prewhitening(data, dmtx):
     '''
 
     s = data.shape
-    return np.asarray(np.asmatrix(dmtx)*np.asmatrix(data.reshape(data.shape[0],data.size//data.shape[0]))).reshape(s)
+    return np.matmul(dmtx, data.reshape(data.shape[0],data.size//data.shape[0])).reshape(s)
 
 def calc_rotmat(acq):
         phase_dir = np.asarray(acq.phase_dir)

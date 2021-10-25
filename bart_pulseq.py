@@ -29,7 +29,7 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value_)[0] # protocol filename from Siemens protocol parameter tFree
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
@@ -45,7 +45,7 @@ def process(connection, config, metadata):
 
     prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
     hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
-    trajtype = hdr.encoding[0].trajectory
+    trajtype = hdr.encoding[0].trajectory.value
 
     if trajtype == 'spiral':
         import importlib

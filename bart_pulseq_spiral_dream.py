@@ -34,8 +34,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     
     logging.debug("Spiral DREAM reconstruction")
     
-    slc_sel = None
-
     # Insert protocol header
     insert_hdr(prot_file, metadata)
     
@@ -124,11 +122,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
                     noiseGroup.clear()
-                    
-                # skip slices in single slice reconstruction
-                if slc_sel is not None and item.idx.slice != slc_sel:
-                    continue
-                
+                                   
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue

@@ -31,11 +31,21 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process(connection, config, metadata):
     
+    # -- Some manual parameters --- #
+    
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
 
     # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
     skope = False
+
+    # Coil Compression: Compress number of coils to cc_cha
+    n_cha = metadata.acquisitionSystemInformation.receiverChannels
+    cc_cha = n_cha - 0
+    if n_cha > cc_cha:
+        logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+
+    # ----------------------------- #
 
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
@@ -133,6 +143,10 @@ def process(connection, config, metadata):
     phs = None
     phs_ref = [None] * n_slc
     base_trj = None
+
+    # compression matrix
+    process_raw.cc_mat = None
+
     try:
         for acq_ctr, item in enumerate(connection):
 
@@ -183,7 +197,7 @@ def process(connection, config, metadata):
                         acsGroup[item.idx.slice].append(item)
                         if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                             # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) # [nx,ny,nz,nc]
+                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx) # [nx,ny,nz,nc]
                             acsGroup[item.idx.slice].clear()
                         continue
 
@@ -246,7 +260,7 @@ def process(connection, config, metadata):
                 # Process acquisitions with PowerGrid
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel)
+                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
 
@@ -294,7 +308,7 @@ def process(connection, config, metadata):
 # Process Data
 #########################
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=None):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel=None):
 
     # average acquisitions before reco
     avg_before = True 
@@ -400,6 +414,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
                         continue
                     else:
                         acq.idx.slice = 0
+                # Coil compression & 
+                if process_raw.cc_mat is not None:
+                    cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat) # SVD based Coil compression
+                    acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
+                    acq.data[:] = cc_data[0,:,0].T
+
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
                 save_trj = acq.traj[:,:4].copy()
                 acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
@@ -568,7 +588,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
 
     return images
 
-def process_acs(group, metadata, dmtx=None):
+def process_acs(group, metadata, cc_cha, dmtx=None):
     """ Process reference scans for parallel imaging calibration
     """
     if len(group)>0:
@@ -584,7 +604,13 @@ def process_acs(group, metadata, dmtx=None):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        data = np.swapaxes(data,0,1) # in gre_refscan sequence read and phase are changed
+        n_cha = metadata.acquisitionSystemInformation.receiverChannels
+        if cc_cha < n_cha:
+            logging.debug(f'Calculate coil compression matrix.')
+            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
+            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
+
+        data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data) # ESPIRiT calibration (c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24))

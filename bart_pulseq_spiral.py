@@ -46,7 +46,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
     # Coil Compression: Compress number of coils to cc_cha
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    cc_cha = n_cha - 8
+    cc_cha = n_cha - 0
     if n_cha > cc_cha:
         logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
 

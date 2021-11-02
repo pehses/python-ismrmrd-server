@@ -244,8 +244,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par
-            image.image_series_index = 1 + + group[0].idx.set
+            if simu: # dont need indices in simulation
+                image.image_index = 1
+                image.image_series_index = 1
+            else:
+                image.image_index = 1 + group[0].idx.contrast * n_par + par
+                image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -254,8 +258,12 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-        image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
+        if simu:
+            image.image_index = 1
+            image.image_series_index = 1
+        else:
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
         image.slice = 0
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 

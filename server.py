@@ -81,6 +81,11 @@ class Server:
                 importlib.reload(bart_pics)
                 logging.info("Starting simplefft_bart processing based on config")
                 bart_pics.process(connection, config, metadata)
+            elif (config == "bart_cs"):
+                import bart_cs
+                importlib.reload(bart_cs)
+                logging.info("Starting compressed sensing processing based on config")
+                bart_pics.process(connection, config, metadata)
             elif (config == "bart_spiral"):
                 import bart_spiral
                 importlib.reload(bart_spiral)

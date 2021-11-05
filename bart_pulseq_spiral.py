@@ -39,7 +39,18 @@ def process_spiral(connection, config, metadata, prot_file):
         bart_pulseq_spiral_dream.process_spiral_dream(connection, config, metadata, prot_file)
         return
 
+    # -- Some manual parameters --- #
+    
+    # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
+
+    # Coil Compression: Compress number of coils to cc_cha
+    n_cha = metadata.acquisitionSystemInformation.receiverChannels
+    cc_cha = n_cha - 0
+    if n_cha > cc_cha:
+        logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+
+    # ----------------------------- #
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)
@@ -86,6 +97,9 @@ def process_spiral(connection, config, metadata, prot_file):
 
     # different contrasts need different scaling
     process_raw.imascale = [None] * 256
+
+    # compression matrix
+    process_raw.cc_mat = None
 
     # parameters for reapplying FOV shift
     nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
@@ -134,7 +148,7 @@ def process_spiral(connection, config, metadata, prot_file):
                     acsGroup[item.idx.slice].append(item)
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
                         acsGroup[item.idx.slice].clear()
                     continue
 
@@ -159,7 +173,7 @@ def process_spiral(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps[item.idx.slice], gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
@@ -202,7 +216,7 @@ def process_spiral(connection, config, metadata, prot_file):
                 if sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) 
-                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
+                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps[item.idx.slice])
                 logging.debug("Sending image to client:\n%s", image)
                 connection.send_image(image)
                 acqGroup = []
@@ -215,7 +229,7 @@ def process_spiral(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -227,6 +241,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
+    if process_raw.cc_mat is not None:
+        logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
+        data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
+
     if gpu:
         nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
@@ -321,7 +339,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     return images
 
-def process_acs(group, metadata, dmtx=None, gpu=False):
+def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
@@ -335,8 +353,14 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
+        n_cha = metadata.acquisitionSystemInformation.receiverChannels
+        if cc_cha < n_cha:
+            logging.debug(f'Calculate coil compression matrix.')
+            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
+            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
         if gpu:
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+            # sensmaps = bart(1, 'caldir 64', data)
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
 

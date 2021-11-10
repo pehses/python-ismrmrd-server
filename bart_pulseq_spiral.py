@@ -43,6 +43,10 @@ def process_spiral(connection, config, metadata, prot_file):
     
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
+    if len(metadata.userParameters.userParameterLong) > 0:
+        online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
+        if online_slc >= 0:
+            slc_sel = int(online_slc)
 
     # Coil Compression: Compress number of coils to cc_cha
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
@@ -145,11 +149,12 @@ def process_spiral(connection, config, metadata, prot_file):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                    acsGroup[item.idx.slice].append(item)
-                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
-                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
-                        acsGroup[item.idx.slice].clear()
+                    if item.idx.contrast == 0: # if B0 mapping refscan was done, use only 1st contrast
+                        acsGroup[item.idx.slice].append(item)
+                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
+                            acsGroup[item.idx.slice].clear()
                     continue
 
                 if item.idx.segment == 0:

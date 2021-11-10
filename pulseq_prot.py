@@ -163,7 +163,7 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
     # Process acquisition
     #---------------------------
 
-    prot_acq = prot.read_acquisition(acq_ctr)
+    prot_acq = prot.read_acquisition(acq_ctr) # this is by far the slowest part
 
     # convert positions for correct rotation matrix - this was experimentally validated on 20210709
     # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories

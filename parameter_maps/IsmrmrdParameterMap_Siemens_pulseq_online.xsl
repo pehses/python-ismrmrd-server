@@ -808,6 +808,13 @@
                         </value>
                     </userParameterLong>
                 </xsl:if>
+                
+                <userParameterLong>
+                    <name>recon_slice</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[63]"/>
+                    </value>
+                </userParameterLong>
 
                 <userParameterDouble>
                     <name>dwellTime_us</name>

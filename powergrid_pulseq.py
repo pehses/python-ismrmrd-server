@@ -35,6 +35,10 @@ def process(connection, config, metadata):
     
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
+    if len(metadata.userParameters.userParameterLong) > 0:
+        online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
+        if online_slc >= 0:
+            slc_sel = int(online_slc)
 
     # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
     skope = False
@@ -194,11 +198,12 @@ def process(connection, config, metadata):
                 if slc_sel is None or item.idx.slice == slc_sel:
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                        acsGroup[item.idx.slice].append(item)
-                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
-                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx) # [nx,ny,nz,nc]
-                            acsGroup[item.idx.slice].clear()
+                        if item.idx.contrast == 0: # WIP: calculate B0 Field map from both contrasts: remove this if condition and seperate data in process_acs
+                            acsGroup[item.idx.slice].append(item)
+                            if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                                # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                                sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx) # [nx,ny,nz,nc]
+                                acsGroup[item.idx.slice].clear()
                         continue
 
                     # Process imaging scans - deal with ADC segments

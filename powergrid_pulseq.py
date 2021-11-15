@@ -144,6 +144,16 @@ def process(connection, config, metadata):
     if 'Directions' in prot_arrays:
         diff_dirs = prot_arrays['Directions']
 
+    # field map, if it was acquired - needs at least 2 reference contrasts
+    max_refcontr = 0
+    if 'echo_times' in prot_arrays:
+        echo_times = prot_arrays['echo_times']
+        te_diff = echo_times[1] - echo_times[0] # [s]
+        process_raw.fmap = [None] * n_slc
+    else:
+        te_diff = None
+        process_raw.fmap = None
+
     phs = None
     phs_ref = [None] * n_slc
     base_trj = None
@@ -198,12 +208,13 @@ def process(connection, config, metadata):
                 if slc_sel is None or item.idx.slice == slc_sel:
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                        if item.idx.contrast == 0: # WIP: calculate B0 Field map from both contrasts: remove this if condition and seperate data in process_acs
-                            acsGroup[item.idx.slice].append(item)
-                            if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
-                                # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                                sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx) # [nx,ny,nz,nc]
-                                acsGroup[item.idx.slice].clear()
+                        acsGroup[item.idx.slice].append(item)
+                        if item.idx.contrast > max_refcontr:
+                            max_refcontr = item.idx.contrast
+                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and item.idx.contrast==max_refcontr:
+                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, te_diff) # [nx,ny,nz,nc]
+                            acsGroup[item.idx.slice].clear()
                         continue
 
                     # Process imaging scans - deal with ADC segments
@@ -352,28 +363,34 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
-    fmap_path = dependencyFolder+"/fmap.npz"
-    if not os.path.exists(fmap_path):
-        fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
-        fmap_name = 'NO Field Map'
-        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+    if process_raw.fmap is not None:
+        fmap_data = process_raw.fmap
+        fmap_name = "Field Map from reference scan"
     else:
-        fmap = np.load(fmap_path, allow_pickle=True)
-        if 'name' in fmap:
-            fmap_name = fmap['name'].item()
+        fmap_path = dependencyFolder+"/fmap.npz"
+        if not os.path.exists(fmap_path):
+            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
+            fmap_name = 'NO Field Map'
+            logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
         else:
-            fmap_name = 'No name.'
-    fmap_data = fmap['fmap']
-    if fmap_shape != list(fmap_data.shape):
-        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-        fmap_data = np.zeros(fmap_shape)
+            fmap = np.load(fmap_path, allow_pickle=True)
+            if 'name' in fmap:
+                fmap_name = fmap['name'].item()
+            else:
+                fmap_name = 'No name.'
+        fmap_data = fmap['fmap']
+        if fmap_shape != list(fmap_data.shape):
+            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
+            fmap_data = np.zeros(fmap_shape)
+        if 'params' in fmap:
+            logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
 
-    logging.debug("Field Map name: %s", fmap_name)
-    if 'params' in fmap:
-        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+    fmap_data = np.asarray(fmap_data)
     dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] collapses to [slices/nz,ny,nx] as slices or nz is always 1 (no multi-slab)
+    logging.debug("Field Map name: %s", fmap_name)
 
     # Calculate phase maps from shot images and append if necessary
     pcSENSE = False
@@ -447,7 +464,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
 
     """ PowerGrid reconstruction
-    # Comment from Alex Cerjanic, who built PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
+    # Comment from Alex Cerjanic, who developed PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
     # He recommends using the Hanning interpolator with ~1 time segment per ms of readout (which is based on experience @3T)
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
@@ -593,12 +610,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     return images
 
-def process_acs(group, metadata, cc_cha, dmtx=None):
+def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None):
     """ Process reference scans for parallel imaging calibration
     """
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
+        data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
@@ -609,23 +627,29 @@ def process_acs(group, metadata, cc_cha, dmtx=None):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
+        # SVD based Coil compression 
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
-            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
-            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
+            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
+            for k in range(data.shape[-1]):
+                data[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat)
 
-        data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
+        # ESPIRiT calibration - use only first contrast
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             print("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data) # ESPIRiT calibration (c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24))
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             print("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data[...,0])
 
+        # Field Map calculation - if acquired
         refimg = cifftn(data, [0,1,2])
-        np.save(debugFolder + "/" + "refimg.npy", refimg)
+        if te_diff is not None and data.shape[-1] > 1:
+            slc = group[0].idx.slice
+            process_raw.fmap[slc] = calc_fmap(refimg, te_diff, metadata)
 
+        np.save(debugFolder + "/" + "refimg.npy", refimg)
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -646,6 +670,46 @@ def sens_from_raw(group, metadata):
     sensmaps = bart(1, 'ecalib -m 1 -I', sensmaps)  # ESPIRiT calibration
     return sensmaps
 
+def calc_fmap(imgs, te_diff, metadata):
+    """ Calculate field maps from reference images with two different contrasts
+
+        imgs: [nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
+        te_diff: TE difference [s]
+    """
+    from skimage.restoration import unwrap_phase
+    from skimage.transform import resize
+    from scipy.ndimage import gaussian_filter, median_filter
+    
+    phasediff = imgs[...,0] * np.conj(imgs[...,1]) # phase difference
+    phasediff = np.sum(phasediff, axis=-1) # coil combination
+    if phasediff.shape[2] == 1:
+        phasediff = phasediff[:,:,0]
+    phasediff = unwrap_phase(np.angle(phasediff))
+    fmap = phasediff/te_diff
+    fmap = np.atleast_3d(fmap)
+
+    # simple threshold mask
+    thresh = 0.13
+    mask = np.sqrt(np.sum(np.abs(imgs[...,0])**2, axis=-1))
+    mask /= np.max(mask)
+    mask[mask<thresh] = 0
+    mask[mask>=thresh] = 1
+
+    # apply masking and some regularization
+    fmap *= mask
+    fmap = gaussian_filter(fmap, sigma=0.5)
+    fmap = median_filter(fmap, size=2)
+
+    # interpolate if necessary
+    fmap = np.atleast_3d(fmap)
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    newshape = [nx,ny,nz]
+    fmap = resize(fmap, newshape, anti_aliasing=True)
+    
+    return fmap.T # to [nz,ny,nx]
+
 def process_shots(group, metadata, sensmaps):
     """ Reconstruct images from single shots for calculation of phase maps
 
@@ -658,7 +722,7 @@ def process_shots(group, metadata, sensmaps):
     data, trj = sort_spiral_data(group, metadata)
 
     # Interpolate sensitivity maps to lower resolution
-    # WIP: resizing aka interpolating can cause problems - especially when interpolating to a higher resolution
+    # WIP: resizing aka interpolation of complex data can cause problems - especially when interpolating to a higher resolution
     os_region = metadata.userParameters.userParameterDouble[4].value
     if np.allclose(os_region,0):
         os_region = 0.25 # use default if no region provided
@@ -780,9 +844,11 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
+    contr_max = 0
     for acq in group:
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
+        contr = acq.idx.contrast
         if enc1 < enc1_min:
             enc1_min = enc1
         if enc1 > enc1_max:
@@ -791,13 +857,16 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2_min = enc2
         if enc2 > enc2_max:
             enc2_max = enc2
+        if contr > contr_max:
+            contr_max = contr
 
     nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.x
     # ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    n_contr = contr_max + 1
 
-    kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
+    kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
     logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
@@ -805,6 +874,7 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     for acq in group:
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
+        contr = acq.idx.contrast
 
         # in case dim sizes smaller than expected, sort data into k-space center (e.g. for reference scans)
         ncol = acq.data.shape[-1]
@@ -824,16 +894,17 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2 += cz - cenc2
         
         if dmtx is None:
-            kspace[enc1, enc2, :, col] += acq.data
+            kspace[enc1, enc2, :, col, contr] += acq.data
         else:
-            kspace[enc1, enc2, :, col] += apply_prewhitening(acq.data, dmtx)
-        counter[enc1, enc2] += 1
+            kspace[enc1, enc2, :, col, contr] += apply_prewhitening(acq.data, dmtx)
+        if contr==0:
+            counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
-    kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis])
+    kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis,np.newaxis])
 
-    # rearrange kspace for bart - target size: (nx, ny, nz, nc)
-    kspace = np.transpose(kspace, [3, 0, 1, 2])
+    # rearrange kspace for bart - target size: (nx, ny, nz, nc, n_contr)
+    kspace = np.transpose(kspace, [3, 0, 1, 2, 4])
 
     return kspace
 

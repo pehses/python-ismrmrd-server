@@ -132,7 +132,7 @@ def get_ismrmrd_arrays(prot_file):
 
     return arr
 
-def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return_basetrj=True):
+def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
@@ -144,26 +144,10 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
                       The unit for gradients is [T/m]
                       The unit for trajectories is [rad/m * FOV[m]/2pi], which is unitless (used by the BART toolbox & PowerGrid)
     """
-    #---------------------------
-    # Read protocol
-    #---------------------------
-
-    if (os.path.splitext(prot_file)[1] == ''):
-        prot_file += '.h5'
-    try:
-        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    except:
-        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
-        try:
-            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-        except:
-            raise ValueError('Pulseq protocol file not found.')
-
-    #---------------------------
-    # Process acquisition
-    #---------------------------
-
-    prot_acq = prot.read_acquisition(acq_ctr)
+  
+    # #---------------------------
+    # # Process acquisition
+    # #---------------------------
 
     # convert positions for correct rotation matrix - this was experimentally validated on 20210709
     # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
@@ -190,15 +174,12 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_REPETITION)
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
         dset_acq.setFlag(ismrmrd.ACQ_IS_NOISE_MEASUREMENT)
-        prot.close()
         return
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PHASECORR_DATA)
-        prot.close()
         return
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
         dset_acq.setFlag(ismrmrd.ACQ_IS_DUMMYSCAN_DATA)
-        prot.close()
         return
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)
@@ -206,7 +187,6 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         dset_acq.resize(trajectory_dimensions=prot_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
         if dset_acq.traj.shape[-1] > 0:
             dset_acq.traj[:] = prot_acq.traj[:]
-        prot.close()
         return
 
     # deal with noncartesian trajectories
@@ -245,8 +225,6 @@ def insert_acq(prot_file, dset_acq, acq_ctr, metadata, noncartesian=True, return
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
         dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
-
-    prot.close()
     
     if return_basetrj:
         return base_trj

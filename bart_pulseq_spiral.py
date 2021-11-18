@@ -85,8 +85,17 @@ def process_spiral(connection, config, metadata, prot_file):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     base_trj = None
+
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = []
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    for n in range(prot.number_of_acquisitions()):
+        acqs.append(prot.read_acquisition(n))
+    prot.close()
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -95,7 +104,8 @@ def process_spiral(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
+                base_traj = insert_acq(acqs[0], item, metadata)
+                acqs.pop(0)
                 if base_traj is not None:
                     base_trj = base_traj
 

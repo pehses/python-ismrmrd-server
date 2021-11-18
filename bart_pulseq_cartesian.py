@@ -75,14 +75,23 @@ def process_cartesian(connection, config, metadata, prot_file):
     # different contrasts need different scaling
     process_raw.imascale = [None] * 256
 
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = []
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    for n in range(prot.number_of_acquisitions()):
+        acqs.append(prot.read_acquisition(n))
+    prot.close()
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                insert_acq(prot_file, item, acq_ctr, metadata, noncartesian=False, return_basetrj=False)
+                insert_acq(acqs[0], item, metadata, noncartesian=False, return_basetrj=False)
+                acqs.pop(0)
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)

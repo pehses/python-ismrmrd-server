@@ -40,8 +40,12 @@ def process(connection, config, metadata):
         online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
         if online_slc >= 0:
             slc_sel = int(online_slc)
+            fast_recon = True
+        else:
+            fast_recon = False
     else:
         online_recon = False
+        fast_recon = False
 
     # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
     skope = False
@@ -155,7 +159,7 @@ def process(connection, config, metadata):
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
         te_diff = echo_times[1] - echo_times[0] # [s]
-        process_raw.fmap = [None] * n_slc
+        process_raw.fmap = {'fmap': [None] * n_slc, 'mask': [None] * n_slc, 'name': 'Field Map from reference scan'}
     else:
         te_diff = None
         process_raw.fmap = None
@@ -287,16 +291,18 @@ def process(connection, config, metadata):
                             shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps[item.idx.slice])
 
                     # Process acquisitions with PowerGrid - fast single slice online reco
-                    if (online_recon and slc_sel is not None and item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE)):
+                    if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and fast_recon):
                         logging.info("Processing a group of k-space data")
-                        images = process_raw_online(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel)
+                        group = acqGroup[item.idx.slice][item.idx.contrast]
+                        shotgroup = shotimgs[item.idx.slice][item.idx.contrast]
+                        images = process_raw_online(group, metadata, sensmaps, shotgroup, cc_cha, slc_sel)
                         logging.debug("Sending images to client:\n%s", images)
                         connection.send_image(images)
 
                 # Process acquisitions with PowerGrid - full recon
-                if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) and not online_recon):
+                if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) and not fast_recon):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel)
+                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel, online_recon)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup.clear()
@@ -345,7 +351,7 @@ def process(connection, config, metadata):
 # Process Data
 #########################
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel=None):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel=None, online_recon=False):
 
     # average acquisitions before reco
     avg_before = True 
@@ -385,27 +391,25 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Insert Field Map
     if process_raw.fmap is not None:
-        fmap_data = process_raw.fmap
-        fmap_name = "Field Map from reference scan"
+        fmap = process_raw.fmap
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
-            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
-            fmap_name = 'NO Field Map'
+            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
             logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
         else:
             fmap = np.load(fmap_path, allow_pickle=True)
-            if 'name' in fmap:
-                fmap_name = fmap['name'].item()
-            else:
-                fmap_name = 'No name.'
-        fmap_data = fmap['fmap']
-        if fmap_shape != list(fmap_data.shape):
-            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-            fmap_data = np.zeros(fmap_shape)
+            if 'name' not in fmap:
+                fmap['name'] = 'No name.'
+        if fmap_shape != list(fmap['fmap'].shape):
+            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
+            fmap['fmap'] = np.zeros(fmap_shape)
         if 'params' in fmap:
             logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
 
+    fmap_data = fmap['fmap']
+    fmap_mask = fmap['mask']
+    fmap_name = fmap['name']
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
 
@@ -422,9 +426,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         else:
             shotimgs = np.stack(shotimgs)
         shotimgs = np.swapaxes(shotimgs, 0, 1) # swap slice & contrast as slice phase maps should be ordered [contrast, slice, shots, ny, nx]
-        shotimgs = np.swapaxes(shotimgs, -1, -2) # swap nx & ny
-        # mask = fmap['bet_mask']
-        mask = fmap['mask'] # seems to make no difference which mask is used
+        mask = fmap_mask
         if slc_sel is not None:
             mask = mask[slc_sel]
         phasemaps = calc_phasemaps(shotimgs, mask)
@@ -532,10 +534,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
     data = np.transpose(data, [3,4,2,1,0,5,6,7]).mean(axis=0)
 
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, -1, -2)
-    data = np.flip(data, (-3,-2,-1))
-
     logging.debug("Image data is size %s" % (data.shape,))
    
     images = []
@@ -557,17 +555,22 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Diffusion evaluation
     if "b_values" in prot_arrays:
-        mask = fmap['mask']
+        mask = fmap_mask
         if slc_sel is not None:
             mask = mask[slc_sel]
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
         dsets.append(adc_maps)
 
-    # Normalize and convert to int16
+    # Correct orientation at scanner (consistent with ICE) + normalize and convert to int16
     for k in range(len(dsets)):
-        dsets[k] *= 32767 * 0.8 / dsets[k].max()
-        dsets[k] = np.around(dsets[k])
-        dsets[k] = dsets[k].astype(np.int16)
+        dsets[k] = np.swapaxes(dsets[k], -1, -2)
+        dsets[k] = np.flip(dsets[k], (-3,-2,-1))
+        if online_recon:
+            dsets[k] *= 32767 * 0.8 / dsets[k].max()
+            dsets[k] = np.around(dsets[k])
+            dsets[k] = dsets[k].astype(np.int16)
+        else:
+            dsets[k] *= 0.8 / dsets[k].max()
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -660,27 +663,25 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
 
     # Insert Field Map
     if process_raw.fmap is not None:
-        fmap_data = process_raw.fmap
-        fmap_name = "Field Map from reference scan"
+        fmap = process_raw.fmap
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
-            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape)}
-            fmap_name = 'NO Field Map'
+            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
             logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
         else:
             fmap = np.load(fmap_path, allow_pickle=True)
-            if 'name' in fmap:
-                fmap_name = fmap['name'].item()
-            else:
-                fmap_name = 'No name.'
-        fmap_data = fmap['fmap']
-        if fmap_shape != list(fmap_data.shape):
-            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap_data.shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-            fmap_data = np.zeros(fmap_shape)
+            if 'name' not in fmap:
+                fmap['name'] = 'No name.'
+        if fmap_shape != list(fmap['fmap'].shape):
+            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
+            fmap['fmap'] = np.zeros(fmap_shape)
         if 'params' in fmap:
             logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-    fmap_data = fmap_data[slc_sel]
+
+    fmap_data = fmap['fmap'][slc_sel]
+    fmap_mask = fmap['mask'][slc_sel]
+    fmap_name = fmap['name']
     fmap_data = np.asarray(fmap_data)
     dset_tmp.append_array('FieldMap', fmap_data)
     logging.debug("Field Map name: %s", fmap_name)
@@ -690,9 +691,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     if shotimgs is not None:
         pcSENSE = True
         shotimgs = np.stack(shotimgs)[np.newaxis,np.newaxis] # stack shots & add axes for contrast & slice (which are =1 here)
-        shotimgs = np.swapaxes(shotimgs, -1, -2) # swap nx & ny
-        mask = fmap['mask']
-        mask = mask[slc_sel]
+        mask = fmap_mask
         phasemaps = calc_phasemaps(shotimgs, mask)
         np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
         dset_tmp.append_array("PhaseMaps", phasemaps)
@@ -876,6 +875,7 @@ def calc_fmap(imgs, te_diff, metadata):
     from skimage.restoration import unwrap_phase
     from skimage.transform import resize
     from scipy.ndimage import gaussian_filter, median_filter
+    from dipy.segment.mask import median_otsu
     
     phasediff = imgs[...,0] * np.conj(imgs[...,1]) # phase difference
     phasediff = np.sum(phasediff, axis=-1) # coil combination
@@ -885,12 +885,9 @@ def calc_fmap(imgs, te_diff, metadata):
     fmap = phasediff/te_diff
     fmap = np.atleast_3d(fmap)
 
-    # simple threshold mask
-    thresh = 0.13
-    mask = np.sqrt(np.sum(np.abs(imgs[...,0])**2, axis=-1))
-    mask /= np.max(mask)
-    mask[mask<thresh] = 0
-    mask[mask>=thresh] = 1
+    # mask image with median otsu from dipy
+    img = np.sqrt(np.sum(np.abs(imgs[...,0])**2, axis=-1))
+    img_masked, mask = median_otsu(img, median_radius=1, numpass=20)
 
     # apply masking and some regularization
     fmap *= mask
@@ -905,7 +902,7 @@ def calc_fmap(imgs, te_diff, metadata):
     newshape = [nx,ny,nz]
     fmap = resize(fmap, newshape, anti_aliasing=True)
     
-    return fmap.T # to [nz,ny,nx]
+    return fmap.T, mask.T # to [nz,ny,nx]
 
 def process_shots(group, metadata, sensmaps):
     """ Reconstruct images from single shots for calculation of phase maps
@@ -977,10 +974,15 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     directions = prot_arrays['Directions']
     n_directions = directions.shape[0]
 
-    # reshape images - we dont use repetions and Nz (no 3D imaging for diffusion)
+    # reshape images - we dont use repetitions and Nz (no 3D imaging for diffusion)
     b0 = b0[0,0,0,:,0,:,:] # [slices, Ny, Nx]
     imgshape = [s for s in b0.shape]
     diff = np.transpose(diffw_imgs[0,:,:,:,0], [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
+
+    # scale data to not run into problems with small numbers
+    scale = 1/np.max(diff)
+    b0 *= scale
+    diff *= scale
 
     # Fit ADC for each direction by linear least squares
     diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0

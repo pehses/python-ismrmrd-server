@@ -37,14 +37,19 @@ def apply_prewhitening(data, dmtx):
     :returns w_data: Prewhitened data, ``[coil, ...]``,
     '''
 
+    if dmtx is None:
+        return data
+
     s = data.shape
     return np.matmul(dmtx, data.reshape(data.shape[0],data.size//data.shape[0])).reshape(s)
+
 
 def calc_rotmat(acq):
         phase_dir = np.asarray(acq.phase_dir)
         read_dir = np.asarray(acq.read_dir)
         slice_dir = np.asarray(acq.slice_dir)
         return np.round(np.concatenate([phase_dir[:,np.newaxis], read_dir[:,np.newaxis], slice_dir[:,np.newaxis]], axis=1), 6)
+
 
 def remove_os(data, axis=0):
     '''Remove oversampling (assumes os factor 2)

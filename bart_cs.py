@@ -7,43 +7,43 @@ import numpy as np
 import numpy.fft as fft
 import base64
 
-from bart import bart
+from reco_helper import calculate_prewhitening, apply_prewhitening
+# from bart import bart
+from bartpy.wrapper import bart
 
 
-
-# from ismrmdrdtools (wip: import from ismrmrdtools instead)
-def calculate_prewhitening(noise, scale_factor=1.0):
-    '''Calculates the noise prewhitening matrix
-
-    :param noise: Input noise data (array or matrix), ``[coil, nsamples]``
-    :scale_factor: Applied on the noise covariance matrix. Used to
-                   adjust for effective noise bandwith and difference in
-                   sampling rate between noise calibration and actual measurement:
-                   scale_factor = (T_acq_dwell/T_noise_dwell)*NoiseReceiverBandwidthRatio
-
-    :returns w: Prewhitening matrix, ``[coil, coil]``, w*data is prewhitened
-    '''
-
-    noise_int = noise.reshape((noise.shape[0], noise.size//noise.shape[0]))
-    M = float(noise_int.shape[1])
-    dmtx = (1/(M-1))*np.asmatrix(noise_int)*np.asmatrix(noise_int).H
-    dmtx = np.linalg.inv(np.linalg.cholesky(dmtx))
-    dmtx = dmtx*np.sqrt(2)*np.sqrt(scale_factor)
-    return dmtx
-
-
-def apply_prewhitening(data,dmtx):
-    '''Apply the noise prewhitening matrix
-
-    :param noise: Input noise data (array or matrix), ``[coil, ...]``
-    :param dmtx: Input noise prewhitening matrix
-
-    :returns w_data: Prewhitened data, ``[coil, ...]``,
-    '''
-
-    s = data.shape
-    return np.asarray(np.asmatrix(dmtx)*np.asmatrix(data.reshape(data.shape[0],data.size//data.shape[0]))).reshape(s)
+def getCoilInfo(coilname='nova_ptx'):
+    coilname = coilname.lower()
+    if coilname=='nova_ptx':
+        fft_scale = np.array([
+            1.024957, 0.960428, 0.991236, 1.037026, 1.071855, 1.017678,
+            1.02946 , 1.026439, 1.083618, 1.124822, 1.169501, 1.148701,
+            1.220159, 1.211465, 1.212671, 1.160536, 1.072906, 1.049849,
+            1.046032, 1.018297, 1.024308, 0.975085, 0.977127, 0.975455,
+            0.966018, 0.945748, 0.943535, 0.964435, 1.009673, 0.9225  ,
+            0.962792, 0.935691])
+        rawdata_corrfactors = np.array([
+            -7.869929+3.80047j , -7.727324+4.071778j, -7.88741 +3.761298j,
+            -7.746147+4.034059j, -7.905413+3.721748j, -7.681937+3.962719j,
+            -7.869919+3.756741j, -7.708525+3.898736j, -7.344962+4.680127j,
+            -7.219433+4.857659j, -7.362616+4.62574j , -7.207232+4.834069j,
+            -7.335363+4.60201j , -7.103662+4.94855j , -7.339441+4.680904j,
+            -7.114415+4.918804j, -7.366599+4.685465j, -7.150412+4.849619j,
+            -7.338072+4.695826j, -7.179264+4.87732j , -7.334629+4.790239j,
+            -7.097607+4.900652j, -7.325254+4.716376j, -7.147962+4.788579j,
+            -7.354259+4.671206j, -7.1664  +4.843273j, -7.292011+4.672282j,
+            -7.171817+4.863891j, -7.357615+4.663175j, -7.049273+4.926576j,
+            -7.300245+4.660961j, -6.767411+4.967862j])
+    else:
+        raise IndexError("coilname not known")
+    return fft_scale, rawdata_corrfactors
     
+
+def combine_DM(D, M):
+    # the combined matrix can be applied to pre-whiten and
+    # coil compress the data simultaneously. Example:
+    # sig_white_cc = bart(1, 'ccapply -p 12', sig, DM)
+    return np.conj(D) @ M
 
 
 # Folder for debug output files
@@ -87,12 +87,18 @@ def process(connection, config, metadata):
     sensmaps = [None] * 256
     dmtx = None
 
+    _, corr_factors = getCoilInfo()
+    corr_factors = corr_factors[:, np.newaxis]
+    ncc = 10
+
     try:
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+                    item.data *= corr_factors
 
                 # wip: run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -111,15 +117,27 @@ def process(connection, config, metadata):
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                
+                if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
+                elif len(acsGroup[item.idx.slice]) > 0 and sensmaps[item.idx.slice] is None:
+                    # warning: multi-slice 2D slices may be skipped
+                    if ncc>0:
+                        # calibrate coil compression
+                        caldata = list()
+                        for caldata in acsGroup[item.idx.slice]:
+                            caldata.append(apply_prewhitening(item.data, dmtx))
+                        caldata = np.moveaxis(np.asarray(caldata), 1, 0)
+                        caldata = caldata.reshape([caldata.shape[0], -1])
 
 
                 acqGroup.append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
+                
+
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
                     if sensmaps[item.idx.slice] is None:

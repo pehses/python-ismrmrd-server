@@ -197,6 +197,9 @@ def main(args):
                 else:
                     print("Unsupported data type: ", mrdImg.data.dtype)
 
+                dicomDset.SeriesNumber               = mrdImg.image_series_index
+                dicomDset.InstanceNumber             = mrdImg.image_index
+
                 # ----- Set some mandatory default values -----
                 if not 'SamplesPerPixel' in dicomDset:
                     dicomDset.SamplesPerPixel = 1

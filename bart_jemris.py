@@ -38,8 +38,10 @@ def process(connection, config, metadata, prot_file=None):
     if prot_file is not None:
         logging.debug("Reconstruction of scanner data.")
         insert_hdr(prot_file, metadata)
+        simu = False
     else:
         logging.debug("Reconstruction of simulated data.")
+        simu = True
 
     # Check for GPU availability
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -77,10 +79,18 @@ def process(connection, config, metadata, prot_file=None):
     sensmaps = [None] * n_slc
     sensmaps_jemris = []
     dmtx = None
-    simu = True
+
+    # read protocol acquisitions - faster than doing it one by one
+    if prot_file is not None:
+        logging.debug("Reading in protocol acquisitions.")
+        acqs = []
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+        for n in range(prot.number_of_acquisitions()):
+            acqs.append(prot.read_acquisition(n))
+        prot.close()
 
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -89,8 +99,9 @@ def process(connection, config, metadata, prot_file=None):
 
                 # Insert acquisition protocol, if Pulseq data
                 if prot_file is not None:
-                    insert_acq(prot_file, item, acq_ctr, metadata, return_basetrj=False)
-                    simu = False
+                    insert_acq(acqs[0], item, metadata, return_basetrj=False)
+                    acqs.pop(0)
+
                 # Jemris sensitivity maps - only if simulated data (ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is set in scanner data for some reason)
                 elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
                     sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))

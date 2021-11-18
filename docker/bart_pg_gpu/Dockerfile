@@ -198,7 +198,7 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image psutil
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil
 
 RUN  mkdir -p /opt/code
 

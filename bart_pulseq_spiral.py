@@ -229,7 +229,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
@@ -326,10 +326,10 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        if gpu:
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
 
         refimg = cifftn(data,axes=[0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)

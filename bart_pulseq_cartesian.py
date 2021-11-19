@@ -246,10 +246,11 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = remove_os(data)
 
-        if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
+        # ESPIRiT
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data) 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -305,7 +306,7 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
             else:
                 fmap = None
     else:
-        if gpu:
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         else:
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)

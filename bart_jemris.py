@@ -178,7 +178,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, data.shape))
     nc = data.shape[-1]
 
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, ny, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
@@ -292,14 +292,20 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             nufft_config = 'nufft -g -i -l 0.001 -t'
             ecalib_config = 'ecalib -g -m 1 -I'
         else:
             nufft_config = 'nufft -i -l 0.001 -t'
             ecalib_config = 'ecalib -m 1 -I'
 
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        # nufft
+        try:
+            sensmaps = bart(1, nufft_config, trj, data)
+        except: # fall back to CPU, if GPU doesnt work
+            nufft_config = 'nufft -i -l 0.001 -t'
+            sensmaps = bart(1, nufft_config, trj, data)
+
         np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
         if sensmaps.ndim == 2:
             sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
@@ -312,7 +318,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 
         # ESPIRiT calibration
         try:
-            sensmaps = bart(1, ecalib_config, sensmaps)  
+            sensmaps = bart(1, ecalib_config, sensmaps)
         except: # if the array is too big for the GPU RAM (especially for a large 3D ACS scan) we do it on CPU
             ecalib_config = 'ecalib -m 1 -I'
             sensmaps = bart(1, ecalib_config, sensmaps)

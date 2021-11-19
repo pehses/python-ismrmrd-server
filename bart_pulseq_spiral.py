@@ -260,7 +260,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
         data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
 
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
@@ -373,11 +373,13 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
             logging.debug(f'Calculate coil compression matrix.')
             process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
             data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
-        if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+
+        # ESPIRiT calibration
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
             # sensmaps = bart(1, 'caldir 64', data)
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
 
         refimg = cifftn(data,axes=[0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)

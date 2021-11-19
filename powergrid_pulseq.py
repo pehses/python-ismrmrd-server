@@ -833,7 +833,10 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
                 data[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat)
 
         # ESPIRiT calibration - use only first contrast
+        gpu = False
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+            gpu = True
+        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
@@ -853,7 +856,7 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
                 os_region = 0.25 # use default if no region provided
             nx = metadata.encoding[0].encodedSpace.matrixSize.x
             data = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data)
-            if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+            if gpu and data.shape[2] > 1:
                 sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data[...,0])
             else:
                 sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data[...,0])
@@ -925,19 +928,12 @@ def process_shots(group, metadata, sensmaps_shots):
     # sort data
     data, trj = sort_spiral_data(group, metadata)
 
-    # WIP: use only the data, that is in the oversampled area for recon
-    # WIP: Evtl regularisierung weglassen und weniger Iterationen
-    # find index of end of oversampled region
-    # data = data[:,:index]
-
     # undo the swap in process_acs as BART needs different orientation
     sensmaps = np.swapaxes(sensmaps_shots, 0, 1) 
 
     # Reconstruct low resolution images
-    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-       pics_config = 'pics -g -l1 -r 0.001 -S -e -i 30 -t'
-    else:
-       pics_config = 'pics -l1 -r 0.001 -S -e -i 30 -t'
+    # dont use GPU as it creates a lot of overhead, which causes longer recon times
+    pics_config = 'pics -l1 -r 0.001 -S -e -i 30 -t'
 
     imgs = []
     for k in range(data.shape[2]):

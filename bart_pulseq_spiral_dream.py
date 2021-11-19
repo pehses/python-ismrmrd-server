@@ -245,7 +245,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         # pics_config = 'pics -g -S -e -R T:7:0:.0001 -i 50 -t'
         pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
@@ -492,7 +492,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration

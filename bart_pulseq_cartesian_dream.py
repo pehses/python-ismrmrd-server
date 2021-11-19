@@ -261,10 +261,11 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
+        # ESPIRiT calibration
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data) 
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -296,7 +297,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         else:
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)

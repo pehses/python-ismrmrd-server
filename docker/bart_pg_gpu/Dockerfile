@@ -15,7 +15,8 @@ RUN  apt install software-properties-common --no-install-recommends --no-install
      && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null \
      && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
      && apt update \
-     && apt install cmake --no-install-recommends --no-install-suggests --yes
+     && apt install cmake-data=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes \
+     && apt install cmake=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes
 
 # Install mkl
 COPY ./mkl.sh /tmp/

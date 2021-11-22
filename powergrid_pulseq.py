@@ -395,6 +395,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # Insert Field Map
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
+        # 3D filtering of field map
+        from scipy.ndimage import gaussian_filter
+        if slc_sel is not None:
+            fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
+        else:
+            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1)
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
@@ -415,8 +421,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     fmap_name = fmap['name']
     if slc_sel is not None:
         fmap_data = fmap_data[slc_sel]
-
+        fmap_mask = fmap_mask[slc_sel]
     fmap_data = np.asarray(fmap_data)
+    fmap_mask = np.asarray(fmap_mask)
+    np.save(debugFolder+"/fmap_data.npy", fmap_data)
+    np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
+    # remove slice dimension, if field map was 3D
+    if len(fmap_data) == 1: fmap_data = fmap_data[0]
+    if len(fmap_mask) == 1: fmap_mask = fmap_mask[0]
+
     dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] collapses to [slices/nz,ny,nx] as slices or nz is always 1 (no multi-slab)
     logging.debug("Field Map name: %s", fmap_name)
 
@@ -429,9 +442,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         else:
             shotimgs = np.stack(shotimgs)
         shotimgs = np.swapaxes(shotimgs, 0, 1) # swap slice & contrast as slice phase maps should be ordered [contrast, slice, shots, ny, nx]
-        mask = fmap_mask
-        if slc_sel is not None:
-            mask = mask[slc_sel]
+        mask = fmap_mask.copy()
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -473,10 +484,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
-    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2} rad')
-    ts = min(ts_time, ts_fmap)
+    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
+    # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
+    ts = int(1000 * readout_dur / (np.pi/2))
+    # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
+    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -495,7 +507,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
  
     mpi = True
     temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts // 2
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
 
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
@@ -557,13 +569,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Diffusion evaluation
     if "b_values" in prot_arrays:
-        mask = fmap_mask
-        if slc_sel is not None:
-            mask = mask[slc_sel]
+        mask = fmap_mask.copy()
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
+        adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
 
-    # Correct orientation at scanner (consistent with ICE) + normalize and convert to int16
+    # Normalize and convert to int16
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-3,-2,-1))
@@ -619,10 +630,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
             img_ix = 0
             for img in data:
                 img_ix += 1
-                image = ismrmrd.Image.from_array(img)
+                image = ismrmrd.Image.from_array(img[0])
                 image.image_index = img_ix
                 image.image_series_index = series_ix
-                image.slice = 0
+                image.slice = img_ix
                 image.attribute_string = xml
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -666,6 +677,8 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     # Insert Field Map
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
+        from scipy.ndimage import gaussian_filter
+        fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
@@ -681,10 +694,9 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
         if 'params' in fmap:
             logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
 
-    fmap_data = fmap['fmap'][slc_sel]
-    fmap_mask = fmap['mask'][slc_sel]
+    fmap_data = np.asarray(fmap['fmap'][slc_sel])
+    fmap_mask = np.asarray(fmap['mask'][slc_sel])
     fmap_name = fmap['name']
-    fmap_data = np.asarray(fmap_data)
     dset_tmp.append_array('FieldMap', fmap_data)
     logging.debug("Field Map name: %s", fmap_name)
 
@@ -693,7 +705,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     if shotimgs is not None:
         pcSENSE = True
         shotimgs = np.stack(shotimgs)[np.newaxis,np.newaxis] # stack shots & add axes for contrast & slice (which are =1 here)
-        mask = fmap_mask
+        mask = fmap_mask.copy()
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -714,10 +726,11 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
         acq.traj[:] = save_trj.copy()
         dset_tmp.append_acquisition(acq)
 
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
-    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    logging.debug(f'Readout is {ts_time} ms. Max field map value: {np.max(abs(fmap_data))}. Max phase evol: {ts_fmap*np.pi/2} rad')
-    ts = min(ts_time, ts_fmap)
+    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
+    # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
+    ts = int(1000 * readout_dur / (np.pi/2))
+    # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
+    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -729,17 +742,10 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
 
     """ PowerGrid reconstruction
-    # Comment from Alex Cerjanic, who developed PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
-    # He recommends using the Hanning interpolator with ~1 time segment per ms of readout (which is based on experience @3T)
-    # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
     temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts // 2
-
-    # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
-    # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
-    pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
 
     # Define PowerGrid options
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {0} -B 1000 -n 2 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
@@ -916,7 +922,12 @@ def calc_fmap(imgs, te_diff, metadata):
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     newshape = [nx,ny,nz]
     fmap = resize(fmap, newshape, anti_aliasing=True)
-    
+
+    # if fmap is 2D, remove nz
+    if nz == 1:
+        fmap = fmap[...,0]
+        mask = mask[...,0]
+
     return fmap.T, mask.T # to [nz,ny,nx]
 
 def process_shots(group, metadata, sensmaps_shots):

@@ -485,9 +485,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                 dset_tmp.append_acquisition(acq)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
-    ts = int(1000 * readout_dur / (np.pi/2))
-    # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
+    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -506,7 +506,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
  
     mpi = True
     temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
@@ -727,9 +727,9 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
         dset_tmp.append_acquisition(acq)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
-    ts = int(1000 * readout_dur / (np.pi/2))
-    # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
+    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -744,7 +744,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     """
  
     temp_intp = 'histo' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # Define PowerGrid options

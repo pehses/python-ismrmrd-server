@@ -488,7 +488,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
     ts = int(1000 * readout_dur / (np.pi/2))
     # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
-    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -508,6 +507,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     mpi = True
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
+    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
@@ -730,7 +730,6 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     # 1 time segment per pi/2 maximum phase evolution, use 1000 rad/s as max corrected offresonance as more will most likely fail either way
     ts = int(1000 * readout_dur / (np.pi/2))
     # ts = int(readout_dur / 1e-3 + 0.5) # 1 time segment per ms readout
-    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -744,11 +743,12 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     """ PowerGrid reconstruction
     """
  
-    temp_intp = 'hanning' # hanning / histo / minmax
+    temp_intp = 'histo' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = ts // 2
+    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {0} -B 1000 -n 2 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2'
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts

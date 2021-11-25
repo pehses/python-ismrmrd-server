@@ -13,6 +13,7 @@ setup(name='ismrmrd_client',
       description="Client for streaming ISMRMRD data",
       scripts=['client.py','connection.py','constants.py'],
       install_requires=[
+          'numpy',
           'ismrmrd==1.9.3',
           'h5py'
       ],

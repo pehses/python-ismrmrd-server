@@ -50,11 +50,17 @@ def process(connection, config, metadata):
     # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
     skope = False
 
-    # Coil Compression: Compress number of coils to cc_cha
+    # Coil Compression: Compress number of coils by n_compr coils
+    n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    cc_cha = n_cha - 0
-    if n_cha > cc_cha:
+    if n_compr > 0 and n_compr<n_cha:
+        cc_cha = n_cha - n_compr
         logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+    elif n_compr<0 or n_compr>=n_cha:
+        cc_cha = n_cha
+        logging.debug('Invalid number of compressed coils.')
+    else:
+        cc_cha = n_cha
 
     # ----------------------------- #
 
@@ -516,7 +522,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     cores = psutil.cpu_count(logical = False) # number of physical cores
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:
@@ -748,7 +754,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2'
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2'
     logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
@@ -835,8 +841,10 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
             process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
+            data_cc = np.zeros_like(data)[...,:cc_cha,:]
             for k in range(data.shape[-1]):
-                data[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat)
+                data_cc[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat)
+            data = data_cc.copy()
 
         # ESPIRiT calibration - use only first contrast
         gpu = False

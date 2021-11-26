@@ -173,7 +173,10 @@ def process(connection, config, metadata):
         te_diff = None
         process_raw.fmap = None
 
-    process_raw.cc_mat = None # compression matrix
+    if cc_cha != n_cha:
+        process_raw.cc_mat = [None] * n_slc # compression matrix
+    else:
+        process_raw.cc_mat = None
     process_raw.img_ix = 1 # img idx counter for single slice recos
 
     # read protocol acquisitions - faster than doing it one by one
@@ -467,6 +470,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     for slc in acqGroup:
         for contr in slc:
             for acq in contr:
+                slc_ix = acq.idx.slice
                 if avg_before:
                     if acq.idx.average == 0:
                         acq.data[:] = avgData[avg_ix]
@@ -474,13 +478,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                     else:
                         continue
                 if slc_sel is not None:
-                    if acq.idx.slice != slc_sel:
+                    if slc_ix != slc_sel:
                         continue
                     else:
                         acq.idx.slice = 0
                 # Coil compression
                 if process_raw.cc_mat is not None:
-                    cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat) # SVD based Coil compression
+                    cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix]) # SVD based Coil compression
                     acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
                     acq.data[:] = cc_data[0,:,0].T
 
@@ -717,13 +721,14 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
 
     # Insert acquisitions
     for acq in acqGroup:
+        slc_ix = acq.idx.slice
         acq.idx.slice = 0
         acq.idx.set = 0
         acq.idx.contrast = 0
         acq.idx.phase = 0
         acq.idx.average = 0
         if process_raw.cc_mat is not None:
-            cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat)
+            cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix])
             acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
             acq.data[:] = cc_data[0,:,0].T
 
@@ -840,10 +845,11 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
-            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
+            slc_ix = group[0].idx.slice
+            process_raw.cc_mat[slc_ix] = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
             data_cc = np.zeros_like(data)[...,:cc_cha,:]
             for k in range(data.shape[-1]):
-                data_cc[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat)
+                data_cc[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat[slc_ix])
             data = data_cc.copy()
 
         # ESPIRiT calibration - use only first contrast
@@ -860,8 +866,8 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         # Field Map calculation - if acquired
         refimg = cifftn(data, [0,1,2])
         if te_diff is not None and data.shape[-1] > 1:
-            slc = group[0].idx.slice
-            process_raw.fmap['fmap'][slc], process_raw.fmap['mask'][slc] = calc_fmap(refimg, te_diff, metadata)
+            slc_ix = group[0].idx.slice
+            process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
 
         # calculate low resolution sensmaps for shot images
         if sens_shots:

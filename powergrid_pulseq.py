@@ -847,29 +847,30 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
             logging.debug(f'Calculate coil compression matrix.')
             slc_ix = group[0].idx.slice
             process_raw.cc_mat[slc_ix] = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
-            data_cc = np.zeros_like(data)[...,:cc_cha,:]
+            data_sens = np.zeros_like(data)[...,:cc_cha,:]
             for k in range(data.shape[-1]):
-                data_cc[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat[slc_ix])
-            data = data_cc.copy()
+                data_sens[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat[slc_ix])
+        else:
+            data_sens = data.copy()
 
         # ESPIRiT calibration - use only first contrast
         gpu = False
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             gpu = True
-        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data_sens[...,0])
 
-        # Field Map calculation - if acquired
+        # Field Map calculation - if acquired (dont use coil compressed data)
         refimg = cifftn(data, [0,1,2])
         if te_diff is not None and data.shape[-1] > 1:
             slc_ix = group[0].idx.slice
             process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
 
-        # calculate low resolution sensmaps for shot images
+        # calculate low resolution sensmaps for shot images (dont use coil compressed data)
         if sens_shots:
             os_region = metadata.userParameters.userParameterDouble[4].value
             if np.allclose(os_region,0):
@@ -950,7 +951,7 @@ def process_shots(group, metadata, sensmaps_shots):
     WIP: maybe use PowerGrid for B0-correction? If recon without B0 correction is sufficient, BART is more time efficient
     """
 
-    # sort data
+    # sort data - no coil compression
     data, trj = sort_spiral_data(group, metadata)
 
     # undo the swap in process_acs as BART needs different orientation

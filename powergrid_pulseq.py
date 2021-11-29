@@ -608,7 +608,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):
-        # Format as ISMRMRD image data
+        # Format as ISMRMRD image data 
+        # WIP: it is possible to sent 4D data, should be also possible for scanner data (see invertcontrast) - data should be [x y z cha]
+
         if data_ix < 2:
             for rep in range(data.shape[0]):
                 for contr in range(data.shape[1]):
@@ -627,7 +629,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                                 image.slice = slc
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
-                                if 'Directions' in prot_arrays:
+                                if 'Directions' in prot_arrays and data_ix==1:
                                     image.user_float[:3] = prot_arrays['Directions'][phs]
                                 image.attribute_string = xml
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 

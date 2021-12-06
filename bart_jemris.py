@@ -218,7 +218,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         if sensmaps is None:
             if nc != 1:
                 data_mag = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
-                data_phs = np.zeros_like(data_mag)
+                data_phs = np.sum(data_ch_phs, axis=-1)
             else: # this is the default as for nc>1, we should have JEMRIS sensitivity maps
                 data_mag = data_ch_mag.copy()
                 data_phs = data_ch_phs.copy()

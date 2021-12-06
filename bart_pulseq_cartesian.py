@@ -77,14 +77,23 @@ def process_cartesian(connection, config, metadata, prot_file):
     # different contrasts need different scaling
     process_raw.imascale = [None] * 256
 
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = []
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    for n in range(prot.number_of_acquisitions()):
+        acqs.append(prot.read_acquisition(n))
+    prot.close()
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                insert_acq(prot_file, item, acq_ctr, metadata, noncartesian=False, return_basetrj=False)
+                insert_acq(acqs[0], item, metadata, noncartesian=False, return_basetrj=False)
+                acqs.pop(0)
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
@@ -248,10 +257,11 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
+        # ESPIRiT
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data) 
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -283,7 +293,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
-        if gpu:
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         else:
             data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)

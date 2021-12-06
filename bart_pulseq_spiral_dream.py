@@ -95,8 +95,17 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     base_trj = None
+
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = []
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    for n in range(prot.number_of_acquisitions()):
+        acqs.append(prot.read_acquisition(n))
+    prot.close()
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -105,7 +114,8 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
+                base_traj = insert_acq(acqs[0], item, metadata)
+                acqs.pop(0)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -235,12 +245,14 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
-        pics_config = 'pics -g -S -e -R T:7:0:.001 -i 50 -t'
+        # pics_config = 'pics -g -S -e -R T:7:0:.0001 -i 50 -t'
+        pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
     else:
         nufft_config = 'nufft -i -m 20 -l 0.005 -c -t -d %d:%d:%d'%(nx, nx, nz)
-        pics_config = 'pics -S -e -R T:7:0:.001 -i 50 -t'
+        # pics_config = 'pics -S -e -R T:7:0:.0001 -i 50 -t'
+        pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
 
     # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
@@ -480,7 +492,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration

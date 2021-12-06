@@ -43,6 +43,10 @@ def process_spiral(connection, config, metadata, prot_file):
     
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
+    if len(metadata.userParameters.userParameterLong) > 0:
+        online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
+        if online_slc >= 0:
+            slc_sel = int(online_slc)
 
     # Coil Compression: Compress number of coils to cc_cha
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
@@ -107,8 +111,17 @@ def process_spiral(connection, config, metadata, prot_file):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     base_trj = None
+
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = []
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    for n in range(prot.number_of_acquisitions()):
+        acqs.append(prot.read_acquisition(n))
+    prot.close()
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -117,7 +130,8 @@ def process_spiral(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
+                base_traj = insert_acq(acqs[0], item, metadata)
+                acqs.pop(0)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -145,11 +159,12 @@ def process_spiral(connection, config, metadata, prot_file):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                    acsGroup[item.idx.slice].append(item)
-                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
-                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
-                        acsGroup[item.idx.slice].clear()
+                    if item.idx.contrast == 0: # if B0 mapping refscan was done, use only 1st contrast
+                        acsGroup[item.idx.slice].append(item)
+                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
+                            acsGroup[item.idx.slice].clear()
                     continue
 
                 if item.idx.segment == 0:
@@ -245,7 +260,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
         data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
 
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
@@ -358,11 +373,13 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
             logging.debug(f'Calculate coil compression matrix.')
             process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
             data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
-        if gpu:
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
+
+        # ESPIRiT calibration
+        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
             # sensmaps = bart(1, 'caldir 64', data)
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
 
         refimg = cifftn(data,axes=[0,1,2])
         np.save(debugFolder + "/" + "refimg.npy", refimg)

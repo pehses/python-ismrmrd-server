@@ -38,8 +38,10 @@ def process(connection, config, metadata, prot_file=None):
     if prot_file is not None:
         logging.debug("Reconstruction of scanner data.")
         insert_hdr(prot_file, metadata)
+        simu = False
     else:
         logging.debug("Reconstruction of simulated data.")
+        simu = True
 
     # Check for GPU availability
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -77,10 +79,18 @@ def process(connection, config, metadata, prot_file=None):
     sensmaps = [None] * n_slc
     sensmaps_jemris = []
     dmtx = None
-    simu = True
+
+    # read protocol acquisitions - faster than doing it one by one
+    if prot_file is not None:
+        logging.debug("Reading in protocol acquisitions.")
+        acqs = []
+        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+        for n in range(prot.number_of_acquisitions()):
+            acqs.append(prot.read_acquisition(n))
+        prot.close()
 
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -89,11 +99,12 @@ def process(connection, config, metadata, prot_file=None):
 
                 # Insert acquisition protocol, if Pulseq data
                 if prot_file is not None:
-                    insert_acq(prot_file, item, acq_ctr, metadata, return_basetrj=False)
-                    simu = False
+                    insert_acq(acqs[0], item, metadata, return_basetrj=False)
+                    acqs.pop(0)
+
                 # Jemris sensitivity maps - only if simulated data (ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is set in scanner data for some reason)
                 elif item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
-                    sensmap_coil = item.data[:].reshape(item.traj[0].astype(np.int))
+                    sensmap_coil = item.data[:].reshape(item.traj[0].astype(int))
                     if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
                         continue
                     sens_fov = item.user_int[0]
@@ -128,7 +139,10 @@ def process(connection, config, metadata, prot_file=None):
                 # Sensitivity maps from calibration scan
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
-                    continue
+                    if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
+                        pass
+                    else:
+                        continue
                 elif sensmaps[item.idx.slice] is None:
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
@@ -167,7 +181,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, data.shape))
     nc = data.shape[-1]
 
-    if gpu:
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.05 -t -d %d:%d:%d'%(nx, ny, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -i 50 -t'
@@ -197,26 +211,41 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
 
     # Recon
     logging.debug("Do BART reconstruction.")
-    if sensmaps is None:
-        data = bart(1, nufft_config, trj, data) # nufft
-        if nc != 1:
-            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+    if simu:
+        data_ch = bart(1, nufft_config, trj, data) # nufft
+        data_ch_mag = np.abs(data_ch)
+        data_ch_phs = np.angle(data_ch)
+        if sensmaps is None:
+            if nc != 1:
+                data_mag = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+                data_phs = np.zeros_like(data_mag)
+            else: # this is the default as for nc>1, we should have JEMRIS sensitivity maps
+                data_mag = data_ch_mag.copy()
+                data_phs = data_ch_phs.copy()
+        else:
+            data = bart(1, pics_config , trj, data, sensmaps)
+            data_mag = np.abs(data)
+            data_phs = np.angle(data)
+        # extend dimensions if necessary
+        while data_mag.ndim < 3: data_mag = data_mag[...,np.newaxis]
+        while data_phs.ndim < 3: data_phs = data_phs[...,np.newaxis]
+        while data_ch_mag.ndim < 4: data_ch_mag = data_ch_mag[...,np.newaxis]
+        while data_ch_phs.ndim < 4: data_ch_phs = data_ch_phs[...,np.newaxis]
     else:
-        data = bart(1, pics_config , trj, data, sensmaps)
-    data = np.abs(data)
-    while data.ndim < 3:
-        data = data[...,np.newaxis]
-
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 0, 1)
-    data = np.flip(data, (0,1,2))
-
-    # make sure that data is at least 3D
-    while np.ndim(data) < 3:
-        data = data[..., np.newaxis]
-    
-    # Normalize and convert to int16
-    if not simu:
+        if sensmaps is None:
+            data = bart(1, nufft_config, trj, data) # nufft
+            if nc != 1:
+                data = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
+        else:
+            data = bart(1, pics_config , trj, data, sensmaps)
+        data = np.abs(data)
+        # make sure the data is at least 3D
+        while data.ndim < 3:
+            data = data[...,np.newaxis]
+        # correct orientation at scanner (consistent with ICE)
+        data = np.swapaxes(data, 0, 1)
+        data = np.flip(data, (0,1,2))
+        # Normalize and convert to int16
         data *= 32767/data.max()
         data = np.around(data)
         data = data.astype(np.int16)
@@ -225,7 +254,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     if group[0].idx.slice == 0:
         np.save(debugFolder + "/" + "img.npy", data)
 
-    # Set ISMRMRD Meta Attributes
+    # Set ISMRMRD Meta Attributes (only important for online reco)
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
@@ -234,42 +263,51 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     xml = meta.serialize()
     
     images = []
-    n_par = data.shape[-1]
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
     n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
 
     # Format as ISMRMRD image data
-    if n_par > 1:
+    if simu:
+        n_par = data_mag.shape[-1]
         for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            if simu: # dont need indices in simulation
-                image.image_index = 1
-                image.image_series_index = 1
-            else:
+            image_mag = ismrmrd.Image.from_array(data_mag[...,par], acquisition=group[0])
+            image_mag.image_series_index = 1
+            image_phs = ismrmrd.Image.from_array(data_phs[...,par], acquisition=group[0])
+            image_phs.image_series_index = 2
+            images.append(image_mag)
+            images.append(image_phs)
+            image_ch_mag = ismrmrd.Image.from_array(data_ch_mag[...,par,:], acquisition=group[0])
+            image_ch_mag.image_series_index = 3
+            image_ch_phs = ismrmrd.Image.from_array(data_ch_phs[...,par,:], acquisition=group[0])
+            image_ch_phs.image_series_index = 4
+            images.append(image_ch_phs)
+            images.append(image_ch_mag)
+
+    else:
+        n_par = data.shape[-1]
+        if n_par > 1:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
                 image.image_index = 1 + group[0].idx.contrast * n_par + par
                 image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
+                image.slice = 0
+                image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
+        else:
+            image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
-    else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        if simu:
-            image.image_index = 1
-            image.image_series_index = 1
-        else:
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
-        image.slice = 0
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
 
     return images
 
@@ -281,14 +319,20 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             nufft_config = 'nufft -g -i -l 0.001 -t'
             ecalib_config = 'ecalib -g -m 1 -I'
         else:
             nufft_config = 'nufft -i -l 0.001 -t'
             ecalib_config = 'ecalib -m 1 -I'
 
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
+        # nufft
+        try:
+            sensmaps = bart(1, nufft_config, trj, data)
+        except: # fall back to CPU, if GPU doesnt work
+            nufft_config = 'nufft -i -l 0.001 -t'
+            sensmaps = bart(1, nufft_config, trj, data)
+
         np.save(debugFolder + "/" + "acs_img.npy", sensmaps)
         if sensmaps.ndim == 2:
             sensmaps = cfftn(sensmaps, [0, 1]) # back to Cartesian k-space
@@ -301,7 +345,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 
         # ESPIRiT calibration
         try:
-            sensmaps = bart(1, ecalib_config, sensmaps)  
+            sensmaps = bart(1, ecalib_config, sensmaps)
         except: # if the array is too big for the GPU RAM (especially for a large 3D ACS scan) we do it on CPU
             ecalib_config = 'ecalib -m 1 -I'
             sensmaps = bart(1, ecalib_config, sensmaps)
@@ -371,12 +415,24 @@ def intp_sensmaps(sensmap_coil, sens_fov, metadata):
     if fov_x > sens_fov or fov_y > sens_fov or fov_z > sens_fov:
         logging.debug("WARNING: Sensitivity map FOV is smaller than measurement FOV")
     slc_x = (sens_fov-fov_x)//2
-    slc_y = (sens_fov-fov_y)//2
-    slc_z = (sens_fov-fov_z)//2
-    if sensmap_coil.shape[2] == 1:
-        sensmap_coil = sensmap_coil[slc_x:-slc_x, slc_y:-slc_y]
+    if slc_x == 0: 
+        slc_x = slice(None,None)
     else:
-        sensmap_coil = sensmap_coil[slc_x:-slc_x, slc_y:-slc_y, slc_z:-slc_z]
+        slc_x = slice(slc_x,-slc_x)
+    slc_y = (sens_fov-fov_y)//2
+    if slc_y == 0: 
+        slc_y = slice(None,None)
+    else:
+        slc_y = slice(slc_y,-slc_y)
+    slc_z = (sens_fov-fov_z)//2
+    if slc_z == 0: 
+        slc_z = slice(None,None)
+    else:
+        slc_z = slice(slc_z,-slc_z)
+    if sensmap_coil.shape[2] == 1:
+        sensmap_coil = sensmap_coil[slc_x, slc_y]
+    else:
+        sensmap_coil = sensmap_coil[slc_x, slc_y, slc_z]
 
     # Interpolate to reconstruction matrix
     newshape = [nx, ny, nz]

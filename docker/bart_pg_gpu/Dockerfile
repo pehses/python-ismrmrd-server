@@ -15,7 +15,8 @@ RUN  apt install software-properties-common --no-install-recommends --no-install
      && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null \
      && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
      && apt update \
-     && apt install cmake --no-install-recommends --no-install-suggests --yes
+     && apt install cmake-data=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes \
+     && apt install cmake=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes
 
 # Install mkl
 COPY ./mkl.sh /tmp/
@@ -198,7 +199,7 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image psutil
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil xsdata[cli]==21.11
 
 RUN  mkdir -p /opt/code
 
@@ -216,7 +217,7 @@ RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python.git \
      && cd /opt/code/ismrmrd-python \
      && git checkout v1.9.3 \
-     && pip install .
+     && python3 setup.py install
 
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \

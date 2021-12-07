@@ -152,16 +152,11 @@ def process(connection, config, metadata):
     phs_ref = [None] * n_slc
     base_trj = None
 
-    if "b_values" in prot_arrays:
-        bvals = prot_arrays['b_values']
-        if n_intl > 1:
-            # we use the contrast index here to get the PhaseMaps into the correct order
-            # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-            shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
-            sens_shots = True
-
-    if 'Directions' in prot_arrays:
-        diff_dirs = prot_arrays['Directions']
+    if "b_values" in prot_arrays and n_intl > 1:
+        # we use the contrast index here to get the PhaseMaps into the correct order
+        # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
+        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
+        sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
     max_refcontr = 0

@@ -47,9 +47,6 @@ def process(connection, config, metadata):
         online_recon = False
         fast_recon = False
 
-    # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
-    skope = False
-
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
@@ -72,8 +69,6 @@ def process(connection, config, metadata):
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
-    if skope:
-        prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
@@ -151,6 +146,7 @@ def process(connection, config, metadata):
     phs = None
     phs_ref = [None] * n_slc
     base_trj = None
+    skope = False
 
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
@@ -189,6 +185,9 @@ def process(connection, config, metadata):
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+
+                if item.traj.size > 0:
+                    skope = True # Skope data inserted?
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -523,7 +522,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Define PowerGrid options
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-    logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:
             subproc = pre_cmd + f'mpirun -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
@@ -536,6 +534,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         else:
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
+    logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:
         process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # logging.debug(process.stdout)

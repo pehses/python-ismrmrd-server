@@ -47,9 +47,6 @@ def process(connection, config, metadata):
         online_recon = False
         fast_recon = False
 
-    # Set this True, if a Skope trajectory is used (protocol file with skope trajectory has to be available)
-    skope = False
-
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
@@ -72,8 +69,6 @@ def process(connection, config, metadata):
     # ISMRMRD protocol file
     protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
-    if skope:
-        prot_filename += "_skopetraj"
     prot_file = protFolder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
@@ -151,17 +146,13 @@ def process(connection, config, metadata):
     phs = None
     phs_ref = [None] * n_slc
     base_trj = None
+    skope = False
 
-    if "b_values" in prot_arrays:
-        bvals = prot_arrays['b_values']
-        if n_intl > 1:
-            # we use the contrast index here to get the PhaseMaps into the correct order
-            # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-            shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
-            sens_shots = True
-
-    if 'Directions' in prot_arrays:
-        diff_dirs = prot_arrays['Directions']
+    if "b_values" in prot_arrays and n_intl > 1:
+        # we use the contrast index here to get the PhaseMaps into the correct order
+        # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
+        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
+        sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
     max_refcontr = 0
@@ -194,6 +185,9 @@ def process(connection, config, metadata):
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+
+                if item.traj.size > 0:
+                    skope = True # Skope data inserted?
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -402,6 +396,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
+    # process_raw.fmap = None
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
         # 3D filtering of field map
@@ -514,7 +509,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
-    mpi = True
+    mpi = False
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
@@ -527,7 +522,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Define PowerGrid options
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-    logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
     if pcSENSE:
         if mpi:
             subproc = pre_cmd + f'mpirun -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
@@ -540,6 +534,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         else:
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
+    logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:
         process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # logging.debug(process.stdout)
@@ -902,6 +897,7 @@ def calc_fmap(imgs, te_diff, metadata):
     from skimage.restoration import unwrap_phase
     from skimage.transform import resize
     from scipy.ndimage import gaussian_filter, median_filter
+    from scipy.ndimage.morphology import binary_fill_holes
     from dipy.segment.mask import median_otsu
     
     phasediff = imgs[...,0] * np.conj(imgs[...,1]) # phase difference
@@ -909,15 +905,15 @@ def calc_fmap(imgs, te_diff, metadata):
     if phasediff.shape[2] == 1:
         phasediff = phasediff[:,:,0]
     phasediff = unwrap_phase(np.angle(phasediff))
+    phasediff = np.atleast_3d(phasediff)
     fmap = phasediff/te_diff
-    fmap = np.atleast_3d(fmap)
 
     # mask image with median otsu from dipy
     img = np.sqrt(np.sum(np.abs(imgs[...,0])**2, axis=-1))
     img_masked, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
 
     # simple threshold mask
-    thresh = 0.1
+    thresh = 0.13
     mask_thresh = np.sqrt(np.sum(np.abs(imgs[...,0])**2, axis=-1))
     mask_thresh /= np.max(mask_thresh)
     mask_thresh[mask_thresh<thresh] = 0
@@ -926,6 +922,10 @@ def calc_fmap(imgs, te_diff, metadata):
     # combine masks
     mask = mask_thresh + mask_otsu
     mask[mask>0] = 1
+    if mask.shape[-1] == 1:
+        mask = binary_fill_holes(mask[...,0])[...,np.newaxis]
+    else:
+        mask = binary_fill_holes(mask)
 
     # apply masking and some regularization
     fmap *= mask
@@ -933,7 +933,6 @@ def calc_fmap(imgs, te_diff, metadata):
     fmap = median_filter(fmap, size=2)
 
     # interpolate if necessary
-    fmap = np.atleast_3d(fmap)
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -961,7 +960,7 @@ def process_shots(group, metadata, sensmaps_shots):
 
     # Reconstruct low resolution images
     # dont use GPU as it creates a lot of overhead, which causes longer recon times
-    pics_config = 'pics -l1 -r 0.001 -S -e -i 30 -t'
+    pics_config = 'pics -l1 -r 0.001 -S -e -i 15 -t'
 
     imgs = []
     for k in range(data.shape[2]):
@@ -994,15 +993,17 @@ def calc_phasemaps(shotimgs, mask, metadata):
                 unwrapped_phasemaps[k,j,i] = resize(unwrapped, [nx,nx]) # interpolate to higher resolution
 
     # mask all slices - need to swap shot and slice axis
-    unwrapped_phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
+    phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
 
-    # filter phasemaps
-    phasemaps = np.zeros_like(unwrapped_phasemaps)
-    for k in range(phasemaps.shape[0]):
-        for j in range(phasemaps.shape[1]):
-            for i in range(phasemaps.shape[2]):
-                filtered = median_filter(unwrapped_phasemaps[k,j,i], size=3)
-                phasemaps[k,j,i] = gaussian_filter(filtered, sigma=1.5)
+    # filter phasemaps - seems to make it worse as resolution of phase maps is low
+    # phasemaps_filt = np.zeros_like(phasemaps)
+    # for k in range(phasemaps_filt.shape[0]):
+    #     for j in range(phasemaps_filt.shape[1]):
+    #         for i in range(phasemaps_filt.shape[2]):
+    #             filtered = median_filter(phasemaps[k,j,i], size=2)
+    #             phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
+    # phasemaps = phasemaps_filt.copy()
+
     np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
     
     return phasemaps

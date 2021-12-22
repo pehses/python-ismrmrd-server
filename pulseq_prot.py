@@ -150,6 +150,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     # #---------------------------
 
     # convert positions for correct rotation matrix - this was experimentally validated on 20210709
+    # In Pulseq interpreter v1.4 this is valid for the "old/compat" FOV positioning mode
     # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
     tmp = -1* np.asarray(dset_acq.phase_dir[:])
     dset_acq.phase_dir[:] = np.asarray(dset_acq.read_dir[:])
@@ -193,7 +194,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
         
-        # calculate full number of samples
+        # calculate full number of samples - for segmented ADCs
         nsamples = dset_acq.number_of_samples
         try:
             # user parameter is kept for compatibility (see insert_hdr)
@@ -201,38 +202,49 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         except:
             nsegments = metadata.userParameters.userParameterDouble[2].value
         nsamples_full = int(nsamples*nsegments+0.5)
+        if dset_acq.traj[:].size > 0:
+            nsamples_full = dset_acq.traj.shape[0] # samples should already be reshaped if trajectory was added to the rawdata
         nsamples_max = 65535
         if nsamples_full > nsamples_max:
             raise ValueError("The number of samples exceed the maximum allowed number of 65535 (uint16 maximum).")
        
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
-        data_tmp = dset_acq.data[:]
+        data_tmp = dset_acq.data[:].copy()
+        traj_tmp = dset_acq.traj[:].copy()
 
         # resize data - traj_dims: [kx,ky,kz,t,(GIRF-)k0]
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
-        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol
-        # check should be a pretty robust
-        if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
-            reco_trj = prot_acq.traj[:,:3]
-            base_trj = reco_trj.copy()
-            if prot_acq.traj.shape[1] > 3:
-                dset_acq.traj[:,4] = prot_acq.traj[:,3] # Skope k0
+        # trajectory already inserted in data - e.g. from Skope system
+        if traj_tmp.size > 0:
+            dset_acq.traj[:,:3] = traj_tmp[:,:3]
+            rotmat = calc_rotmat(dset_acq)
+            base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False)[0] # for FOV shift reapply
+            if traj_tmp.shape[1] > 3: # Skope k0 is saved in 3rd dim -> move to 4th dim
+                dset_acq.traj[:,4] = traj_tmp[:,3]
+            else:
+                dset_acq.traj[:,4] = np.zeros(len(dset_acq.traj[:]))              
+
+        # trajectory from protocol file - check via shape
+        elif prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
+            dset_acq.traj[:,:3] = prot_acq.traj[:,:3]
+            dset_acq.traj[:,4] = np.zeros(len(dset_acq.traj))
+            base_trj = dset_acq.traj[:].copy()
+
+        # gradients from protocol file - calculate trajectory with girf
         else:
             rotmat = calc_rotmat(dset_acq)
-            reco_trj, base_trj, k0 = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
-            dset_acq.traj[:,4] = k0.copy()
+            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
-        dset_acq.traj[:,:3] = reco_trj.copy()
-        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
     
     if return_basetrj:
         return base_trj
  
 
-def calc_traj(acq, hdr, ncol, rotmat):
+def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
         acq: acquisition from hdf5 protocol file
@@ -263,6 +275,7 @@ def calc_traj(acq, hdr, ncol, rotmat):
 
     # time vector for interpolation
     gradtime = dt_grad * np.arange(grad.shape[-1]) + gradshift
+    gradtime += dt_grad/2 - dt_skope/2 # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
 
     # add z-dir for prediction if necessary
     if dims == 2:
@@ -271,57 +284,59 @@ def calc_traj(acq, hdr, ncol, rotmat):
     ##############################
     ## girf trajectory prediction:
     ##############################
+    if use_girf:
+        dependencyFolder = "/tmp/share/dependency"
+        girf = np.load(os.path.join(dependencyFolder, "girf_10us.npy"))
 
-    dependencyFolder = "/tmp/share/dependency"
-    girf = np.load(os.path.join(dependencyFolder, "girf_10us.npy"))
+        # rotation to phys coord system
+        grad_phys = gcs_to_dcs(grad, rotmat)
 
-    # rotation to phys coord system
-    grad_phys = gcs_to_dcs(grad, rotmat)
+        # gradient prediction
+        pred_grad = grad_pred(grad_phys, girf)
+        k0 = pred_grad[0] # 0th order field [T]
+        pred_grad = pred_grad[1:]
 
-    # gradient prediction
-    pred_grad = grad_pred(grad_phys, girf)
-    k0 = pred_grad[0] # 0th order field [T]
-    pred_grad = pred_grad[1:]
+        # rotate back to logical system
+        pred_grad = dcs_to_gcs(pred_grad, rotmat)
 
-    # rotate back to logical system
-    pred_grad = dcs_to_gcs(pred_grad, rotmat)
+        # calculate global phase term k0 [rad]
+        k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
 
-    # calculate global phase term k0 [rad]
-    k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
+        # calculate trajectory [1/m]
+        pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
 
-    # calculate trajectory [1/m]
-    pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
+        # scale with FOV for BART & PowerGrid recon
+        pred_trj *= 1e-3 * fov
+
+        # set z-axis if trajectory is two-dimensional
+        if dims == 2:
+            sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+            if sms_factor > 1:
+                nz = sms_factor
+            else:
+                nz = hdr.encoding[0].encodedSpace.matrixSize.z
+            partition = acq.idx.kspace_encode_step_2
+            kz = partition - nz//2
+            pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
+
+        # align trajectory to scanner ADC
+        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+        k0 = intp_axis(adctime, gradtime, k0, axis=0)
+
+        # switch array order to [samples, dims]
+        pred_trj = np.swapaxes(pred_trj,0,1)
+    else:
+        pred_trj = None
+        k0 = None
+
+    # calculate base trajectory
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
-
-    # scale with FOV for BART & PowerGrid recon
-    pred_trj *= 1e-3 * fov
     base_trj *= 1e-3 * fov
-
-    # set z-axis if trajectory is two-dimensional
-    if dims == 2:
-        sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
-        if sms_factor > 1:
-            nz = sms_factor
-        else:
-            nz = hdr.encoding[0].encodedSpace.matrixSize.z
-        partition = acq.idx.kspace_encode_step_2
-        kz = partition - nz//2
-        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])            
-
-    # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
-    gradtime += dt_grad/2 - dt_skope/2
-
-    # align trajectory to scanner ADC
-    # shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) 
-    pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
-    k0 = intp_axis(adctime, gradtime, k0, axis=0)
-
-    # switch array order to [samples, dims]
-    pred_trj = np.swapaxes(pred_trj,0,1)
+    # interpolate to ADC and shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
+    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
     base_trj = np.swapaxes(base_trj,0,1)
 
-    return pred_trj, base_trj, k0
+    return base_trj, pred_trj, k0
 
 def grad_pred(grad, girf):
     """

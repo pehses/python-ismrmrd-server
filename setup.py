@@ -14,7 +14,7 @@ setup(name='ismrmrd_client',
       scripts=['client.py','connection.py','constants.py'],
       install_requires=[
           'numpy',
-          'ismrmrd==1.9.3',
+          'ismrmrd>=1.9.5',
           'h5py'
       ],
       zip_safe=False,

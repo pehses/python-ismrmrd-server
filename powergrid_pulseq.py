@@ -579,16 +579,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
 
-    # Normalize and convert to int16
+    # Correct orientation
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-3,-2,-1))
+        # Normalize and convert to int16 for online recon
         if online_recon:
             dsets[k] *= 32767 * 0.8 / dsets[k].max()
             dsets[k] = np.around(dsets[k])
             dsets[k] = dsets[k].astype(np.int16)
-        else:
-            dsets[k] *= 0.8 / dsets[k].max()
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -1030,7 +1029,7 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     b0 *= scale
     diff *= scale
 
-    # Fit ADC for each direction by linear least squares
+    #  WIP & not used: Fit ADC for each direction by linear least squares
     diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0
     diff_log  = -np.log(diff_norm, out=np.zeros_like(diff_norm), where=diff_norm!=0)
     if n_bval<4:

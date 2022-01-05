@@ -603,7 +603,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     series_ix = 0
     for data_ix,data in enumerate(dsets):
         # Format as ISMRMRD image data 
-        # WIP: it is possible to sent 4D data, should be also possible for scanner data (see invertcontrast) - data should be [x y z cha]
+        # WIP: send data with repetition dimension (leave out the rep for loop)
 
         if data_ix < 2:
             for rep in range(data.shape[0]):
@@ -995,13 +995,13 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
 
     # filter phasemaps - seems to make it worse as resolution of phase maps is low
-    # phasemaps_filt = np.zeros_like(phasemaps)
-    # for k in range(phasemaps_filt.shape[0]):
-    #     for j in range(phasemaps_filt.shape[1]):
-    #         for i in range(phasemaps_filt.shape[2]):
-    #             filtered = median_filter(phasemaps[k,j,i], size=2)
-    #             phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
-    # phasemaps = phasemaps_filt.copy()
+    phasemaps_filt = np.zeros_like(phasemaps)
+    for k in range(phasemaps_filt.shape[0]):
+        for j in range(phasemaps_filt.shape[1]):
+            for i in range(phasemaps_filt.shape[2]):
+                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=2)
+                # phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
+    phasemaps = phasemaps_filt.copy()
 
     np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
     

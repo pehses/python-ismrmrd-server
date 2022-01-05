@@ -509,7 +509,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
-    mpi = False
+    mpi = True
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
@@ -519,6 +519,18 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
     import psutil
     cores = psutil.cpu_count(logical = False) # number of physical cores
+
+    mps_server = False
+    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
+        # Start an MPS Server for faster MPI on GPU
+        # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
+        # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
+        try:
+            subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            mps_server = True
+        except subprocess.CalledProcessError as e:
+            logging.debug("MPS Server not started. See error messages below.")
+            logging.debug(e.stdout)
 
     # Define PowerGrid options
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
@@ -538,7 +550,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     try:
         process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # logging.debug(process.stdout)
+        if mps_server:
+            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
     except subprocess.CalledProcessError as e:
+        if mps_server:
+            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
         logging.debug(e.stdout)
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
 

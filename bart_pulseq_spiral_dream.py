@@ -244,7 +244,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
-    
+    process_raw.rawdata[group[0].idx.contrast] = data.copy() # save rawdata of the two contrasts for FID filter calculation
+
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         # pics_config = 'pics -g -S -e -R T:7:0:.0001 -i 50 -t'
@@ -254,89 +255,69 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         # pics_config = 'pics -S -e -R T:7:0:.0001 -i 50 -t'
         pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
 
-    # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
     dream = prot_arrays['dream']
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    process_raw.rawdata[group[0].idx.contrast] = data.copy() # complex rawdata of the two contrasts
+    ste_ix = int(dream[0])
+    fid_ix = n_contr-1-ste_ix
+    if ste_ix != 0:
+        raise ValueError(f"This reconstruction currently supports only STE first, but STE has index {ste_ix} and FID has index {fid_ix}.")
+
+    # FID filter
+    filt_fid = True 
+    if group[0].idx.contrast == fid_ix and dream.size > 2 and filt_fid:
+        logging.info("Global FID filter activated.")
+        # Blurring compensation parameters
+        alpha = dream[1]     # preparation FA
+        tr = dream[2]        # [s]
+        beta = dream[3]      # readout FA
+        dummies = dream[4]   # number of dummy scans before readout echo train starts
+        # T1 estimate:
+        t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
     
-    if (group[0].idx.contrast == int(n_contr-1-dream[0])) and (dream.size > 2): # if not Ste and global filter is activated -> no reconstruction of unfiltered fid
-        logging.info("fid filter activated")
+        ste_data = np.asarray(process_raw.rawdata[ste_ix])
+        fid_data = np.asarray(process_raw.rawdata[fid_ix])
+        mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
+
+        mean_beta = mean_alpha / alpha * beta
+        for i,acq in enumerate(group):
+            ti = tr * (dummies + i) # TI estimate (time from STEAM prep to readout) [s]
+            # Global filter:
+            filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
+            # apply filter:
+            data[:,:,i,:] *= filt
+
+    if sensmaps is None:                
+        data = bart(1, nufft_config, trj, data)
+        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
-        if sensmaps is None:                
-            # bart nufft
-            data = bart(1, nufft_config, trj, data)
-            # Sum of squares coil combination
-            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
-        else:
-            data = bart(1, pics_config , trj, data, sensmaps)
-            data = np.abs(data)
-            # make sure that data is at least 3d:
-        while np.ndim(data) < 3:
-            data = data[..., np.newaxis]
-        if nz > rNz:
-            # remove oversampling in slice direction
-            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+        data = bart(1, pics_config , trj, data, sensmaps)
+        data = np.abs(data)
+    while np.ndim(data) < 3:
+        data = data[..., np.newaxis]
+    if nz > rNz:
+        # remove oversampling in slice direction
+        data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+
+    logging.debug("Image reconstructed with size %s" % (data.shape,))
     
-        logging.debug("Image data is size %s" % (data.shape,))
-    
+    # Check if both contrasts were reconstructed for calculation of FA map
     process_raw.imagesets[group[0].idx.contrast] = data.copy()
     full_set_check = all(elem is not None for elem in process_raw.imagesets)
     if full_set_check:
-        logging.info("B1 map calculation using Dream")
-        ste = np.asarray(process_raw.imagesets[int(dream[0])])
-        
-        if dream.size > 2 : # without filter: dream = ([ste_contr,flip_angle_ste])
-            logging.info("Global filter approach")
-            # Blurring compensation parameters
-            alpha = dream[1]     # preparation FA
-            tr = dream[2]        # [s]
-            beta = dream[3]      # readout FA
-            dummies = dream[4]   # number of dummy scans before readout echo train starts
-            # T1 estimate:
-            t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
-            # TI estimate (the time after DREAM preparation after which each k-space line is acquired):
-            ti = 0
-            ste_data = np.asarray(process_raw.rawdata[int(dream[0])])
-            fid_data = np.asarray(process_raw.rawdata[int(n_contr-1-dream[0])])
-            mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
+        logging.info("Calculation of B1 map.")
+        ste = np.asarray(process_raw.imagesets[ste_ix])
+        fid = np.asarray(process_raw.imagesets[fid_ix])
 
-            mean_beta = mean_alpha / alpha * beta
-            for i,acq in enumerate(group):
-                ti = tr * (dummies + i) # [s]
-                # Global filter:
-                filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
-                # apply filter:
-                fid_data[:,:,i,:] *= filt
-            # reco of fid:
-            if sensmaps is None:
-                fid = bart(1, nufft_config, trj, fid_data)
-                fid = np.sqrt(np.sum(np.abs(fid)**2, axis=-1))
-            else:
-                fid = bart(1, pics_config , trj, fid_data, sensmaps)
-                fid = np.abs(fid)
-            while np.ndim(fid) < 3:
-                    fid = fid[..., np.newaxis]         
-            if nz > rNz:
-                fid = fid[:,:,(nz - rNz)//2:-(nz - rNz)//2]
-            # fa map:
-            fa_map = calc_fa(abs(ste), abs(fid))
-            data = fid.copy()
-        else:
-            fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
-       
         # image mask for fa-map (use of filtered or unfiltered fid) - not used atm
         mask = np.zeros(fid.shape)
         for nz in range(fid.shape[-1]):
-            # otsu
             val = filters.threshold_otsu(fid[:,:,nz])
             otsu = fid[:,:,nz] > val
-            # fill holes
             imfill = morph.binary_fill_holes(otsu) * 1
-            # dilation
             mask[:,:,nz] = morph.binary_dilation(imfill)
                 
-        # fa map:
+        # FA map and RefVoltage map
         fa_map = calc_fa(abs(ste), abs(fid))
         # fa_map *= mask
         current_refvolt = metadata.userParameters.userParameterDouble[5].value

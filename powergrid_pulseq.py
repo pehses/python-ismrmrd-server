@@ -10,6 +10,7 @@ import ctypes
 from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
+import mrdhelper
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
@@ -509,16 +510,24 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
-    mpi = True
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
+    # MPI and hyperthreading
+    mpi = True
+    hyperthreading = True
+    import psutil
+    if hyperthreading:
+        cores = psutil.cpu_count(logical = True) # number of logical cores
+        mpi_cmd = 'mpirun --use-hwthread-cpus'
+    else:
+        cores = psutil.cpu_count(logical = False) # number of phyiscal cores
+        mpi_cmd = 'mpirun'
+
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
     pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
-    import psutil
-    cores = psutil.cpu_count(logical = False) # number of physical cores
 
     mps_server = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
@@ -536,13 +545,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     if pcSENSE:
         if mpi:
-            subproc = pre_cmd + f'mpirun -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
         else:
             subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
     else:
         pg_opts += ' -F NUFFT'
         if mpi:
-            subproc = pre_cmd + f'mpirun -n {cores} PowerGridSenseMPI ' + pg_opts
+            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
         else:
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
@@ -614,6 +623,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
 
+    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+
     xml = meta.serialize()
 
     series_ix = 0
@@ -634,6 +646,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc][contr][0])
                                 else:
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc_sel][contr][0])
+                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc][contr][0].getHead()))
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
                                 image.slice = slc

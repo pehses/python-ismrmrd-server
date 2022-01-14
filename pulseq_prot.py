@@ -78,6 +78,10 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.average.minimum = prot_e1.encodingLimits.average.minimum
         dset_e1.encodingLimits.average.maximum = prot_e1.encodingLimits.average.maximum
         dset_e1.encodingLimits.average.center = prot_e1.encodingLimits.average.center
+    if prot_e1.encodingLimits.repetition is not None:
+        dset_e1.encodingLimits.repetition.minimum = prot_e1.encodingLimits.repetition.minimum
+        dset_e1.encodingLimits.repetition.maximum = prot_e1.encodingLimits.repetition.maximum
+        dset_e1.encodingLimits.repetition.center = prot_e1.encodingLimits.repetition.center
     if prot_e1.encodingLimits.phase is not None:
         dset_e1.encodingLimits.phase.minimum = prot_e1.encodingLimits.phase.minimum
         dset_e1.encodingLimits.phase.maximum = prot_e1.encodingLimits.phase.maximum

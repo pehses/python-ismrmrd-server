@@ -10,6 +10,7 @@ import ctypes
 from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
+import mrdhelper
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
@@ -509,28 +510,48 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # However, histo lead to quite nice results so far & does not need as many time segments
     """
  
-    mpi = False
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
+    # MPI and hyperthreading
+    mpi = True
+    hyperthreading = True
+    import psutil
+    if hyperthreading:
+        cores = psutil.cpu_count(logical = True) # number of logical cores
+        mpi_cmd = 'mpirun --use-hwthread-cpus'
+    else:
+        cores = psutil.cpu_count(logical = False) # number of phyiscal cores
+        mpi_cmd = 'mpirun'
+
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
     pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/20.11 && '
-    import psutil
-    cores = psutil.cpu_count(logical = False) # number of physical cores
+
+    mps_server = False
+    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
+        # Start an MPS Server for faster MPI on GPU
+        # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
+        # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
+        try:
+            subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            mps_server = True
+        except subprocess.CalledProcessError as e:
+            logging.debug("MPS Server not started. See error messages below.")
+            logging.debug(e.stdout)
 
     # Define PowerGrid options
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     if pcSENSE:
         if mpi:
-            subproc = pre_cmd + f'mpirun -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
         else:
             subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
     else:
         pg_opts += ' -F NUFFT'
         if mpi:
-            subproc = pre_cmd + f'mpirun -n {cores} PowerGridSenseMPI ' + pg_opts
+            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
         else:
             subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
@@ -538,7 +559,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     try:
         process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # logging.debug(process.stdout)
+        if mps_server:
+            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
     except subprocess.CalledProcessError as e:
+        if mps_server:
+            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
         logging.debug(e.stdout)
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
 
@@ -579,16 +604,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
 
-    # Normalize and convert to int16
+    # Correct orientation
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-3,-2,-1))
+        # Normalize and convert to int16 for online recon
         if online_recon:
             dsets[k] *= 32767 * 0.8 / dsets[k].max()
             dsets[k] = np.around(dsets[k])
             dsets[k] = dsets[k].astype(np.int16)
-        else:
-            dsets[k] *= 0.8 / dsets[k].max()
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -599,12 +623,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
 
+    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+
     xml = meta.serialize()
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):
         # Format as ISMRMRD image data 
-        # WIP: it is possible to sent 4D data, should be also possible for scanner data (see invertcontrast) - data should be [x y z cha]
+        # WIP: send data with repetition dimension (leave out the rep for loop)
 
         if data_ix < 2:
             for rep in range(data.shape[0]):
@@ -619,6 +646,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc][contr][0])
                                 else:
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc_sel][contr][0])
+                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc][contr][0].getHead()))
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
                                 image.slice = slc
@@ -996,13 +1024,13 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
 
     # filter phasemaps - seems to make it worse as resolution of phase maps is low
-    # phasemaps_filt = np.zeros_like(phasemaps)
-    # for k in range(phasemaps_filt.shape[0]):
-    #     for j in range(phasemaps_filt.shape[1]):
-    #         for i in range(phasemaps_filt.shape[2]):
-    #             filtered = median_filter(phasemaps[k,j,i], size=2)
-    #             phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
-    # phasemaps = phasemaps_filt.copy()
+    phasemaps_filt = np.zeros_like(phasemaps)
+    for k in range(phasemaps_filt.shape[0]):
+        for j in range(phasemaps_filt.shape[1]):
+            for i in range(phasemaps_filt.shape[2]):
+                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=2)
+                # phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
+    phasemaps = phasemaps_filt.copy()
 
     np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
     
@@ -1030,7 +1058,7 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     b0 *= scale
     diff *= scale
 
-    # Fit ADC for each direction by linear least squares
+    #  WIP & not used: Fit ADC for each direction by linear least squares
     diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0
     diff_log  = -np.log(diff_norm, out=np.zeros_like(diff_norm), where=diff_norm!=0)
     if n_bval<4:

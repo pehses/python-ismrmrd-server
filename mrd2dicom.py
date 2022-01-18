@@ -277,7 +277,7 @@ def main(args):
                 # Write DICOM files
                 fileName = "%02.0f_%s_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, dicomDset.InstanceNumber)
                 print("  Writing file %s" % fileName)
-                dicomDset.save_as(os.path.join(args.out_folder, fileName))
+                dicomDset.save_as(os.path.join(args.out_folder, fileName), write_like_original=False)
     return
 
 if __name__ == '__main__':

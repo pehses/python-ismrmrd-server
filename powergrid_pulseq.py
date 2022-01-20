@@ -396,7 +396,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
             sens = reshape_sens_sms(sens, sms_factor)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
-    # Insert Field Map
+    # Insert Field Map - WIP: Reshape Field Maps for SMS
     # process_raw.fmap = None
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
@@ -857,6 +857,8 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         data = remove_os(data)
         data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
+        slc_ix = group[0].idx.slice
+
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
         #--- and for reconstruction of old data                                     ---#
@@ -870,7 +872,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
-            slc_ix = group[0].idx.slice
             process_raw.cc_mat[slc_ix] = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
             data_sens = np.zeros_like(data)[...,:cc_cha,:]
             for k in range(data.shape[-1]):
@@ -892,7 +893,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         # Field Map calculation - if acquired (dont use coil compressed data)
         refimg = cifftn(data, [0,1,2])
         if te_diff is not None and data.shape[-1] > 1:
-            slc_ix = group[0].idx.slice
             process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
 
         # calculate low resolution sensmaps for shot images (dont use coil compressed data)
@@ -1012,7 +1012,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = np.conj(shotimgs[:,:,0,np.newaxis]) * shotimgs # 1st shot is taken as reference phase
     phasemaps = np.angle(phasemaps)
 
-    # phase unwrapping & smooting with median and gaussian filter
+    # phase unwrapping & resizing
     unwrapped_phasemaps = np.zeros([phasemaps.shape[0],phasemaps.shape[1],phasemaps.shape[2],nx,nx])
     for k in range(phasemaps.shape[0]):
         for j in range(phasemaps.shape[1]):
@@ -1028,7 +1028,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     for k in range(phasemaps_filt.shape[0]):
         for j in range(phasemaps_filt.shape[1]):
             for i in range(phasemaps_filt.shape[2]):
-                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=2)
+                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=4)
                 # phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
     phasemaps = phasemaps_filt.copy()
 

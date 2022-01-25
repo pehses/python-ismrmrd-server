@@ -103,19 +103,12 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke \
-     && pip3 install --no-cache-dir h5py scikit-image
+     && pip3 install --no-cache-dir h5py scikit-image ismrmrd
 
 RUN  mkdir -p /opt/code
 
 RUN  cd /opt/code \
      && pip3 install SpiralTraj*
-
-# ISMRMRD Python
-RUN  cd /opt/code \
-     && git clone https://github.com/ismrmrd/ismrmrd-python.git \
-     && cd /opt/code/ismrmrd-python \
-     && git checkout v1.9.5 \
-     && pip install .
 
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \
@@ -129,7 +122,6 @@ RUN  cd /opt/code \
 RUN  apt-get remove --yes gcc git python3-pip
 RUN  apt-get autoremove --yes 
 RUN  apt-get autoclean --yes
-RUN  rm -r /root/.cache/pip
 
 # add ismrmrd server start script
 RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server

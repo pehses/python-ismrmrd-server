@@ -140,18 +140,21 @@ def check_signature(metadata, prot_hdr):
     """ Check the MD5 signature of the Pulseq sequence against the protocol file
 
     """
-    hdr_signature = metadata.userParameters.userParameterString[1].value
-    if hdr_signature != 'NONE':
-        try:
-            prot_signature = prot_hdr.userParameters.userParameterString[0].value
-            if hdr_signature == prot_signature:
-                logging.debug(f"Signature check passed with signature {prot_signature}.")
-            else:
-                logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
-        except:
-            logging.debug("WARNING: Can not check signature as ISMRMRD file contains no signature.")
-    else:
-        logging.debug("Sequence has no signature.")
+    try:
+        hdr_signature = metadata.userParameters.userParameterString[1].value
+        if hdr_signature != 'NONE':
+            try:
+                prot_signature = prot_hdr.userParameters.userParameterString[0].value
+                if hdr_signature == prot_signature:
+                    logging.debug(f"Signature check passed with signature {prot_signature}.")
+                else:
+                    logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
+            except:
+                logging.debug("WARNING: Can not check signature as ISMRMRD file contains no signature.")
+        else:
+            logging.debug("Pulseq sequence has no signature.")
+    except:
+        logging.debug("Sequence signature not available.")
 
 def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
     """

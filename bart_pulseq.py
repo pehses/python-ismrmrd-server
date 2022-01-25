@@ -8,6 +8,7 @@ import base64
 import bart_pulseq_spiral 
 import bart_pulseq_cartesian
 import bart_jemris
+from pulseq_prot import check_signature
 
 """ Checks trajectory type and launches reconstruction
 """
@@ -44,8 +45,10 @@ def process(connection, config, metadata):
             raise ValueError("No protocol file available.")
 
     prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
-    trajtype = hdr.encoding[0].trajectory.value
+    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
+    prot.close()
+    trajtype = prot_hdr.encoding[0].trajectory.value
+    check_signature(metadata, prot_hdr) # check MD5 signature
 
     if trajtype == 'spiral':
         import importlib

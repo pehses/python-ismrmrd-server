@@ -273,6 +273,7 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
     else:
         te_diff = None
 
+    fmap = None
     if sensmaps is None:
         logging.debug("no pics necessary, just do standard FFT")
         data_uncmb = cifftn(data, axes=(0, 1, 2))
@@ -302,9 +303,11 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
                 fmap = gaussian_filter(fmap, sigma=0.5)
                 fmap = median_filter(fmap, size=2)
                 fmap = np.around(fmap)
-                fmap = fmap.astype(np.int16)
-            else:
-                fmap = None
+                fmap = fmap.astype(np.int16)[...,np.newaxis]
+
+                # correct orientation at scanner (consistent with ICE)
+                fmap = np.swapaxes(fmap, 0, 1)
+                fmap = np.flip(fmap, (0,1,2))
     else:
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
@@ -347,7 +350,7 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
-            image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+            image.image_series_index = 1
             image.slice = 0
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -358,13 +361,25 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+        image.image_series_index = 1
         image.slice = 0
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
+
+    if fmap is not None:
+        for par in range(n_par):
+            image = ismrmrd.Image.from_array(fmap[...,par], acquisition=group[0])
+            image.image_index = group[0].idx.slice
+            image.image_series_index = 2
+            image.slice = 0
+            image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))

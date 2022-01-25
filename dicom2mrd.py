@@ -127,9 +127,13 @@ def main(args):
         if dsets[0].SliceLocation != uSliceLoc[0]:
             uSliceLoc = uSliceLoc[::-1]
 
-        uTrigTime = np.unique([dset.TriggerTime for dset in dsets])
-        if dsets[0].TriggerTime != uTrigTime[0]:
-            uTrigTime = uTrigTime[::-1]
+        try:
+            # This field may not exist for non-gated sequences
+            uTrigTime = np.unique([dset.TriggerTime for dset in dsets])
+            if dsets[0].TriggerTime != uTrigTime[0]:
+                uTrigTime = uTrigTime[::-1]
+        except:
+            uTrigTime = np.zeros_like(uSliceLoc)
 
         print("Series %d has %d images with %d slices and %d phases" % (uSeriesNum[iSer], len(dsets), len(uSliceLoc), len(uTrigTime)))
 
@@ -144,18 +148,21 @@ def main(args):
             tmpMeta   = ismrmrd.Meta()
 
             try:
-                tmpMrdImg.imageType                = imtype_map[tmpDset.ImageType[2]]
+                tmpMrdImg.image_type                = imtype_map[tmpDset.ImageType[2]]
             except:
                 print("Unsupported ImageType %s -- defaulting to IMTYPE_MAGNITUDE" % tmpDset.ImageType[2])
-                tmpMrdImg.imageType                = ismrmrd.IMTYPE_MAGNITUDE
+                tmpMrdImg.image_type                = ismrmrd.IMTYPE_MAGNITUDE
 
             tmpMrdImg.field_of_view            = (tmpDset.PixelSpacing[0]*tmpDset.Rows, tmpDset.PixelSpacing[1]*tmpDset.Columns, tmpDset.SliceThickness)
             tmpMrdImg.position                 = tuple(np.stack(tmpDset.ImagePositionPatient))
             tmpMrdImg.read_dir                 = tuple(np.stack(tmpDset.ImageOrientationPatient[0:3]))
             tmpMrdImg.phase_dir                = tuple(np.stack(tmpDset.ImageOrientationPatient[3:7]))
             tmpMrdImg.slice_dir                = tuple(np.cross(np.stack(tmpDset.ImageOrientationPatient[0:3]), np.stack(tmpDset.ImageOrientationPatient[3:7])))
-            tmpMrdImg.acquisition_time_stamp   = round((int(tmpDset.AcquisitionTime[0:2])*3600 + int(tmpDset.AcquisitionTime[2:4])*60 + int(tmpDset.AcquisitionTime[4:6]) + float(tmpDset.AcquisitionTime[6:]))*1000*2.5)
-            tmpMrdImg.physiology_time_stamp[0] = round(int(tmpDset.TriggerTime*2.5))
+            tmpMrdImg.acquisition_time_stamp   = round((int(tmpDset.AcquisitionTime[0:2])*3600 + int(tmpDset.AcquisitionTime[2:4])*60 + int(tmpDset.AcquisitionTime[4:6]) + float(tmpDset.AcquisitionTime[6:]))*1000/2.5)
+            try:
+                tmpMrdImg.physiology_time_stamp[0] = round(int(tmpDset.TriggerTime/2.5))
+            except:
+                pass
 
             try:
                 ImaAbsTablePosition = tmpDset.get_private_item(0x0019, 0x13, 'SIEMENS MR HEADER').value
@@ -166,16 +173,22 @@ def main(args):
             tmpMrdImg.image_series_index     = uSeriesNum.tolist().index(tmpDset.SeriesNumber)
             tmpMrdImg.image_index            = tmpDset.get('InstanceNumber', 0)
             tmpMrdImg.slice                  = uSliceLoc.tolist().index(tmpDset.SliceLocation)
-            tmpMrdImg.phase                  = uTrigTime.tolist().index(tmpDset.TriggerTime)
+            try:
+                tmpMrdImg.phase                  = uTrigTime.tolist().index(tmpDset.TriggerTime)
+            except:
+                pass
 
             try:
                 res  = re.search(r'(?<=_v).*$',     tmpDset.SequenceName)
                 venc = re.search(r'^\d+',           res.group(0))
                 dir  = re.search(r'(?<=\d)[^\d]*$', res.group(0))
 
+                tmpMeta['FlowVelocity']   = float(venc.group(0))
                 tmpMeta['FlowDirDisplay'] = venc_dir_map[dir.group(0)]
             except:
                 pass
+
+            tmpMeta['SequenceDescription'] = tmpDset.SeriesDescription
 
             # Remove pixel data from pydicom class
             del tmpDset['PixelData']

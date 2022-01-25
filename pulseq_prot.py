@@ -144,9 +144,8 @@ def check_signature(metadata, prot_hdr):
     if hdr_signature != 'NONE':
         try:
             prot_signature = prot_hdr.userParameters.userParameterString[0].value
-            print(hdr_signature, prot_signature)
             if hdr_signature == prot_signature:
-                logging.debug("Signature check passed.")
+                logging.debug(f"Signature check passed with signature {prot_signature}.")
             else:
                 logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
         except:

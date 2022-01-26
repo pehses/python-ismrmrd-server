@@ -11,12 +11,13 @@ import multiprocessing
 
 from cfft import cfftn, cifftn
 
-from reco_helper import calculate_prewhitening, apply_prewhitening
+from reco_helper import calculate_prewhitening, remove_os
 
 try:
     from bartpy.wrapper import bart
 except:
     from bart import bart
+
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
@@ -67,7 +68,7 @@ def scc_calibrate_mtx(data):
 
 
 def prewhite_and_compress(data, dmtx, cc_coeff=None):
-    data = apply_prewhitening(data, dmtx)
+    data = apply_mtx(data, dmtx)
     if cc_coeff is not None:
         nc = cc_coeff.shape[0] # [0] or [1]
         data = bart(1, 'cc -p %d'%(nc), data, cc_coeff)
@@ -169,13 +170,20 @@ def process(connection, config, metadata):
                     if ncc>0:
                         # calibrate coil compression
                         caldata = list()
+
                         for item in acsGroup[item.idx.slice]:
-                            caldata.append(apply_prewhitening(item.data, dmtx))
+                            caldata.append(apply_mtx(item.data, dmtx))
                         caldata = np.moveaxis(np.asarray(caldata), 1, 0)
                         caldata = caldata.reshape([caldata.shape[0], -1])  # final order: [ncoils, nsamples]
-                        U, s = scc_calibrate_mtx(caldata)
+                        logging.info("caldata.shape = %s"%(caldata.shape,))
+                        U, s = scc_calibrate_mtx(caldata.T)
+                        logging.info("dmtx shape: %s; U shape: %s; s shape: %s; caldata shape: %s"%(dmtx.shape,U.shape,s.shape, caldata.shape))
+
                         # wip: select coils
-                        dmtx_cc = np.conj(dmtx) @ U.T
+                        ncc = 16
+                        cc = U.T
+                        dmtx_cc = np.conj(dmtx) @ cc
+                        dmtx_cc = dmtx_cc[:ncc, :]
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx_cc, use_gpu)
@@ -261,9 +269,13 @@ def process_and_send(connection, acqGroup, config, metadata, dmtx_cc, sensmap, u
 # Sorting of k-space data
 #######
 
-def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
+def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False, os_removal=True):
     # initialize k-space
     nc = metadata.acquisitionSystemInformation.receiverChannels
+    
+    ncc = nc
+    if dmtx_cc is not None:
+        ncc = dmtx_cc.shape[0]
 
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
@@ -281,6 +293,8 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
 
     if zf_around_center:
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
+        if os_removal:
+            nx //= 2
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
     else:
@@ -289,7 +303,7 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
         nz = enc2_max+1
 
     acq_key = [None] * nz
-    kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
+    kspace = np.zeros([ny, nz, ncc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
     logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
@@ -305,6 +319,8 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
         col = slice(None)
         if zf_around_center:
             ncol = acq.data.shape[-1]
+            if os_removal:
+                ncol //= 2
             cx = nx // 2
             ccol = ncol // 2
             col = slice(cx - ccol, cx + ccol)
@@ -319,10 +335,14 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
             enc1 += cy - cenc1
             enc2 += cz - cenc2
         
+        data = acq.data
+        if os_removal:
+            data = remove_os(data, -1)
+
         if dmtx_cc is None:
-            kspace[enc1, enc2, :, col] += acq.data
+            kspace[enc1, enc2, :, col] += data
         else:
-            kspace[enc1, enc2, :, col] += apply_prewhitening(acq.data, dmtx_cc)
+            kspace[enc1, enc2, :, col] += apply_mtx(data, dmtx_cc)
         counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
@@ -334,7 +354,7 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False):
     return kspace, acq_key
 
 
-def process_acs(group, config, metadata, dmtx=None, use_gpu=False, econ_chunksz=0): # chunksz 8?
+def process_acs(group, config, metadata, dmtx=None, use_gpu=False, econ_chunksz=4): # chunksz 8?
 
     if len(group)>0:
         acs, _ = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
@@ -345,14 +365,22 @@ def process_acs(group, config, metadata, dmtx=None, use_gpu=False, econ_chunksz=
         if econ_chunksz>0:
             # espirit_econ: reduce memory footprint by chunking
             eon = bart(1, 'ecalib -m 2 -1' + ' -g' if use_gpu else '', acs)
+            
+            # eon = bart(1, 'ecalib -m 2 -1' + ' -g' if use_gpu else '', acs)
             # zero-pad
-            tmp = bart('fft 4', eon)
-            tmp2 = bart('resize -c 2 nz', tmp)
-            eon = bart('fft -i 4', tmp2)
+            tmp = bart(1, 'fft 4', eon)
+            tmp2 = bart(1, 'resize -c 2 %d'%(nz,), tmp)
+            eon = bart(1, 'fft -i 4', tmp2)
             del tmp, tmp2
-            sensmaps = np.zeros_like(acs)
+            sensmaps = np.zeros(acs.shape + (2,), dtype=acs.dtype)
             for i in range(0, econ_chunksz*(nz//econ_chunksz), econ_chunksz):
-                sensmaps[:,:,i:i+econ_chunksz,:] = bart(1, 'ecaltwo -m 2' + ' -g' if use_gpu else '', eon[:,:,i:i+econ_chunksz,:])
+                # bart extract ${DIM} $i $((10#$i + $CHUNKSIZE)) eon sl
+                sl = eon[:,:,i:i+econ_chunksz,:]
+                logging.debug("sl data is size %s" % (sl.shape,))
+                if use_gpu:
+                    sensmaps[:,:,i:i+econ_chunksz,:,:] = bart(1, 'ecaltwo -g -m 2 %d %d %d'%(nx, ny, econ_chunksz), sl)
+                else:
+                    sensmaps[:,:,i:i+econ_chunksz,:,:] = bart(1, 'ecaltwo -m 2 %d %d %d'%(nx, ny, econ_chunksz), sl)
         else:
             sensmaps = bart(1, 'ecalib -m 2' + ' -g' if use_gpu else '', acs)
         np.save(debugFolder + "/" + "acs.npy", acs)

@@ -12,8 +12,11 @@ import multiprocessing
 from cfft import cfftn, cifftn
 
 from reco_helper import calculate_prewhitening, apply_prewhitening
-# from bart import bart
-from bartpy.wrapper import bart
+
+try:
+    from bartpy.wrapper import bart
+except:
+    from bart import bart
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
@@ -124,8 +127,8 @@ def process(connection, config, metadata):
     sensmaps = [None] * 256
     dmtx = None
 
-    _, corr_factors = getCoilInfo()
-    corr_factors = corr_factors[:, np.newaxis]
+#    _, corr_factors = getCoilInfo()
+#    corr_factors = corr_factors[:, np.newaxis]
     ncc = 10
     dmtx_cc = None
 
@@ -138,8 +141,8 @@ def process(connection, config, metadata):
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
-                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
-                    item.data *= corr_factors
+#                if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
+#                    item.data *= corr_factors
 
                 # wip: run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -153,8 +156,7 @@ def process(connection, config, metadata):
                     # calculate pre-whitening matrix
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
-                
-                
+
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
@@ -167,7 +169,7 @@ def process(connection, config, metadata):
                     if ncc>0:
                         # calibrate coil compression
                         caldata = list()
-                        for caldata in acsGroup[item.idx.slice]:
+                        for item in acsGroup[item.idx.slice]:
                             caldata.append(apply_prewhitening(item.data, dmtx))
                         caldata = np.moveaxis(np.asarray(caldata), 1, 0)
                         caldata = caldata.reshape([caldata.shape[0], -1])  # final order: [ncoils, nsamples]

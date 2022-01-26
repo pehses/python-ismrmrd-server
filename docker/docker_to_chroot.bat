@@ -20,8 +20,8 @@ docker rm tmpimage
 rem Run a privileged Docker to create the chroot file
 docker run -it --rm          ^
            --privileged=true ^
-           -v %cd%:/share    ^
+           -v "%cd%":/share  ^
            ubuntu            ^
-           /bin/bash /share/docker_tar_to_chroot.sh /share/%EXPORT_FILE% /share/%CHROOT_FILE%
+           /bin/bash "sed -i -e 's/\r//g' /share/docker_tar_to_chroot.sh && /share/docker_tar_to_chroot.sh /share/%EXPORT_FILE% /share/%CHROOT_FILE%"
 
 del %EXPORT_FILE%

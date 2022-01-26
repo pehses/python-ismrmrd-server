@@ -12,7 +12,7 @@ import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
 
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -82,6 +82,12 @@ def process(connection, config, metadata):
             prot_file = prot_file_loc
         else:
             raise ValueError("No protocol file available.")
+
+    # check signature
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
+    check_signature(metadata, prot_hdr) # check MD5 signature
+    prot.close()
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)
@@ -218,8 +224,8 @@ def process(connection, config, metadata):
                     else:
                         data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
                         data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
-                        phs =  np.unwrap(np.angle(data_sum)) # calculate global phase slope
-                        phs_slope = np.polyfit(np.arange(len(phs)), phs, 1)[0] # least squares fit  
+                        slope = np.sum(data_sum[:-1] * np.conj(data_sum[1:]))
+                        phs_slope = np.angle(slope)
                         offres = phs_slope / 1e-6 # 1 us dwelltime of phase correction scans
                     continue
                 
@@ -275,7 +281,7 @@ def process(connection, config, metadata):
                         # data = fov_shift_spiral(data, np.swapaxes(pred_trj,0,1), shift, matr_sz[0])
 
                         # filter signal to avoid Gibbs Ringing
-                        traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1)
+                        traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1) # traj to [dim, samples]
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj_filt, filt_fac=0.95)
                         
                         # Correct the global phase
@@ -283,7 +289,7 @@ def process(connection, config, metadata):
                         if skope:
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*k0)
                         # WIP: phase navigators not working correctly atm
-                        if offres is not None:
+                        if not skope and offres is not None:
                             t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
                             global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
@@ -434,8 +440,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # remove slice dimension, if field map was 3D
     if len(fmap_data) == 1: fmap_data = fmap_data[0]
     if len(fmap_mask) == 1: fmap_mask = fmap_mask[0]
+    if sms_factor > 1:
+            fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
-    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] collapses to [slices/nz,ny,nx] as slices or nz is always 1 (no multi-slab)
+    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
     logging.debug("Field Map name: %s", fmap_name)
 
     # Calculate phase maps from shot images and append if necessary
@@ -857,6 +865,8 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         data = remove_os(data)
         data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
+        slc_ix = group[0].idx.slice
+
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
         #--- and for reconstruction of old data                                     ---#
@@ -870,7 +880,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
-            slc_ix = group[0].idx.slice
             process_raw.cc_mat[slc_ix] = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
             data_sens = np.zeros_like(data)[...,:cc_cha,:]
             for k in range(data.shape[-1]):
@@ -892,7 +901,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         # Field Map calculation - if acquired (dont use coil compressed data)
         refimg = cifftn(data, [0,1,2])
         if te_diff is not None and data.shape[-1] > 1:
-            slc_ix = group[0].idx.slice
             process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
 
         # calculate low resolution sensmaps for shot images (dont use coil compressed data)
@@ -1012,13 +1020,13 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = np.conj(shotimgs[:,:,0,np.newaxis]) * shotimgs # 1st shot is taken as reference phase
     phasemaps = np.angle(phasemaps)
 
-    # phase unwrapping & smooting with median and gaussian filter
+    # phase unwrapping & interpolation to higher resolution
     unwrapped_phasemaps = np.zeros([phasemaps.shape[0],phasemaps.shape[1],phasemaps.shape[2],nx,nx])
     for k in range(phasemaps.shape[0]):
         for j in range(phasemaps.shape[1]):
             for i in range(phasemaps.shape[2]):
                 unwrapped = unwrap_phase(phasemaps[k,j,i], wrap_around=(False, False))
-                unwrapped_phasemaps[k,j,i] = resize(unwrapped, [nx,nx]) # interpolate to higher resolution
+                unwrapped_phasemaps[k,j,i] = resize(unwrapped, [nx,nx])
 
     # mask all slices - need to swap shot and slice axis
     phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
@@ -1028,7 +1036,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     for k in range(phasemaps_filt.shape[0]):
         for j in range(phasemaps_filt.shape[1]):
             for i in range(phasemaps_filt.shape[2]):
-                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=2)
+                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=9)
                 # phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
     phasemaps = phasemaps_filt.copy()
 
@@ -1190,3 +1198,14 @@ def reshape_sens_sms(sens, sms_factor):
     for slc in range(sens_cpy.shape[0]):
         sens[slc%slices_eff,:,slc//slices_eff] = sens_cpy[slc,:,0] 
     return sens
+
+def reshape_fmap_sms(fmap, sms_factor):
+    # WIP: is this correct???
+    # reshape field map array for sms imaging
+
+    fmap_cpy = fmap.copy() # [slices, ny, nx] slices could also be nz for 3D refscan, but doesnt matter here
+    slices_eff = fmap_cpy.shape[0]//sms_factor
+    fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype)
+    for slc in range(fmap_cpy.shape[0]):
+        fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
+    return fmap

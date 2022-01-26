@@ -12,7 +12,7 @@ import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
 
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -82,6 +82,12 @@ def process(connection, config, metadata):
             prot_file = prot_file_loc
         else:
             raise ValueError("No protocol file available.")
+
+    # check signature
+    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
+    check_signature(metadata, prot_hdr) # check MD5 signature
+    prot.close()
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)

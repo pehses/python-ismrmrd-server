@@ -378,7 +378,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Write header
-    sms_factor = metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
     if sms_factor > 1 and slc_sel is not None:
         raise ValueError("SMS reconstruction is not possible for single slices.")
     if sms_factor > 1:
@@ -642,31 +642,30 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         # WIP: send data with repetition dimension (leave out the rep for loop)
 
         if data_ix < 2:
-            for rep in range(data.shape[0]):
-                for contr in range(data.shape[1]):
-                    series_ix += 1
-                    img_ix = 0
-                    for phs in range(data.shape[2]):
-                        for slc in range(data.shape[3]):
-                            for nz in range(data.shape[4]):
-                                img_ix += 1
-                                if slc_sel is None:
-                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc][contr][0])
-                                else:
-                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[slc_sel][contr][0])
-                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc][contr][0].getHead()))
-                                image.image_index = img_ix
-                                image.image_series_index = series_ix
-                                image.slice = slc
-                                if 'b_values' in prot_arrays:
-                                    image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
-                                if 'Directions' in prot_arrays and data_ix==1:
-                                    image.user_float[:3] = prot_arrays['Directions'][phs]
-                                image.attribute_string = xml
-                                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                                images.append(image)
+            for contr in range(data.shape[1]):
+                series_ix += 1
+                img_ix = 0
+                for phs in range(data.shape[2]):
+                    for slc in range(data.shape[3]):
+                        for nz in range(data.shape[4]):
+                            img_ix += 1
+                            if slc_sel is None:
+                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[slc][contr][0])
+                            else:
+                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[slc_sel][contr][0])
+                            image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc][contr][0].getHead()))
+                            image.image_index = img_ix
+                            image.image_series_index = series_ix
+                            image.slice = slc
+                            if 'b_values' in prot_arrays:
+                                image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
+                            if 'Directions' in prot_arrays and data_ix==1:
+                                image.user_float[:3] = prot_arrays['Directions'][phs]
+                            image.attribute_string = xml
+                            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                            images.append(image)
         else:
             # atm only ADC maps
             series_ix += 1
@@ -692,7 +691,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
 
     logging.debug("Do fast single slice online reconstruction.")
 
-    sms_factor = metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
     if sms_factor > 1:
         raise ValueError("SMS reconstruction is not possible for single slices.")
 
@@ -787,7 +786,7 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     """ PowerGrid reconstruction
     """
  
-    temp_intp = 'histo' # hanning / histo / minmax
+    temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 

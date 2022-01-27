@@ -173,13 +173,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     # # Process acquisition
     # #---------------------------
 
-    # convert positions for correct rotation matrix - this was experimentally validated on 20210709
-    # In Pulseq interpreter v1.4 this is valid for the "old/compat" FOV positioning mode
-    # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
-    tmp = -1* np.asarray(dset_acq.phase_dir[:])
-    dset_acq.phase_dir[:] = np.asarray(dset_acq.read_dir[:])
-    dset_acq.read_dir[:] = tmp
-    dset_acq.slice_dir[:] = -1 * np.asarray(dset_acq.slice_dir[:])
+    # adjust rotation matrix (see function below)
+    adjust_rotmat(dset_acq)
 
     # encoding counters
     dset_acq.idx.kspace_encode_step_1 = prot_acq.idx.kspace_encode_step_1
@@ -267,6 +262,14 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     if return_basetrj:
         return base_trj
  
+def adjust_rotmat(acq):
+    # convert positions for correct rotation matrix - this was experimentally validated on 20210709
+    # In Pulseq interpreter v1.4 this is valid for the "old/compat" FOV positioning mode
+    # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
+    tmp = -1* np.asarray(acq.phase_dir[:])
+    acq.phase_dir[:] = np.asarray(acq.read_dir[:])
+    acq.read_dir[:] = tmp
+    acq.slice_dir[:] = -1 * np.asarray(acq.slice_dir[:])
 
 def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster

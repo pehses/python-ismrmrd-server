@@ -12,7 +12,7 @@ import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
 
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature, adjust_rotmat
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -196,10 +196,24 @@ def process(connection, config, metadata):
                 if item.traj.size > 0:
                     skope = True # Skope data inserted?
 
-                # insert acquisition protocol
-                # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(acqs[0], item, metadata)
-                acqs.pop(0)
+                # This is a hack to reduce the number of acquisitions in the metadata file:
+                # Line counters of the reference scan are assigned with the label extension of Pulseq
+                # and get the Phasecorrection flag
+                base_traj = None
+                if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+                    adjust_rotmat(item)
+                    item.set_flag(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)
+                    item.idx.contrast = item.idx.phase # contrast counter does not exist in label extension, so we use the phase counter
+                    item.idx.phase = 0
+                    item.clear_flag(ismrmrd.ACQ_IS_PHASECORR_DATA)
+                    item.clear_flag(ismrmrd.ACQ_LAST_IN_SLICE)
+                    if item.is_flag_set(ismrmrd.ACQ_IS_REVERSE): # misuse reverse flag to correctly set last in slice, which is not working correctly in Pulseq
+                        item.set_flag(ismrmrd.ACQ_LAST_IN_SLICE)
+                        item.clear_flag(ismrmrd.ACQ_IS_REVERSE)
+                else:
+                    base_traj = insert_acq(acqs[0], item, metadata) # base_trj is used to correct FOV shift (see below)
+                    acqs.pop(0)
+                    if not len(acqs): item.set_flag(ismrmrd.ACQ_LAST_IN_MEASUREMENT) # when using the labels extension, last scan in measurement is not set anymore
                 if base_traj is not None:
                     base_trj = base_traj
 

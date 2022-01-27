@@ -5,7 +5,7 @@ import numpy as np
 
 # These are copied from ismrmrdtools.coils, which depends on scipy
 # (wip: import from ismrmrdtools and add scipy to container image)
-def calculate_prewhitening(noise, scale_factor=1.0):
+def calculate_prewhitening(noise, scale_factor=1.0, normalize=True):
     '''Calculates the noise prewhitening matrix
 
     :param noise: Input noise data (array or matrix), ``[coil, nsamples]``
@@ -21,7 +21,8 @@ def calculate_prewhitening(noise, scale_factor=1.0):
     noise = noise.reshape((noise.shape[0], noise.size//noise.shape[0]))
 
     R = np.cov(noise)
-    R /= np.mean(abs(np.diag(R)))
+    if normalize:
+        R /= np.mean(abs(np.diag(R)))
     R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
     # R = sqrtm(np.linalg.inv(R))
     R = np.linalg.inv(np.linalg.cholesky(R))

@@ -55,7 +55,6 @@ def getCoilInfo(coilname='nova_ptx'):
 
 
 # WIP: these all need to be tested
-
 def scc_calibrate_mtx(data):
     # input data: [nsamples, ncoils]
     # output: [ncoils, ncoils]
@@ -65,16 +64,6 @@ def scc_calibrate_mtx(data):
     U, s, _ = np.linalg.svd(data, full_matrices=False)
     mtx = np.conj(U.T)
     return mtx, s
-
-
-def prewhite_and_compress(data, dmtx, cc_coeff=None):
-    data = apply_mtx(data, dmtx)
-    if cc_coeff is not None:
-        nc = cc_coeff.shape[0] # [0] or [1]
-        data = bart(1, 'cc -p %d'%(nc), data, cc_coeff)
-
-    return data
-
 
 def apply_mtx(data, inv_mtx):
     return inv_mtx @ data
@@ -126,12 +115,11 @@ def process(connection, config, metadata):
     # hard-coded limit of 256 slices (better: use Nslice from protocol)
     acsGroup = [[] for _ in range(256)]
     sensmaps = [None] * 256
-    dmtx = None
 
 #    _, corr_factors = getCoilInfo()
 #    corr_factors = corr_factors[:, np.newaxis]
-    ncc = 10
-    dmtx_cc = None
+    ncc = 16  # number of compressed coils
+    dmtx = None
 
     if use_multiprocessing:
         pool = multiprocessing.Pool(processes=4)
@@ -153,13 +141,14 @@ def process(connection, config, metadata):
                     noise_data = []
                     for acq in noiseGroup:
                         noise_data.append(acq.data)
-                    noise_data = np.concatenate(noise_data, axis=1)
+                    noise_data = np.concatenate(noise_data, axis=1)  # [ncha, nsamples]
                     # calculate pre-whitening matrix
                     dmtx = calculate_prewhitening(noise_data)
-                    del(noise_data)
 
                 # Accumulate all imaging readouts in a group
-                if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+                if item.is_flag_set(ismrmrd.ACQ_IS_NAVIGATION_DATA):
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -171,22 +160,19 @@ def process(connection, config, metadata):
                         # calibrate coil compression
                         caldata = list()
 
-                        for item in acsGroup[item.idx.slice]:
-                            caldata.append(apply_mtx(item.data, dmtx))
+                        for item2 in acsGroup[item.idx.slice]:
+                            caldata.append(apply_mtx(item2.data, dmtx))
                         caldata = np.moveaxis(np.asarray(caldata), 1, 0)
-                        caldata = caldata.reshape([caldata.shape[0], -1])  # final order: [ncoils, nsamples]
-                        logging.info("caldata.shape = %s"%(caldata.shape,))
-                        U, s = scc_calibrate_mtx(caldata.T)
-                        logging.info("dmtx shape: %s; U shape: %s; s shape: %s; caldata shape: %s"%(dmtx.shape,U.shape,s.shape, caldata.shape))
+                        caldata = caldata.reshape([caldata.shape[0], -1]).T  # final order: [nsamples, ncoils]
 
-                        # wip: select coils
-                        ncc = 16
-                        cc = U.T
-                        dmtx_cc = np.conj(dmtx) @ cc
-                        dmtx_cc = dmtx_cc[:ncc, :]
+                        M, s = scc_calibrate_mtx(caldata)
+                        dmtx = (np.conj(dmtx) @ M).T  # combine pre-whitening and coil-compression
+                        dmtx = dmtx[:ncc, :]
+
+                    # dmtx = None  # test
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx_cc, use_gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, use_gpu)
 
 
                 acqGroup.append(item)
@@ -199,9 +185,9 @@ def process(connection, config, metadata):
                     # logging.debug("Sending images to client:\n%s", images)
                     # connection.send_image(images)
                     if use_multiprocessing:
-                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice]))
+                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu))
                     else:
-                        process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice])
+                        process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu)
                     acqGroup = []
 
             # ----------------------------------------------------------
@@ -244,9 +230,9 @@ def process(connection, config, metadata):
             # image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[acqGroup[-1].idx.slice], use_gpu)
             # connection.send_image(image)
             if use_multiprocessing:
-                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx_cc, sensmaps[item.idx.slice], use_gpu))
+                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu))
             else:
-                process_and_send(connection, acqGroup, config, metadata, dmtx_cc, sensmaps[item.idx.slice], use_gpu)
+                process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu)
             acqGroup = []
 
     finally:
@@ -258,9 +244,9 @@ def process(connection, config, metadata):
 
 
 # wip: this may in the future help with multiprocessing
-def process_and_send(connection, acqGroup, config, metadata, dmtx_cc, sensmap, use_gpu):
+def process_and_send(connection, acqGroup, config, metadata, dmtx, sensmap, use_gpu):
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, config, metadata, dmtx_cc, sensmap, use_gpu)
+    images = process_raw(acqGroup, config, metadata, dmtx, sensmap, use_gpu)
     logging.debug("Sending images to client:\n%s", images)
     connection.send_image(images)
 
@@ -269,13 +255,13 @@ def process_and_send(connection, acqGroup, config, metadata, dmtx_cc, sensmap, u
 # Sorting of k-space data
 #######
 
-def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False, os_removal=True):
+def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=True, os_removal=True):
     # initialize k-space
     nc = metadata.acquisitionSystemInformation.receiverChannels
     
     ncc = nc
-    if dmtx_cc is not None:
-        ncc = dmtx_cc.shape[0]
+    if dmtx is not None:
+        ncc = dmtx.shape[0]
 
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
@@ -293,14 +279,14 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False, os_r
 
     if zf_around_center:
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        if os_removal:
-            nx //= 2
         ny = metadata.encoding[0].encodedSpace.matrixSize.y
         nz = metadata.encoding[0].encodedSpace.matrixSize.z
     else:
-        nx = group[0].data.shape[-1]//2
+        nx = group[0].data.shape[-1]
         ny = enc1_max+1
         nz = enc2_max+1
+    if os_removal:
+        nx //= 2
 
     acq_key = [None] * nz
     kspace = np.zeros([ny, nz, ncc, nx], dtype=group[0].data.dtype)
@@ -339,10 +325,10 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False, os_r
         if os_removal:
             data = remove_os(data, -1)
 
-        if dmtx_cc is None:
+        if dmtx is None:
             kspace[enc1, enc2, :, col] += data
         else:
-            kspace[enc1, enc2, :, col] += apply_mtx(data, dmtx_cc)
+            kspace[enc1, enc2, :, col] += apply_mtx(data, dmtx)
         counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
@@ -354,35 +340,45 @@ def sort_into_kspace(group, metadata, dmtx_cc=None, zf_around_center=False, os_r
     return kspace, acq_key
 
 
-def process_acs(group, config, metadata, dmtx=None, use_gpu=False, econ_chunksz=4): # chunksz 8?
+def process_acs(group, config, metadata, dmtx=None, use_gpu=False, chunksz=8): # chunksz 8?
 
     if len(group)>0:
-        acs, _ = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+        acs, _ = sort_into_kspace(group, metadata, dmtx)
         nx, ny, nz, nc = acs.shape
 
         # '-I': Intensity correction useful? -> Marten
         # ESPIRiT calibration
-        if econ_chunksz>0:
+        if chunksz>0:
             # espirit_econ: reduce memory footprint by chunking
-            eon = bart(1, 'ecalib -m 2 -1' + ' -g' if use_gpu else '', acs)
+            if use_gpu:
+                eon = bart(1, 'ecalib -g -m 2 -1', acs)
+            else:
+                eon = bart(1, 'ecalib -m -2 -1', acs)
             
-            # eon = bart(1, 'ecalib -m 2 -1' + ' -g' if use_gpu else '', acs)
+            if nz%chunksz:
+                chunksz_ = chunksz
+                while nz%chunksz:
+                    chunksz //= 2
+                logging.debug('chunksz=%d is not a multiple of nz=%d; New chunksz=%d'%(chunksz_, nz, chunksz))
+            
             # zero-pad
             tmp = bart(1, 'fft 4', eon)
             tmp2 = bart(1, 'resize -c 2 %d'%(nz,), tmp)
             eon = bart(1, 'fft -i 4', tmp2)
             del tmp, tmp2
+
             sensmaps = np.zeros(acs.shape + (2,), dtype=acs.dtype)
-            for i in range(0, econ_chunksz*(nz//econ_chunksz), econ_chunksz):
-                # bart extract ${DIM} $i $((10#$i + $CHUNKSIZE)) eon sl
-                sl = eon[:,:,i:i+econ_chunksz,:]
-                logging.debug("sl data is size %s" % (sl.shape,))
+            for i in range(0, nz, chunksz):
+                sl = eon[:,:,i:i+chunksz,:]
                 if use_gpu:
-                    sensmaps[:,:,i:i+econ_chunksz,:,:] = bart(1, 'ecaltwo -g -m 2 %d %d %d'%(nx, ny, econ_chunksz), sl)
+                    sensmaps[:,:,i:i+chunksz,:,:] = bart(1, 'ecaltwo -g -m 2 %d %d %d'%(nx, ny, chunksz), sl)
                 else:
-                    sensmaps[:,:,i:i+econ_chunksz,:,:] = bart(1, 'ecaltwo -m 2 %d %d %d'%(nx, ny, econ_chunksz), sl)
+                    sensmaps[:,:,i:i+chunksz,:,:] = bart(1, 'ecaltwo -m 2 %d %d %d'%(nx, ny, chunksz), sl)
         else:
-            sensmaps = bart(1, 'ecalib -m 2' + ' -g' if use_gpu else '', acs)
+            if use_gpu:
+                sensmaps = bart(1, 'ecalib -g -m 2', acs)
+            else:
+                sensmaps = bart(1, 'ecalib -m 2', acs)
         np.save(debugFolder + "/" + "acs.npy", acs)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps
@@ -397,8 +393,14 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, use_gpu=False
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
-    data = bart(1, 'pics -l1 -r0.003 -S -d5' + ' -g' if use_gpu else '', data, sensmaps)
+    if use_gpu:
+        data = bart(1, 'pics -l1 -r0.003 -S -d5 -g', data, sensmaps)
+    else:
+        data = bart(1, 'pics -l1 -r0.003 -S -d5', data, sensmaps)
     data = np.abs(data)
+    
+    if data.ndim==5: # reconstruction with two e-spirit maps
+        data = data[:,:,:,0,0]
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)

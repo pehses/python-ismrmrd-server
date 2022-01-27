@@ -585,6 +585,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # data should have output [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
     data = np.transpose(data, [3,4,2,1,0,5,6,7]).mean(axis=0)
+    if sms_factor > 1: # reorder sms slices
+        newshape = [_ for _ in data.shape]
+        newshape[3:5] = [newshape[3]*newshape[4], 1]
+        data = data.reshape(newshape, order='f')
 
     logging.debug("Image data is size %s" % (data.shape,))
    
@@ -650,10 +654,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                         for nz in range(data.shape[4]):
                             img_ix += 1
                             if slc_sel is None:
-                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[slc][contr][0])
+                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[0][contr][0])
                             else:
                                 image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[slc_sel][contr][0])
-                            image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc][contr][0].getHead()))
+                            image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
                             image.image_index = img_ix
                             image.image_series_index = series_ix
                             image.slice = slc

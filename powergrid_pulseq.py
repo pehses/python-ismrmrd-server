@@ -92,6 +92,10 @@ def process(connection, config, metadata):
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    if sms_factor > 1 and slc_sel is not None:
+        raise ValueError("SMS reconstruction is not possible for single slices.")
+
     # Get additional arrays from protocol file - e.g. for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
@@ -379,8 +383,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     # Write header
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1 and slc_sel is not None:
-        raise ValueError("SMS reconstruction is not possible for single slices.")
     if sms_factor > 1:
         metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
         metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
@@ -694,11 +696,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
 
     logging.debug("Do fast single slice online reconstruction.")
-
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1:
-        raise ValueError("SMS reconstruction is not possible for single slices.")
-
+    
     # Write ISMRMRD file for PowerGrid
     tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
     if os.path.exists(tmp_file):

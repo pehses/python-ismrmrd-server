@@ -11,8 +11,6 @@ import multiprocessing
 
 from cfft import cfftn, cifftn
 
-from reco_helper import calculate_prewhitening, remove_os
-
 try:
     from bartpy.wrapper import bart
 except:
@@ -25,6 +23,7 @@ debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
 use_multiprocessing = False
+os_removal = True
 
 
 def getCoilInfo(coilname='nova_ptx'):
@@ -54,23 +53,33 @@ def getCoilInfo(coilname='nova_ptx'):
     return fft_scale, rawdata_corrfactors
 
 
-# WIP: these all need to be tested
-def scc_calibrate_mtx(data):
-    # input data: [nsamples, ncoils]
-    # output: [ncoils, ncoils]
-    nc = data.shape[1]
-    data = np.moveaxis(data, 1, 0)
-    data = data.flatten().reshape((nc, -1))
+def remove_os(data, axis=-1):
+    '''Remove oversampling (assumes os factor 2)
+    '''
+    cut = slice(data.shape[axis]//4, (data.shape[axis]*3)//4)
+    data = np.fft.ifft(data, axis=axis)
+    data = np.delete(data, cut, axis=axis)
+    data = np.fft.fft(data, axis=axis)
+    return data
+
+def calibrate_prewhitening(noise, scale_factor=1.0, normalize=True):
+    # input noise: [ncha, nsamples]
+    # output: [ncha, ncha]
+    R = np.cov(noise)   #R = (noise @ np.conj(noise).T)/noise.shape[-1]
+    if normalize:
+        R /= np.mean(abs(np.diag(R)))
+    R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
+    R = np.linalg.inv(np.linalg.cholesky(R))
+    return R
+
+def calibrate_scc(data):
+    # input data: [ncha, nsamples]
+    # output: [ncha, ncha]
+    nc = data.shape[0]
     U, s, _ = np.linalg.svd(data, full_matrices=False)
     mtx = np.conj(U.T)
     return mtx, s
 
-def apply_mtx(data, inv_mtx):
-    return inv_mtx @ data
-
-
-# Folder for debug output files
-debugFolder = "/tmp/share/debug"
 
 def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
@@ -113,13 +122,15 @@ def process(connection, config, metadata):
     waveformGroup = []
 
     # hard-coded limit of 256 slices (better: use Nslice from protocol)
-    acsGroup = [[] for _ in range(256)]
-    sensmaps = [None] * 256
+    max_no_of_slices = 256
+    acsGroup = [[] for _ in range(max_no_of_slices)]
+    sensmaps = [None] * max_no_of_slices
 
 #    _, corr_factors = getCoilInfo()
 #    corr_factors = corr_factors[:, np.newaxis]
-    ncc = 16  # number of compressed coils
-    dmtx = None
+    # os_removal = (metadata.encoding[0].encodedSpace.matrixSize.x / metadata.encoding[0].reconSpace.matrixSize.x) == 2
+    ncc = 0  # number of compressed coils
+    dmtx = [None] * max_no_of_slices
 
     if use_multiprocessing:
         pool = multiprocessing.Pool(processes=4)
@@ -137,13 +148,21 @@ def process(connection, config, metadata):
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
                     continue
-                elif len(noiseGroup) > 0 and dmtx is None:
-                    noise_data = []
-                    for acq in noiseGroup:
-                        noise_data.append(acq.data)
-                    noise_data = np.concatenate(noise_data, axis=1)  # [ncha, nsamples]
-                    # calculate pre-whitening matrix
-                    dmtx = calculate_prewhitening(noise_data)
+                elif len(noiseGroup) > 0 and dmtx[item.idx.slice] is None:
+                    pass
+                    # noise_data = []
+                    # for acq in noiseGroup:
+                    #     noise_data.append(acq.data)
+                    # noise_data = np.concatenate(noise_data, axis=1)  # [ncha, nsamples]
+                    # # calculate pre-whitening matrix
+                    # dmtx = [calibrate_prewhitening(noise_data)] * max_no_of_slices
+                    # np.save(os.path.join(debugFolder, "noise.npy"), noise_data)
+                    # del noise_data
+                
+                if os_removal:
+                    data = remove_os(item.data)
+                    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+                    item.data[:,:] = data * 1e6 # test: scale up to be closer to bart recon
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_NAVIGATION_DATA):
@@ -153,27 +172,42 @@ def process(connection, config, metadata):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    if dmtx[item.idx.slice] is not None:
+                        item.data[:,:] = dmtx[item.idx.slice] @ item.data
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
                     if ncc>0:
                         # calibrate coil compression
-                        caldata = list()
-
-                        for item2 in acsGroup[item.idx.slice]:
-                            caldata.append(apply_mtx(item2.data, dmtx))
+                        caldata = [acq.data for acq in acsGroup[item.idx.slice]]
                         caldata = np.moveaxis(np.asarray(caldata), 1, 0)
-                        caldata = caldata.reshape([caldata.shape[0], -1]).T  # final order: [nsamples, ncoils]
+                        caldata = caldata.reshape([caldata.shape[0], -1])  # final order: [ncha, nsamples]
 
-                        M, s = scc_calibrate_mtx(caldata)
-                        dmtx = (np.conj(dmtx) @ M).T  # combine pre-whitening and coil-compression
-                        dmtx = dmtx[:ncc, :]
+                        M, s = calibrate_scc(caldata)
+                        M = M[:ncc, :]
 
-                    # dmtx = None  # test
+                        # write coil-compressed data back to acsGroup:
+                        for acq in acsGroup[item.idx.slice]:
+                            data_cc = M @ acq.data
+                            acq.resize(number_of_samples=data_cc.shape[-1], active_channels=data_cc.shape[0])
+                            acq.data[:,:] = data_cc
 
+                        # update dmtx
+                        if dmtx[item.idx.slice] is not None:
+                            dmtx[item.idx.slice] = M @ dmtx[item.idx.slice]  # combine pre-whitening and coil-compression
+                        else:
+                            dmtx[item.idx.slice] = M
+
+                    logging.debug('acsGroup[0].shape = %s'%(acsGroup[item.idx.slice][0].data.shape,))
+                    
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, dmtx, use_gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, use_gpu)
 
+                # apply coil-compression & pre-whitening
+                if dmtx[item.idx.slice] is not None:
+                    data = dmtx[item.idx.slice] @ item.data
+                    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+                    item.data[:,:] = data
 
                 acqGroup.append(item)
 
@@ -181,13 +215,13 @@ def process(connection, config, metadata):
                 # data, which returns images that are sent back to the client.                
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     # logging.info("Processing a group of k-space data")
-                    # images = process_raw(acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu)
+                    # images = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
                     # logging.debug("Sending images to client:\n%s", images)
                     # connection.send_image(images)
                     if use_multiprocessing:
-                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu))
+                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu))
                     else:
-                        process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu)
+                        process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
                     acqGroup = []
 
             # ----------------------------------------------------------
@@ -226,13 +260,13 @@ def process(connection, config, metadata):
             logging.info("Processing a group of k-space data (untriggered)")
             if sensmaps[acqGroup[-1].idx.slice] is None:
                 # run parallel imaging calibration
-                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata, dmtx, use_gpu)
-            # image = process_raw(acqGroup, config, metadata, dmtx, sensmaps[acqGroup[-1].idx.slice], use_gpu)
+                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata, use_gpu)
+            # image = process_raw(acqGroup, config, metadata, sensmaps[acqGroup[-1].idx.slice], use_gpu)
             # connection.send_image(image)
             if use_multiprocessing:
-                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu))
+                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu))
             else:
-                process_and_send(connection, acqGroup, config, metadata, dmtx, sensmaps[item.idx.slice], use_gpu)
+                process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
             acqGroup = []
 
     finally:
@@ -244,9 +278,9 @@ def process(connection, config, metadata):
 
 
 # wip: this may in the future help with multiprocessing
-def process_and_send(connection, acqGroup, config, metadata, dmtx, sensmap, use_gpu):
+def process_and_send(connection, acqGroup, config, metadata, sensmap, use_gpu):
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, config, metadata, dmtx, sensmap, use_gpu)
+    images = process_raw(acqGroup, config, metadata, sensmap, use_gpu)
     logging.debug("Sending images to client:\n%s", images)
     connection.send_image(images)
 
@@ -255,81 +289,66 @@ def process_and_send(connection, acqGroup, config, metadata, dmtx, sensmap, use_
 # Sorting of k-space data
 #######
 
-def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=True, os_removal=True):
+def sort_into_kspace(group, metadata, reduced_input_matrix=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
+    # nc = metadata.acquisitionSystemInformation.receiverChannels
     
-    ncc = nc
-    if dmtx is not None:
-        ncc = dmtx.shape[0]
+    nc = group[0].active_channels
 
-    enc1_min, enc1_max = int(999), int(0)
-    enc2_min, enc2_max = int(999), int(0)
-    for acq in group:
-        enc1 = acq.idx.kspace_encode_step_1
-        enc2 = acq.idx.kspace_encode_step_2
-        if enc1 < enc1_min:
-            enc1_min = enc1
-        if enc1 > enc1_max:
-            enc1_max = enc1
-        if enc2 < enc2_min:
-            enc2_min = enc2
-        if enc2 > enc2_max:
-            enc2_max = enc2
-
-    if zf_around_center:
-        nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        ny = metadata.encoding[0].encodedSpace.matrixSize.y
-        nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    else:
-        nx = group[0].data.shape[-1]
-        ny = enc1_max+1
-        nz = enc2_max+1
     if os_removal:
-        nx //= 2
+        nx = metadata.encoding[0].reconSpace.matrixSize.x  # does not support partial-fourier in read!
+    else:
+        nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+
+    logging.debug('sort_into_kspace: nx = %d; ny = %d; nz = %d'%(nx, ny, nz))
+
+    if reduced_input_matrix:
+        # acs data is acquired on a smaller k-space grid
+        enc1_min, enc1_max = int(999), int(0)
+        enc2_min, enc2_max = int(999), int(0)
+        for acq in group:
+            enc1 = acq.idx.kspace_encode_step_1
+            enc2 = acq.idx.kspace_encode_step_2
+            if enc1 < enc1_min:
+                enc1_min = enc1
+            if enc1 > enc1_max:
+                enc1_max = enc1
+            if enc2 < enc2_min:
+                enc2_min = enc2
+            if enc2 > enc2_max:
+                enc2_max = enc2
+        offset_enc1 = ny // 2 - (enc1_max+1) // 2
+        offset_enc2 = nz // 2 - (enc2_max+1) // 2
+        ccol = group[0].data.shape[-1] // 2
+        col = slice(nx // 2 - ccol, nx // 2 + ccol)
+    else:
+        col = slice(None)
+        offset_enc1 = 0
+        offset_enc2 = 0
+        # support partial Fourier:
+        cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
+        cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
+        if ny//2 > cenc1:
+            offset_enc1 = ny//2 - cenc1
+        if nz//2 > cenc2:
+            offset_enc2 = nz//2 - cenc2
 
     acq_key = [None] * nz
-    kspace = np.zeros([ny, nz, ncc, nx], dtype=group[0].data.dtype)
+    kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
-    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
-
     for key, acq in enumerate(group):
-        enc1 = acq.idx.kspace_encode_step_1
-        enc2 = acq.idx.kspace_encode_step_2
-        
+        enc1 = acq.idx.kspace_encode_step_1 + offset_enc1
+        enc2 = acq.idx.kspace_encode_step_2 + offset_enc2
+
+        kspace[enc1, enc2, :, col] += acq.data
+        counter[enc1, enc2] += 1
+
         # save one header per partition
         if acq_key[enc2] is None:
             acq_key[enc2] = key
-
-        col = slice(None)
-        if zf_around_center:
-            ncol = acq.data.shape[-1]
-            if os_removal:
-                ncol //= 2
-            cx = nx // 2
-            ccol = ncol // 2
-            col = slice(cx - ccol, cx + ccol)
-
-            cy = ny // 2
-            cz = nz // 2
-
-            cenc1 = (enc1_max+1) // 2
-            cenc2 = (enc2_max+1) // 2
-
-            # sort data into center k-space (assuming a symmetric acquisition)
-            enc1 += cy - cenc1
-            enc2 += cz - cenc2
-        
-        data = acq.data
-        if os_removal:
-            data = remove_os(data, -1)
-
-        if dmtx is None:
-            kspace[enc1, enc2, :, col] += data
-        else:
-            kspace[enc1, enc2, :, col] += apply_mtx(data, dmtx)
-        counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
     kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis])
@@ -340,11 +359,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=True, os_remov
     return kspace, acq_key
 
 
-def process_acs(group, config, metadata, dmtx=None, use_gpu=False, chunksz=8): # chunksz 8?
+def process_acs(group, config, metadata, use_gpu=False, chunksz=0): # chunksz 8?
 
     if len(group)>0:
-        acs, _ = sort_into_kspace(group, metadata, dmtx)
+        acs, _ = sort_into_kspace(group, metadata, True)
         nx, ny, nz, nc = acs.shape
+        
+        logging.debug('acs.shape = %s'%(acs.shape,))
 
         # '-I': Intensity correction useful? -> Marten
         # ESPIRiT calibration
@@ -379,19 +400,24 @@ def process_acs(group, config, metadata, dmtx=None, use_gpu=False, chunksz=8): #
                 sensmaps = bart(1, 'ecalib -g -m 2', acs)
             else:
                 sensmaps = bart(1, 'ecalib -m 2', acs)
-        np.save(debugFolder + "/" + "acs.npy", acs)
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
+        np.save(os.path.join(debugFolder, "acs.npy"), acs)
+        np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
+
         return sensmaps
     else:
         return None
 
 
-def process_raw(group, config, metadata, dmtx=None, sensmaps=None, use_gpu=False):
+def process_raw(group, config, metadata, sensmaps=None, use_gpu=False):
 
-    data, acq_key = sort_into_kspace(group, metadata, dmtx)
+    data, acq_key = sort_into_kspace(group, metadata)
 
     logging.debug("Raw data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "raw.npy", data)
+    np.save(os.path.join(debugFolder, "raw.npy"), data)
+    
+    # testing:
+    # sensmaps = np.load(os.path.join(debugFolder, "cal_ref.npy"))
+    # data = np.load(os.path.join(debugFolder, "image.npy"))
 
     if use_gpu:
         data = bart(1, 'pics -l1 -r0.003 -S -d5 -g', data, sensmaps)
@@ -403,7 +429,20 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None, use_gpu=False
         data = data[:,:,:,0,0]
 
     logging.debug("Image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "img.npy", data)
+    # np.save(os.path.join(debugFolder, "img.npy"), data)
+
+    # export nifti
+    rotmat = np.zeros((4,4))
+    rotmat[0,2] = 1
+    rotmat[1,1] = 1
+    rotmat[2,0] = -1
+    rotmat[3,3] = 1
+    import nibabel as nib
+    nii = nib.Nifti1Image(data, rotmat)    
+    nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
+    nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
+    nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
+    nib.save(nii, os.path.join(debugFolder, 'img.nii.gz'))
 
     # Normalize and convert to int16
     # save one scaling in 'static' variable

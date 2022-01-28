@@ -283,7 +283,10 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     grad = np.swapaxes(acq.traj[:],0,1) # [dims, samples] [T/m]
     dims = grad.shape[0]
 
-    fov = hdr.encoding[0].reconSpace.fieldOfView_mm.x
+    fov = np.array([hdr.encoding[0].reconSpace.fieldOfView_mm.x,
+                    hdr.encoding[0].reconSpace.fieldOfView_mm.y,
+                    hdr.encoding[0].reconSpace.fieldOfView_mm.z])
+
     dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value
     
     # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI
@@ -329,9 +332,6 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         # calculate trajectory [1/m]
         pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
 
-        # scale with FOV for BART & PowerGrid recon
-        pred_trj *= 1e-3 * fov
-
         # set z-axis if trajectory is two-dimensional
         if dims == 2:
             sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
@@ -342,6 +342,9 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
             partition = acq.idx.kspace_encode_step_2
             kz = partition - nz//2
             pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
+
+        # scale with FOV for BART & PowerGrid recon
+        pred_trj *= 1e-3 * fov[:,np.newaxis]
 
         # align trajectory to scanner ADC
         pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
@@ -355,7 +358,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
 
     # calculate base trajectory
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
-    base_trj *= 1e-3 * fov
+    base_trj *= 1e-3 * fov[:,np.newaxis]
     # interpolate to ADC and shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
     base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
     base_trj = np.swapaxes(base_trj,0,1)

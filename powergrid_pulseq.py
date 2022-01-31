@@ -606,8 +606,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         shp = data.shape
         b0 = np.expand_dims(np.abs(data[:,0]), 1)
         diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
-        dsets.append(b0)
-        dsets.append(diffw_imgs)
+        scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
+        b0 *= scale
+        diffw_imgs *= scale
+        dsets.append(b0.copy())
+        dsets.append(diffw_imgs.copy())
     else:
         dsets.append(data)
 
@@ -637,8 +640,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
 
-    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
-    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+    if slc_sel is None:
+        meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+        meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+    else:
+        meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[slc_sel][0][0].read_dir[2])]
+        meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[slc_sel][0][0].phase_dir[2])]
 
     xml = meta.serialize()
 
@@ -657,9 +664,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                             img_ix += 1
                             if slc_sel is None:
                                 image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[0][contr][0])
+                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
                             else:
                                 image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[slc_sel][contr][0])
-                            image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
+                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[slc_sel][contr][0].getHead()))
                             image.image_index = img_ix
                             image.image_series_index = series_ix
                             image.slice = slc
@@ -1057,15 +1065,10 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     directions = prot_arrays['Directions']
     n_directions = directions.shape[0]
 
-    # reshape images - we dont use repetitions and Nz (no 3D imaging for diffusion)
-    b0 = b0[0,0,0,:,0,:,:] # [slices, Ny, Nx]
+    # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
+    b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
     imgshape = [s for s in b0.shape]
-    diff = np.transpose(diffw_imgs[0,:,:,:,0], [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
-
-    # scale data to not run into problems with small numbers
-    scale = 1/np.max(diff)
-    b0 *= scale
-    diff *= scale
+    diff = np.transpose(diffw_imgs[:,:,:,:,0].mean(0), [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
 
     #  WIP & not used: Fit ADC for each direction by linear least squares
     diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0

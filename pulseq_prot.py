@@ -283,6 +283,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     grad = np.swapaxes(acq.traj[:],0,1) # [dims, samples] [T/m]
     dims = grad.shape[0]
 
+    # WIP: currently unclear how to set z-FOV / scale trajectory correctly for SMS-recon with phase blips
     fov = np.array([hdr.encoding[0].reconSpace.fieldOfView_mm.x,
                     hdr.encoding[0].reconSpace.fieldOfView_mm.y,
                     hdr.encoding[0].reconSpace.fieldOfView_mm.z])
@@ -304,7 +305,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     gradtime = dt_grad * np.arange(grad.shape[-1]) + gradshift
     gradtime += dt_grad/2 - dt_skope/2 # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
 
-    # add z-dir for prediction if necessary
+    # add zero z-dir if necessary
     if dims == 2:
         grad = np.concatenate((grad, np.zeros([1, grad.shape[1]])), axis=0)
 
@@ -332,19 +333,16 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         # calculate trajectory [1/m]
         pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
 
-        # set z-axis if trajectory is two-dimensional
+        # scale with FOV for BART & PowerGrid recon
+        pred_trj *= 1e-3 * fov[:,np.newaxis]
+
+        # set z-axis for 3D imaging if trajectory is two-dimensional 
+        # this only works for Cartesian sampling in kz (works also with CAIPI)
         if dims == 2:
-            sms_factor = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2
-            if sms_factor > 1:
-                nz = sms_factor
-            else:
-                nz = hdr.encoding[0].encodedSpace.matrixSize.z
+            nz = hdr.encoding[0].encodedSpace.matrixSize.z
             partition = acq.idx.kspace_encode_step_2
             kz = partition - nz//2
             pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
-
-        # scale with FOV for BART & PowerGrid recon
-        pred_trj *= 1e-3 * fov[:,np.newaxis]
 
         # align trajectory to scanner ADC
         pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
@@ -356,10 +354,10 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         pred_trj = None
         k0 = None
 
-    # calculate base trajectory
+    # calculate base trajectory for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    # interpolate to ADC and shift base_trj by 10us 
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
     base_trj *= 1e-3 * fov[:,np.newaxis]
-    # interpolate to ADC and shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
     base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
     base_trj = np.swapaxes(base_trj,0,1)
 

@@ -24,7 +24,11 @@ debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
 use_multiprocessing = False
+use_gpu = True
 os_removal = True
+sel_x = None  # option to reduce x dim for faster & low-mem recon
+# sel_x = slice(30, 280)
+sel_x = slice(20, 134)
 
 def getCoilInfo(coilname='nova_ptx'):
     coilname = coilname.lower()
@@ -73,13 +77,57 @@ def cifftn(data, axes, norm="ortho"):
     return fft.ifftshift(fft.ifftn(fft.fftshift(data, axes=axes), axes=axes, norm=norm), axes=axes)
 
 
-def remove_os(data):
-    '''Remove oversampling (assumes os factor 2)
-    '''
-    cut = slice(data.shape[-1]//4, (data.shape[-1]*3)//4)
-    data = np.fft.fft(data, axis=-1)
-    data = np.delete(data, cut, axis=-1)
-    return np.fft.ifft(data, axis=-1)
+def adjust_columns(item, optmat, metadata):
+    # pre-whitening & os-removal & slicing & resizing
+
+    ncol = item.data.shape[-1]
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x 
+    
+    # operations to perform:
+    resize = nx != ncol
+    reslice = sel_x is not None
+    whiten = optmat is not None
+
+    if not (os_removal or resize or reslice or whiten):
+        return  # nothing to do
+
+    data = item.data
+
+    if resize or reslice or os_removal:
+        if resize:
+            # first pad refscan to full col size (cutting not yet supported)
+            dsz = nx - ncol
+            data = np.pad(data, ((0, 0), (dsz//2, dsz//2)))
+            ncol = data.shape[-1]
+
+        # the next operations need to be performed in image space
+        data = cifftn(data, [-1])
+        
+        if os_removal:
+            data = data[:, slice(ncol//4, (ncol*3)//4)]
+
+        if reslice:
+            data = data[..., sel_x]
+        
+        # back to k-space
+        data = cfftn(data, [-1])
+    
+    if whiten:
+        data = optmat @ data
+    
+    # store modified data
+    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+    item.data[:,:] = data
+
+
+def apply_cc(item, cc_matrix):
+    if cc_matrix is None:
+        return
+    data = cc_matrix @ item.data
+    
+    # store modified data
+    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+    item.data[:,:] = data
 
 
 def calibrate_prewhitening(noise, scale_factor=1.0, normalize=True):
@@ -96,7 +144,6 @@ def calibrate_prewhitening(noise, scale_factor=1.0, normalize=True):
 def calibrate_scc(data):
     # input data: [ncha, nsamples]
     # output: [ncha, ncha]
-    nc = data.shape[0]
     U, s, _ = np.linalg.svd(data, full_matrices=False)
     mtx = np.conj(U.T)
     return mtx, s
@@ -132,6 +179,7 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Check for GPU availability
+    global use_gpu
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
         use_gpu = True
     else:
@@ -151,7 +199,8 @@ def process(connection, config, metadata):
     corr_factors = corr_factors[:, np.newaxis]
     apply_prewhitening = True
     ncc = 16  # number of compressed coils
-    dmtx = [None] * max_no_of_slices
+    optmat = None  # for pre-whitening
+    cc_matrix = [None] * max_no_of_slices  # for coil compression
     
     if use_multiprocessing:
         pool = multiprocessing.Pool(processes=4)
@@ -177,69 +226,58 @@ def process(connection, config, metadata):
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
                     continue
-                elif apply_prewhitening and len(noiseGroup) > 0 and dmtx[item.idx.slice] is None:
+                elif apply_prewhitening and len(noiseGroup) > 0 and optmat is None:
                     pass
                     noise_data = []
                     for acq in noiseGroup:
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)  # [ncha, nsamples]
                     # calculate pre-whitening matrix
-                    dmtx = [calibrate_prewhitening(noise_data)] * max_no_of_slices
+                    optmat = calibrate_prewhitening(noise_data)
                     del noise_data
 
-                if os_removal:  # not needed for noise data
-                    data = remove_os(item.data)
-                    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-                    item.data[:,:] = data
+                # resize colums; remove os; apply pre-whitening
+                adjust_columns(item, optmat, metadata)
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                    if dmtx[item.idx.slice] is not None:
-                        item.data[:,:] = dmtx[item.idx.slice] @ item.data
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
-                    if ncc>0:
-                        # calibrate coil compression
-                        caldata = [acq.data for acq in acsGroup[item.idx.slice]]
-                        caldata = np.asarray(caldata).transpose((1, 0, 2))
-                        coeff, s = calibrate_scc(caldata.reshape([caldata.shape[0], -1]))
-                        coeff = coeff[:ncc, :]
+                    if ncc>0:  # calibrate coil compression
+                        data = [acq.data for acq in acsGroup[item.idx.slice]]
+                        data = np.asarray(data)
+                        nc = data.shape[1]
+                        cc_matrix[item.idx.slice], s = calibrate_scc(data.transpose((1, 0, 2)).reshape([nc, -1]))
+                        cc_matrix[item.idx.slice] = cc_matrix[item.idx.slice][:ncc, :]
+                        
+                        # apply coil compression
+                        data = cc_matrix[item.idx.slice] @ data
 
-                        # write coil-compressed data back to acsGroup:
-                        for acq in acsGroup[item.idx.slice]:
-                            data_cc = coeff @ acq.data
-                            acq.resize(number_of_samples=data_cc.shape[-1], active_channels=data_cc.shape[0])
-                            acq.data[:,:] = data_cc
-
-                        # update dmtx
-                        if dmtx[item.idx.slice] is not None:
-                            dmtx[item.idx.slice] = coeff @ dmtx[item.idx.slice]  # combine pre-whitening and coil-compression
-                        else:
-                            dmtx[item.idx.slice] = coeff
+                        # write data back to acsGroup:
+                        for acq, dat in zip(acsGroup[item.idx.slice], data):
+                            acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0])
+                            acq.data[:,:] = dat
                     
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, use_gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
 
-                # apply coil-compression & pre-whitening
-                if dmtx[item.idx.slice] is not None:
-                    data = dmtx[item.idx.slice] @ item.data
-                    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-                    item.data[:,:] = data
-
+                # apply coil-compression
+                apply_cc(item, cc_matrix[item.idx.slice])
+                
                 acqGroup.append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.                
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     # logging.info("Processing a group of k-space data")
-                    # images = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
+                    # images = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice])
                     # logging.debug("Sending images to client:\n%s", images)
                     # connection.send_image(images)
                     if use_multiprocessing:
-                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu))
+                        pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice]))
                     else:
-                        process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
+                        process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice])
                     acqGroup = []
 
             # ----------------------------------------------------------
@@ -278,13 +316,13 @@ def process(connection, config, metadata):
             logging.info("Processing a group of k-space data (untriggered)")
             if sensmaps[acqGroup[-1].idx.slice] is None:
                 # run parallel imaging calibration
-                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata, use_gpu)
-            # image = process_raw(acqGroup, config, metadata, sensmaps[acqGroup[-1].idx.slice], use_gpu)
+                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata)
+            # image = process_raw(acqGroup, config, metadata, sensmaps[acqGroup[-1].idx.slice])
             # connection.send_image(image)
             if use_multiprocessing:
-                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu))
+                pool.apply_async(process_and_send, (connection, acqGroup, config, metadata, sensmaps[item.idx.slice]))
             else:
-                process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice], use_gpu)
+                process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice])
             acqGroup = []
 
     finally:
@@ -296,27 +334,21 @@ def process(connection, config, metadata):
 
 
 # wip: this may in the future help with multiprocessing
-def process_and_send(connection, acqGroup, config, metadata, sensmap, use_gpu):
+def process_and_send(connection, acqGroup, config, metadata, sensmap):
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, config, metadata, sensmap, use_gpu)
+    images = process_raw(acqGroup, config, metadata, sensmap)
     logging.debug("Sending images to client:\n%s", images)
     connection.send_image(images)
 
 
-#######
 # Sorting of k-space data
-#######
-
 def sort_into_kspace(group, metadata, reduced_input_matrix=False, tight_output=False):
     # initialize k-space
     # nc = metadata.acquisitionSystemInformation.receiverChannels
     nc = group[0].active_channels
     ncol = group[0].number_of_samples
 
-    if os_removal:
-        nx = metadata.encoding[0].reconSpace.matrixSize.x  # does not support partial-fourier in read!
-    else:
-        nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    nx = ncol  # should already be accounted for by now
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
@@ -386,19 +418,15 @@ def sort_into_kspace(group, metadata, reduced_input_matrix=False, tight_output=F
     return kspace, acq_key
 
 
-def process_acs(group, config, metadata, use_gpu=False, chunksz=8): # chunksz 8?
+def process_acs(group, config, metadata, n_maps=2, chunksz=16):
+    
+    gpu_str = "-g" if use_gpu else ""
 
     if len(group)>0:
         acs, _ = sort_into_kspace(group, metadata, True)
-        if os_removal:
-            nx = metadata.encoding[0].reconSpace.matrixSize.x  # does not support partial-fourier in read!
-        else:
-            nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        ny = metadata.encoding[0].encodedSpace.matrixSize.y
-        nz = metadata.encoding[0].encodedSpace.matrixSize.z
+        nx, ny, nz, _ = acs.shape
 
-        nx, ny, nz, nc = acs.shape
-        logging.debug('acs.shape = %s'%(acs.shape,))
+        logging.debug(f'acs.shape = {acs.shape}')
 
         # '-I': Intensity correction useful? -> Marten
         # ESPIRiT calibration
@@ -412,31 +440,24 @@ def process_acs(group, config, metadata, use_gpu=False, chunksz=8): # chunksz 8?
             # return sensmaps
 
             # espirit_econ: reduce memory footprint by chunking
-            if use_gpu:
-                eon = bart(1, 'ecalib -g -m 2 -1', acs)
-            else:
-                eon = bart(1, 'ecalib -m -2 -1', acs)
+            eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
 
             # fix scaling for bart:
             eon *= np.sqrt(np.prod(acs.shape[:3]))
-            eon = cfftn(eon, [2])
+
+            eon = cifftn(eon, [2])
             dsz = nz-eon.shape[2]
             eon = np.pad(eon, ((0, 0), (0, 0), (dsz//2, dsz//2), (0, 0)))
-            eon = cifftn(eon, [2])
+            eon = cfftn(eon, [2])
 
-            sensmaps = np.zeros(acs.shape + (2,), dtype=acs.dtype)
+            sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
             for i in range(0, nz, chunksz):
                 sl = slice(i, i+chunksz)
                 sl_len = len(range(*sl.indices(nz)))
-                if use_gpu:
-                    sensmaps[:,:,sl] = bart(1, 'ecaltwo -g -m 2 %d %d %d'%(nx, ny, sl_len), eon[:,:,sl])
-                else:
-                    sensmaps[:,:,sl] = bart(1, 'ecaltwo -m 2 %d %d %d'%(nx, ny, sl_len), eon[:,:,sl])
+                sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
         else:
-            if use_gpu:
-                sensmaps = bart(1, 'ecalib -g -m 2', acs)
-            else:
-                sensmaps = bart(1, 'ecalib -m 2', acs)
+            sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
+
         np.save(os.path.join(debugFolder, "acs.npy"), acs)
         np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
 
@@ -445,37 +466,35 @@ def process_acs(group, config, metadata, use_gpu=False, chunksz=8): # chunksz 8?
         return None
 
 
-def process_raw(group, config, metadata, sensmaps=None, use_gpu=False, chunksz=114):
+def process_raw(group, config, metadata, sensmaps=None, chunksz=48, max_iter=20): #76
 
     data, acq_key = sort_into_kspace(group, metadata)
 
     logging.debug("Raw data is size %s" % (data.shape,))
     # np.save(os.path.join(debugFolder, "raw.npy"), data)
     
+    gpu_str = "-g" if use_gpu else ""
+    pics_str = f'pics -l1 -r0.003 -S -i {max_iter} -d5 {gpu_str}'
+    logging.debug(pics_str)
+    logging.debug(f'data.shape = {data.shape}; sensmaps.shape = {sensmaps.shape}')
     if chunksz==0:
-        if use_gpu:
-            data = bart(1, 'pics -l1 -r0.003 -S -d5 -g', data, sensmaps)
-        else:
-            data = bart(1, 'pics -l1 -r0.003 -S -d5', data, sensmaps)
-        data = np.abs(data)
+        data = bart(1, pics_str, data, sensmaps)
+        data = data[[slice(None)] * 3 + (data.ndim-3) * [0]]  # select first 3 dims
     else:
-        data_out = np.zeros_like(data[:,:,:,1:,...].shape, dtype=np.float32)
-        data = cfftn(data, [0])
+        data = cifftn(data, [0])
         nx = data.shape[0]
         for i in range(0, nx, chunksz):
             sl = slice(i, i+chunksz)
             sl_len = len(range(*sl.indices(nx)))
-            block = cifftn(data[sl_len], [0])
-            if use_gpu:
-                block = bart(1, 'pics -l1 -r0.003 -S -d5 -g', block, sensmaps[sl])
-            else:
-                block = bart(1, 'pics -l1 -r0.003 -S -d5', block, sensmaps[sl])
-            data_out[sl] = abs(block)
-        data = data_out
-        del data_out
+            block = cfftn(data[sl], [0])
+            logging.debug('block.shape = %s; sensmaps[sl].shape = %s'%(block.shape, sensmaps[sl].shape))
+            block = bart(1, pics_str, block, sensmaps[sl])
+            # store reconstructed data in first coil element
+            data[sl,:,:,0] = block[[slice(None)] * 3 + (block.ndim-3) * [0]]  # select first 3 dims
+        data = data[:,:,:,0]  # reduce coil dim
     
-    if data.ndim==5: # reconstruction with two e-spirit maps
-        data = data[:,:,:,0,0]
+    data = np.abs(data)
+
 
     logging.debug("Image data is size %s" % (data.shape,))
     # np.save(os.path.join(debugFolder, "img.npy"), data)

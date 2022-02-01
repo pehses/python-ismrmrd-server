@@ -544,9 +544,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         # Start an MPS Server for faster MPI on GPU
         # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
         # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
+        mps_server = True
         try:
             subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            mps_server = True
         except subprocess.CalledProcessError as e:
             logging.debug("MPS Server not started. See error messages below.")
             logging.debug(e.stdout)
@@ -902,10 +902,10 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
             gpu = True
         if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.9', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.9', data_sens[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data_sens[...,0])
 
         # Field Map calculation - if acquired (dont use coil compressed data)
         refimg = cifftn(data, [0,1,2])

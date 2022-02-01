@@ -4,12 +4,15 @@ import os
 import itertools
 import logging
 import numpy as np
-import numpy.fft as fft
 import base64
 import ctypes
 import multiprocessing
+import time
+
+from cfft import cfftn, cifftn
 
 import tempfile
+
 try:
     from bartpy.wrapper import bart
     from bartpy.utils import cfl
@@ -17,18 +20,24 @@ except:
     from bart import bart
     from bart import cfl
 
-
+# ohne pyfftw: 722 s
+# mit pyfftw: 
 # Folder for sharing data/debugging
+# tempfile.tempdir = "/tmp"  # benchmark 1: 148.6 s 
+tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper; benchmark 1: 131.1 s 
+
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-use_multiprocessing = False
+use_multiprocessing = False  # wip
 use_gpu = True
 os_removal = True
+apply_prewhitening = True
+ncc = 12  # number of compressed coils
 sel_x = None  # option to reduce x dim for faster & low-mem recon
 # sel_x = slice(30, 280)
-sel_x = slice(20, 134)
+
 
 def getCoilInfo(coilname='nova_ptx'):
     coilname = coilname.lower()
@@ -57,27 +66,7 @@ def getCoilInfo(coilname='nova_ptx'):
     return fft_scale, rawdata_corrfactors
 
 
-def cfftn(data, axes, norm="ortho"):
-    """ Centered fast fourier transform, n-dimensional.
-
-    :param data: Complex input data.
-    :param axes: Axes along which to shift and transform.
-    :return: Fourier transformed data.
-    """
-    return fft.fftshift(fft.fftn(fft.ifftshift(data, axes=axes), axes=axes, norm=norm), axes=axes)
-
-
-def cifftn(data, axes, norm="ortho"):
-    """ Centered inverse fast fourier transform, n-dimensional.
-
-    :param data: Complex input data.
-    :param axes: Axes along which to shift.
-    :return: Inverse fourier transformed data.
-    """
-    return fft.ifftshift(fft.ifftn(fft.fftshift(data, axes=axes), axes=axes, norm=norm), axes=axes)
-
-
-def adjust_columns(item, optmat, metadata):
+def apply_column_ops(item, optmat, metadata):
     # pre-whitening & os-removal & slicing & resizing
 
     ncol = item.data.shape[-1]
@@ -149,11 +138,48 @@ def calibrate_scc(data):
     return mtx, s
 
 
+def calibrate_cc(items, ncc):
+    if ncc == 0 or ncc >= items[0].data.shape[0]:
+        return None  # nothing to do
+        
+    data = np.asarray([acq.data for acq in items])
+    nc = data.shape[1]
+    cc_matrix, s = calibrate_scc(data.transpose((1, 0, 2)).reshape([nc, -1]))
+    cc_matrix = cc_matrix[:ncc, :]
+    
+    # apply coil compression
+    data = cc_matrix @ data
+
+    # write data back to acsGroup:
+    for acq, dat in zip(items, data):
+        acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0])
+        acq.data[:,:] = dat
+
+    return cc_matrix
+
+
+def export_nifti(data, metadata, filename):
+    import nibabel as nib
+    
+    rotmat = np.zeros((4,4))
+    rotmat[0,2] = 1
+    rotmat[1,1] = 1
+    rotmat[2,0] = -1
+    rotmat[3,3] = 1
+    
+    nii = nib.Nifti1Image(data, rotmat)    
+    nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
+    nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
+    nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
+    nib.save(nii, filename)
+
+
 def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
-
+    
     # Metadata should be MRD formatted header, but may be a string
     # if it failed conversion earlier
+    t0 = time.time()
 
     try:
         # Disabled due to incompatibility between PyXB and Python 3.8:
@@ -178,12 +204,12 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    # Check for GPU availability
-    global use_gpu
-    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-        use_gpu = True
-    else:
-        use_gpu = False
+    # # Check for GPU availability
+    # global use_gpu
+    # if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+    #     use_gpu = True
+    # else:
+    #     use_gpu = False
 
     # Continuously parse incoming data parsed from MRD messages
     acqGroup = []
@@ -197,8 +223,6 @@ def process(connection, config, metadata):
 
     _, corr_factors = getCoilInfo()
     corr_factors = corr_factors[:, np.newaxis]
-    apply_prewhitening = True
-    ncc = 16  # number of compressed coils
     optmat = None  # for pre-whitening
     cc_matrix = [None] * max_no_of_slices  # for coil compression
     
@@ -236,28 +260,15 @@ def process(connection, config, metadata):
                     optmat = calibrate_prewhitening(noise_data)
                     del noise_data
 
-                # resize colums; remove os; apply pre-whitening
-                adjust_columns(item, optmat, metadata)
+                # resize & reslice colums; remove os; apply pre-whitening
+                apply_column_ops(item, optmat, metadata)
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
-                    if ncc>0:  # calibrate coil compression
-                        data = [acq.data for acq in acsGroup[item.idx.slice]]
-                        data = np.asarray(data)
-                        nc = data.shape[1]
-                        cc_matrix[item.idx.slice], s = calibrate_scc(data.transpose((1, 0, 2)).reshape([nc, -1]))
-                        cc_matrix[item.idx.slice] = cc_matrix[item.idx.slice][:ncc, :]
-                        
-                        # apply coil compression
-                        data = cc_matrix[item.idx.slice] @ data
-
-                        # write data back to acsGroup:
-                        for acq, dat in zip(acsGroup[item.idx.slice], data):
-                            acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0])
-                            acq.data[:,:] = dat
+                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice], ncc)
                     
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
@@ -324,7 +335,8 @@ def process(connection, config, metadata):
             else:
                 process_and_send(connection, acqGroup, config, metadata, sensmaps[item.idx.slice])
             acqGroup = []
-
+        
+        logging.debug(f"runtime: {time.time() - t0} s")
     finally:
         if use_multiprocessing:
             pool.close()
@@ -418,7 +430,7 @@ def sort_into_kspace(group, metadata, reduced_input_matrix=False, tight_output=F
     return kspace, acq_key
 
 
-def process_acs(group, config, metadata, n_maps=2, chunksz=16):
+def process_acs(group, config, metadata, n_maps=2, chunksz=32):
     
     gpu_str = "-g" if use_gpu else ""
 
@@ -431,14 +443,6 @@ def process_acs(group, config, metadata, n_maps=2, chunksz=16):
         # '-I': Intensity correction useful? -> Marten
         # ESPIRiT calibration
         if chunksz>0:
-            # test: possibly much faster (system.os bart w. /dev/shm instead of wrapper? )
-            # name_in = os.path.join('/dev/shm', tempfile.NamedTemporaryFile().name)
-            # name_out = os.path.join('/dev/shm', tempfile.NamedTemporaryFile().name)
-            # cfl.writecfl(name_in, acs)
-            # ERR = os.system('/scratch/ehsesp/bin/espirit_econ.sh -g -c 8 %s %s'%(name_in, name_out))
-            # sensmaps = cfl.readcfl(name_out)
-            # return sensmaps
-
             # espirit_econ: reduce memory footprint by chunking
             eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
 
@@ -455,73 +459,75 @@ def process_acs(group, config, metadata, n_maps=2, chunksz=16):
                 sl = slice(i, i+chunksz)
                 sl_len = len(range(*sl.indices(nz)))
                 sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
+            
         else:
             sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
 
-        np.save(os.path.join(debugFolder, "acs.npy"), acs)
-        np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
+        # np.save(os.path.join(debugFolder, "acs.npy"), acs)
+        # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
 
         return sensmaps
     else:
         return None
 
 
-def process_raw(group, config, metadata, sensmaps=None, chunksz=48, max_iter=20): #76
-
+def process_raw(group, config, metadata, sensmaps=None, chunk_sz=250, chunk_overlap=4, max_iter=30):
+    
     data, acq_key = sort_into_kspace(group, metadata)
 
-    logging.debug("Raw data is size %s" % (data.shape,))
-    # np.save(os.path.join(debugFolder, "raw.npy"), data)
-    
+    logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
+
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.003 -S -i {max_iter} -d5 {gpu_str}'
-    logging.debug(pics_str)
-    logging.debug(f'data.shape = {data.shape}; sensmaps.shape = {sensmaps.shape}')
-    if chunksz==0:
+
+    if chunk_sz==0:
         data = bart(1, pics_str, data, sensmaps)
-        data = data[[slice(None)] * 3 + (data.ndim-3) * [0]]  # select first 3 dims
+        data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
     else:
         data = cifftn(data, [0])
+        data_out = np.zeros(data.shape[:3], dtype=np.float32)
         nx = data.shape[0]
-        for i in range(0, nx, chunksz):
-            sl = slice(i, i+chunksz)
+        for i in range(0, nx, chunk_sz):
+            sl = slice(i, i+chunk_sz)
             sl_len = len(range(*sl.indices(nx)))
-            block = cfftn(data[sl], [0])
-            logging.debug('block.shape = %s; sensmaps[sl].shape = %s'%(block.shape, sensmaps[sl].shape))
-            block = bart(1, pics_str, block, sensmaps[sl])
+            ix0 = max(0, i-chunk_overlap)
+            sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
+            block = cfftn(data[sl_ov], [0])
+            block = bart(1, pics_str, block, sensmaps[sl_ov])
+            block = block[slice(i-ix0, i-ix0+sl_len)]
             # store reconstructed data in first coil element
-            data[sl,:,:,0] = block[[slice(None)] * 3 + (block.ndim-3) * [0]]  # select first 3 dims
-        data = data[:,:,:,0]  # reduce coil dim
-    
-    data = np.abs(data)
-
+            data_out[sl] = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
+        data = data_out
 
     logging.debug("Image data is size %s" % (data.shape,))
     # np.save(os.path.join(debugFolder, "img.npy"), data)
 
-    # export nifti
-    rotmat = np.zeros((4,4))
-    rotmat[0,2] = 1
-    rotmat[1,1] = 1
-    rotmat[2,0] = -1
-    rotmat[3,3] = 1
-    import nibabel as nib
-    # data /= 0.00046
-    nii = nib.Nifti1Image(data, rotmat)    
-    nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
-    nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
-    nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
-    nib.save(nii, os.path.join(debugFolder, 'img.nii.gz'))
+    field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x, 
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.y, 
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.z)
 
-    # Normalize and convert to int16
+    recon_matrix = (metadata.encoding[0].reconSpace.matrixSize.x,
+                    metadata.encoding[0].reconSpace.matrixSize.y,
+                    metadata.encoding[0].reconSpace.matrixSize.z)
+    
+    resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
+
     # save one scaling in 'static' variable
     try:
         process_raw.imascale
     except:
-        process_raw.imascale = 0.8 / data.max()
-    data *= 32767 * process_raw.imascale
-    data = np.around(data)
-    data = data.astype(np.int16)
+        empirical_factor = 5e-1
+        process_raw.imascale = 32767 * empirical_factor 
+        process_raw.imascale *= np.sqrt(np.prod(data.shape))
+        process_raw.imascale /= np.prod(resolution)
+        # not sure whether we need to account for chunksz or sel_x (probably)
+
+    data *= process_raw.imascale
+
+    export_nifti(data, metadata, os.path.join(debugFolder, 'img.nii.gz'))
+
+    # convert to int16
+    data = np.around(data).astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -544,9 +550,7 @@ def process_raw(group, config, metadata, sensmaps=None, chunksz=48, max_iter=20)
         # Format as ISMRMRD image data
         image = ismrmrd.Image.from_array(data[...,par], group[acq_key[par]])
 
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                               ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                               ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        image.field_of_view = tuple(ctypes.c_float(item) for item in field_of_view)
 
         if n_par>1:
             image.image_index = 1 + par

@@ -5,6 +5,7 @@
 .virtualenv
 *.tar
 *.zip
+*.prof
 data/
 .vscode/settings.json
 docker/bart_cuda/spiraltraj/

@@ -7,6 +7,7 @@ import logging
 import multiprocessing
 import ismrmrd.xsd
 import importlib
+import cProfile
 
 class Server:
     """
@@ -85,7 +86,9 @@ class Server:
                 import bart_cs
                 importlib.reload(bart_cs)
                 logging.info("Starting compressed sensing processing based on config")
-                bart_cs.process(connection, config, metadata)
+                with cProfile.Profile() as pr:
+                    bart_cs.process(connection, config, metadata)
+                pr.dump_stats("/tmp/share/debug/bart_cs.prof")
             elif (config == "bart_spiral"):
                 import bart_spiral
                 importlib.reload(bart_spiral)
@@ -105,7 +108,9 @@ class Server:
                 import powergrid_pulseq
                 importlib.reload(powergrid_pulseq)
                 logging.info("Starting powergrid_pulseq processing based on config")
-                powergrid_pulseq.process(connection, config, metadata)
+                with cProfile.Profile() as pr:
+                    powergrid_pulseq.process(connection, config, metadata)
+                pr.dump_stats("/tmp/share/debug/powergrid_pulseq.prof")
             elif (config == "invertcontrast"):
                 import invertcontrast
                 importlib.reload(invertcontrast)

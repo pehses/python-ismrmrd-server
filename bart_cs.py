@@ -3,7 +3,7 @@ import ismrmrd
 import os
 import itertools
 import logging
-from cfft import cfft, cifft  # before numpy import to avoid MKL bug!
+from cfft import cfft, cifft, fft  # before numpy import to avoid MKL bug!
 import numpy as np
 import ctypes
 import multiprocessing
@@ -22,22 +22,21 @@ tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper; benchmark 1: 131.
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
+use_multiprocessing = False  # not implemented yet (bart & numpy use multiprocessing anyway)
 
-use_multiprocessing = False  # wip
+# sane defaults:
 use_gpu = True
 os_removal = True
 apply_prewhitening = True
-ncc = 16  # number of compressed coils
-n_maps = 1
-# sel_x = None  # option to reduce x dim for faster & low-mem recon
-sel_x = slice(30, 280)
-array_order = 'F'  # fortran array order may speed up bart calls
-# ncc = 0
-sel_x = slice(50, 178)
-cc_mode = 'scc'   # 'scc', 'gcc', 'bart_scc'
+ncc = 16      # number of compressed coils
+n_maps = 1    # set to 2 in case of fold-over / too tight FoV
+sel_x = None  # option to reduce x dim for faster & low-mem recon
+save_unsigned = False  # not sure whether FIRE supports it (or how)
 
-# 'scc' and 'bart_scc': identical results! good.
-# 'gcc' does not look good / is fft missing?
+# override defaults:
+sel_x = slice(30, 280)  # half of 500 matrix
+# sel_x = slice(28, 254)  # half of 452 matrix
+
 
 def getCoilInfo(coilname='nova_ptx'):
     coilname = coilname.lower()
@@ -98,7 +97,6 @@ def apply_column_ops(item, optmat, metadata):
         if reslice:
             data = data[..., sel_x]
         
-        # back to k-space
         data = cfft(data, -1)
     
     if whiten:
@@ -113,29 +111,28 @@ def apply_cc(item, cc_matrix):
     if cc_matrix is None:
         return
 
-    if cc_mode == 'scc':  
-        data = cc_matrix @ item.data
-    elif cc_mode == 'gcc' or cc_mode == 'bart_scc':
-        data = item.data.T[:, np.newaxis, np.newaxis, :]
-        data = bart(1, 'ccapply -p %d'%(ncc), data, cc_matrix)
-        data = data[:,0,0,:].T
-    else:
-        return ValueError
+    data = cc_matrix @ item.data
 
     # store modified data
     item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
     item.data[:] = data
 
 
-def calibrate_prewhitening(noise, scale_factor=1.0, normalize=True):
-    # input noise: [ncha, nsamples]
-    # output: [ncha, ncha]
-    R = np.cov(noise)   #R = (noise @ np.conj(noise).T)/noise.shape[-1]
-    if normalize:
-        R /= np.mean(abs(np.diag(R)))
-    R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
-    R = np.linalg.inv(np.linalg.cholesky(R))
-    return R.T
+def calibrate_prewhitening(noise, scale_factor=1.0):
+    '''Calculates the noise prewhitening matrix
+
+    :param noise: Input noise data (2D array), ``[coil, nsamples]``
+    :scale_factor: Applied on the noise covariance matrix. Used to
+                   adjust for effective noise bandwith and difference in
+                   sampling rate between noise calibration and actual measurement:
+                   scale_factor = (T_acq_dwell/T_noise_dwell)*NoiseReceiverBandwidthRatio
+
+    :returns w: Prewhitening matrix, ``[coil, coil]``, w @ data is prewhitened
+    '''
+    dmtx = (noise @ np.conj(noise).T)/noise.shape[1]
+    dmtx = np.linalg.inv(np.linalg.cholesky(dmtx))
+    dmtx *= np.sqrt(2)*np.sqrt(scale_factor)
+    return dmtx   
 
 
 def calibrate_scc(data):
@@ -152,19 +149,11 @@ def calibrate_cc(items):
         
     data = np.asarray([acq.data for acq in items])
     nc = data.shape[1]
-    if cc_mode == 'scc':
-        cc_matrix, s = calibrate_scc(np.moveaxis(data, 1, 0).reshape([nc, -1]))
-        cc_matrix = cc_matrix[:ncc, :]
-        # apply coil compression
-        data = cc_matrix @ data
-    elif cc_mode == 'gcc' or cc_mode == 'bart_scc':
-        data = data.transpose((2,0,1))[:,:,np.newaxis,:]
-        cc_matrix = bart(1, 'cc -M -A %s'%('-G' if cc_mode=='gcc' else '-S',), data)
-        # apply coil compression
-        data = bart(1, 'ccapply -p %d'%(ncc), data, cc_matrix)
-        data = data[:,:,0,:].transpose((1,2,0))
-    else: 
-        raise ValueError
+    cc_matrix, s = calibrate_scc(np.moveaxis(data, 1, 0).reshape([nc, -1]))
+    cc_matrix = cc_matrix[:ncc, :]
+
+    # apply coil compression
+    data = cc_matrix @ data
 
     # write data back to acsGroup:
     for acq, dat in zip(items, data):
@@ -291,7 +280,6 @@ def process(connection, config, metadata):
 
                 # apply coil-compression
                 apply_cc(item, cc_matrix[item.idx.slice])
-                
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.                
@@ -395,8 +383,8 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             else:
                 push_to_kspace.offset_enc2 = 0
             push_to_kspace.parGroup = [None] * nz
-            push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype, order=array_order)
-            push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16, order=array_order)
+            push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
+            push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16)
             logging.debug('push_to_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
 
         ## now sort acq into k-space ##
@@ -416,12 +404,9 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
         # rearrange kspace for bart - target size: (nx, ny, nz, nc)
         push_to_kspace.kspace = np.moveaxis(push_to_kspace.kspace, 3, 0)
 
-        if array_order == 'F':
-            push_to_kspace.kspace = np.asfortranarray(push_to_kspace.kspace)
-
 
 # Sorting of k-space data
-def sort_into_kspace(group, metadata, reduced_input_matrix=False):
+def sort_into_kspace(group, metadata, is_parallel_calibration=False):
     # initialize k-space
     # nc = metadata.acquisitionSystemInformation.receiverChannels
     nc = group[0].active_channels
@@ -429,31 +414,17 @@ def sort_into_kspace(group, metadata, reduced_input_matrix=False):
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
-    if reduced_input_matrix:
+    if is_parallel_calibration:
         # acs data is acquired on a smaller k-space grid
-        enc1_min, enc1_max = int(999), int(0)
-        enc2_min, enc2_max = int(999), int(0)
-        for acq in group:
-            enc1 = acq.idx.kspace_encode_step_1
-            enc2 = acq.idx.kspace_encode_step_2
-            if enc1 < enc1_min:
-                enc1_min = enc1
-            if enc1 > enc1_max:
-                enc1_max = enc1
-            if enc2 < enc2_min:
-                enc2_min = enc2
-            if enc2 > enc2_max:
-                enc2_max = enc2
-    
-    if reduced_input_matrix:
+        enc1_max = group[-1].idx.kspace_encode_step_1
+        enc2_max = group[-1].idx.kspace_encode_step_2
         offset_enc1 = ny // 2 - (enc1_max+1) // 2
         offset_enc2 = nz // 2 - (enc2_max+1) // 2
         ccol = nx // 2
         col = slice(nx // 2 - ccol, nx // 2 + ccol)
     else:
         col = slice(None)
-        offset_enc1 = 0
-        offset_enc2 = 0
+        offset_enc1, offset_enc2 = 0, 0
         # support partial Fourier:
         cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
         cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
@@ -464,13 +435,12 @@ def sort_into_kspace(group, metadata, reduced_input_matrix=False):
 
     logging.debug('sort_into_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
 
-    kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype, order=array_order)
-    counter = np.zeros([ny, nz], dtype=np.uint16, order=array_order)
+    kspace = np.zeros([ny, nz, nc, nx], dtype=np.complex64)
+    counter = np.zeros([ny, nz], dtype=np.uint16)
 
-    for key, acq in enumerate(group):
+    for acq in group:
         enc1 = acq.idx.kspace_encode_step_1 + offset_enc1
         enc2 = acq.idx.kspace_encode_step_2 + offset_enc2
-        
         kspace[enc1, enc2, :, col] += acq.data
         counter[enc1, enc2] += 1
 
@@ -480,53 +450,52 @@ def sort_into_kspace(group, metadata, reduced_input_matrix=False):
     # rearrange kspace for bart - target size: (nx, ny, nz, nc)
     kspace = np.moveaxis(kspace, 3, 0)
 
-    if array_order == 'F':
-        kspace = np.asfortranarray(kspace)
-
     return kspace
 
 
 def process_acs(group, config, metadata, chunk_sz=32):
+
+    if len(group)==0:
+        # nothing to do
+        return None
     
     gpu_str = "-g" if use_gpu else ""
 
-    if len(group)>0:
-        acs = sort_into_kspace(group, metadata, True)
-        nx, ny, nz, _ = acs.shape
+    acs = sort_into_kspace(group, metadata, True)
+    nx, ny, nz, _ = acs.shape
 
-        logging.debug(f'acs.shape = {acs.shape}')
+    logging.debug(f'acs.shape = {acs.shape}')
 
-        # '-I': Intensity correction useful? -> Marten
-        # ESPIRiT calibration
-        if chunk_sz>0:
-            # espirit_econ: reduce memory footprint by chunking
-            eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
+    # '-I': Intensity correction useful? -> Marten
+    # ESPIRiT calibration
+    if chunk_sz>0:
+        # espirit_econ: reduce memory footprint by chunking
+        eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
 
-            # fix scaling for bart:
-            # eon *= np.sqrt(np.prod(acs.shape[:3]))
-            eon *= np.prod(acs.shape[:3])
+        # fix scaling for bart:
+        eon *= np.sqrt(np.prod(acs.shape[:3]))
 
-            # MKL bug: fftw does not work with 4D data!
-            eon = cifft(eon, 2)
-            dsz = nz-eon.shape[2]
-            eon = np.pad(eon, ((0, 0), (0, 0), (dsz//2, dsz//2), (0, 0)))
-            eon = cfft(eon, 2)
 
-            sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype, order=array_order)  # for faster cfl export
-            for i in range(0, nz, chunk_sz):
-                sl = slice(i, i+chunk_sz)
-                sl_len = len(range(*sl.indices(nz)))
-                sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
-            
-        else:
-            sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
+        eon = fft.ifft(eon, axis=2)
+        
+        tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
+        cutpos = eon.shape[2]//2
+        eon = np.concatenate((eon[:,:,:cutpos,:], tmp, eon[:,:,cutpos:,:]), axis=2)
+        eon = fft.fft(eon, axis=2)
 
-        # np.save(os.path.join(debugFolder, "acs.npy"), acs)
-        # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
-
-        return sensmaps
+        sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
+        for i in range(0, nz, chunk_sz):
+            sl = slice(i, i+chunk_sz)
+            sl_len = len(range(*sl.indices(nz)))
+            sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
+        
     else:
-        return None
+        sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
+
+    # np.save(os.path.join(debugFolder, "acs.npy"), acs)
+    # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
+
+    return sensmaps
 
 
 def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, chunk_overlap=4, max_iter=30):
@@ -535,8 +504,6 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
 
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.003 -S -i {max_iter} -d5 {gpu_str}'
-
-    logging.debug(f"kspace, F_CONTIGUOUS = {data.flags.f_contiguous}")
 
     if chunk_sz==0 or chunk_sz>=data.shape[0]:
         data = bart(1, pics_str, data, sensmaps)
@@ -557,8 +524,6 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
             data_out[sl] = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
         data = data_out
 
-    logging.debug(f"kspace, F_CONTIGUOUS = {data.flags.f_contiguous}")
-
     logging.debug("Image data is size %s" % (data.shape,))
     # np.save(os.path.join(debugFolder, "img.npy"), data)
 
@@ -572,23 +537,29 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
     
     resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
 
+    if save_unsigned:
+        int_max = 65535
+    else:
+        int_max = 32767
+    
     # save one scaling in 'static' variable
     try:
         process_raw.imascale
     except:
-        empirical_factor = 1e-3
-        process_raw.imascale = 32767 * empirical_factor 
+        empirical_factor = 1e-8
+        process_raw.imascale = int_max * empirical_factor 
         process_raw.imascale *= np.sqrt(np.prod(data.shape))
-        # process_raw.imascale /= np.prod(resolution)
+        process_raw.imascale /= np.prod(resolution)
         # not sure whether we need to account for chunksz or sel_x (probably)
 
     data *= process_raw.imascale
 
+    # convert to int
+    data = np.minimum(int_max, np.around(data))
+    data = data.astype(np.uint16 if save_unsigned else np.int16)
+
     export_nifti(data, metadata, os.path.join(debugFolder, 'img.nii.gz'))
-
-    # convert to int16
-    data = np.around(data).astype(np.int16)
-
+    
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
@@ -625,7 +596,7 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
         image.attribute_string = xml
         images.append(image)
 
-    logging.debug("Image MetaAttributes: %s", xml)
+    # logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
     return images

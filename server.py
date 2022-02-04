@@ -86,9 +86,10 @@ class Server:
                 import bart_cs
                 importlib.reload(bart_cs)
                 logging.info("Starting compressed sensing processing based on config")
-                with cProfile.Profile() as pr:
-                    bart_cs.process(connection, config, metadata)
-                pr.dump_stats("/tmp/share/debug/bart_cs.prof")
+                bart_cs.process(connection, config, metadata)
+                #with cProfile.Profile() as pr:
+                #    bart_cs.process(connection, config, metadata)
+                #pr.dump_stats("/tmp/share/debug/bart_cs.prof")
             elif (config == "bart_spiral"):
                 import bart_spiral
                 importlib.reload(bart_spiral)

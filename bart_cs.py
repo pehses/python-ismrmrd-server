@@ -4,10 +4,12 @@ import itertools
 import logging
 from cfft import cfft, cifft, fft  # before numpy import to avoid MKL bug!
 import numpy as np
-import ctypes
 import multiprocessing
-import time
 import tempfile
+import ctypes
+import mrdhelper
+import constants
+from time import perf_counter
 
 try:
     from bart import bart
@@ -35,6 +37,7 @@ save_unsigned = False  # not sure whether FIRE supports it (or how)
 # override defaults:
 # sel_x = slice(30, 280)  # half of 500 matrix
 sel_x = slice(28, 254)  # half of 452 matrix
+zf_to_orig_sz = True
 ncc = 14    # slightly higher compression for online recon
 
 
@@ -163,28 +166,8 @@ def calibrate_cc(items):
     return cc_matrix
 
 
-def export_nifti(data, metadata, filename):
-    import nibabel as nib
-
-    rotmat = np.zeros((4,4))
-    rotmat[0,2] = 1
-    rotmat[1,1] = 1
-    rotmat[2,0] = -1
-    rotmat[3,3] = 1
-
-    nii = nib.Nifti1Image(data, rotmat)
-    nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
-    nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
-    nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
-    nib.save(nii, filename)
-
-
 def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
-
-    # Metadata should be MRD formatted header, but may be a string
-    # if it failed conversion earlier
-    t0 = time.time()
 
     try:
         # Disabled due to incompatibility between PyXB and Python 3.8:
@@ -290,9 +273,9 @@ def process(connection, config, metadata):
                     # logging.debug("Sending images to client:\n%s", images)
                     # connection.send_image(images)
                     if use_multiprocessing:
-                        pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.parGroup, config, metadata, sensmaps[item.idx.slice]))
+                        pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
                     else:
-                        process_and_send(connection, push_to_kspace.kspace, push_to_kspace.parGroup, config, metadata, sensmaps[item.idx.slice])
+                        process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
                     acqGroup = []
                     del push_to_kspace.kspace
                 else:
@@ -337,13 +320,12 @@ def process(connection, config, metadata):
                 # run parallel imaging calibration
                 sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata)
             if use_multiprocessing:
-                pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.parGroup, config, metadata, sensmaps[item.idx.slice]))
+                pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
             else:
-                process_and_send(connection, push_to_kspace.kspace, push_to_kspace.parGroup, config, metadata, sensmaps[item.idx.slice])
+                process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
             acqGroup = []
             del push_to_kspace.kspace
 
-        logging.debug(f"runtime: {time.time() - t0} s")
     finally:
         if use_multiprocessing:
             pool.close()
@@ -352,9 +334,9 @@ def process(connection, config, metadata):
 
 
 # wip: this may in the future help with multiprocessing
-def process_and_send(connection, kspace, parGroup, config, metadata, sensmap):
+def process_and_send(connection, kspace, rawHead, config, metadata, sensmap):
     logging.info("Processing a group of k-space data")
-    images = process_raw(kspace, parGroup, config, metadata, sensmap)
+    images = process_raw(kspace, rawHead, connection, config, metadata, sensmap)
     logging.debug("Sending images to client:\n%s", images)
     connection.send_image(images)
 
@@ -371,31 +353,29 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             nx = acq.number_of_samples
             ny = metadata.encoding[0].encodedSpace.matrixSize.y
             nz = metadata.encoding[0].encodedSpace.matrixSize.z
-            cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
-            cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
-            # support partial Fourier:
-            if ny//2 > cenc1:
-                push_to_kspace.offset_enc1 = ny//2 - cenc1
-            else:
-                push_to_kspace.offset_enc1 = 0
-            if nz//2 > cenc2:
-                push_to_kspace.offset_enc2 = nz//2 - cenc2
-            else:
-                push_to_kspace.offset_enc2 = 0
-            push_to_kspace.parGroup = [None] * nz
+            push_to_kspace.cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
+            push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
             push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
             push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16)
+            push_to_kspace.rawHead = None
+            push_to_kspace.finalized = False
             logging.debug('push_to_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
 
         ## now sort acq into k-space ##
-        enc1 = acq.idx.kspace_encode_step_1 + push_to_kspace.offset_enc1
-        enc2 = acq.idx.kspace_encode_step_2 + push_to_kspace.offset_enc2
+        offset_enc1 = push_to_kspace.cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
+        offset_enc2 = push_to_kspace.cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
+
+        enc1 = acq.idx.kspace_encode_step_1 + offset_enc1
+        enc2 = acq.idx.kspace_encode_step_2 + offset_enc2
+
         push_to_kspace.kspace[enc1, enc2] += acq.data
         push_to_kspace.counter[enc1, enc2] += 1
 
-        ## save one acq per partition (for header info) ##
-        if push_to_kspace.parGroup[enc2] is None:
-            push_to_kspace.parGroup[enc2] = acq
+        ## save one header
+        if (push_to_kspace.rawHead is None) or \
+            ((acq.idx.user[5] == push_to_kspace.cenc1) and \
+             (acq.idx.user[6] == push_to_kspace.cenc2)):
+            push_to_kspace.rawHead = acq.getHead()
 
     if finalize:
         # support averaging (with or without acquisition weighting)
@@ -403,53 +383,17 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
 
         # rearrange kspace for bart - target size: (nx, ny, nz, nc)
         push_to_kspace.kspace = np.moveaxis(push_to_kspace.kspace, 3, 0)
+        push_to_kspace.finalized = True
 
 
 # Sorting of k-space data
-def sort_into_kspace(group, metadata, is_parallel_calibration=False):
-    # initialize k-space
-    # nc = metadata.acquisitionSystemInformation.receiverChannels
-    nc = group[0].active_channels
-    nx = group[0].number_of_samples
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-
-    if is_parallel_calibration:
-        # acs data is acquired on a smaller k-space grid
-        enc1_max = group[-1].idx.kspace_encode_step_1
-        enc2_max = group[-1].idx.kspace_encode_step_2
-        offset_enc1 = ny // 2 - (enc1_max+1) // 2
-        offset_enc2 = nz // 2 - (enc2_max+1) // 2
-        ccol = nx // 2
-        col = slice(nx // 2 - ccol, nx // 2 + ccol)
-    else:
-        col = slice(None)
-        offset_enc1, offset_enc2 = 0, 0
-        # support partial Fourier:
-        cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
-        cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
-        if ny//2 > cenc1:
-            offset_enc1 = ny//2 - cenc1
-        if nz//2 > cenc2:
-            offset_enc2 = nz//2 - cenc2
-
-    logging.debug('sort_into_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
-
-    kspace = np.zeros([ny, nz, nc, nx], dtype=np.complex64)
-    counter = np.zeros([ny, nz], dtype=np.uint16)
-
+def sort_into_kspace(group, metadata):  # used for acs scan
     for acq in group:
-        enc1 = acq.idx.kspace_encode_step_1 + offset_enc1
-        enc2 = acq.idx.kspace_encode_step_2 + offset_enc2
-        kspace[enc1, enc2, :, col] += acq.data
-        counter[enc1, enc2] += 1
-
-    # support averaging (with or without acquisition weighting)
-    kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis])
-
-    # rearrange kspace for bart - target size: (nx, ny, nz, nc)
-    kspace = np.moveaxis(kspace, 3, 0)
-
+        push_to_kspace(acq, metadata)
+    if not push_to_kspace.finalized:
+        push_to_kspace(finalize=True)
+    kspace = push_to_kspace.kspace
+    del push_to_kspace.kspace  # make room for imaging scan
     return kspace
 
 
@@ -461,10 +405,8 @@ def process_acs(group, config, metadata, chunk_sz=32):
 
     gpu_str = "-g" if use_gpu else ""
 
-    acs = sort_into_kspace(group, metadata, True)
+    acs = sort_into_kspace(group, metadata)
     nx, ny, nz, _ = acs.shape
-
-    logging.debug(f'acs.shape = {acs.shape}')
 
     # '-I': Intensity correction useful? -> Marten
     # ESPIRiT calibration
@@ -498,7 +440,9 @@ def process_acs(group, config, metadata, chunk_sz=32):
     return sensmaps
 
 
-def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, chunk_overlap=4, max_iter=30):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=250, chunk_overlap=4, max_iter=30):
+    # Start timer
+    tic = perf_counter()
 
     logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
 
@@ -524,18 +468,47 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
             data_out[sl] = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
         data = data_out
 
+    if sel_x is not None and zf_to_orig_sz:
+        sz_x = metadata.encoding[0].reconSpace.matrixSize.x
+        if sz_x < data.shape[0]:
+            data_out = data_out = np.zeros((sz_x,) + data.shape[1:], dtype=np.float32)
+            data_out[sel_x] = data
+            data = data_out
+
+    # Flip matrix in RO/PE to be consistent with ICE
+    data = np.flip(data, (0, 1))
+
+    # Remove readout oversampling
+    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
+    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
+
+    # Remove phase oversampling
+    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
+    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
+
     logging.debug("Image data is size %s" % (data.shape,))
-    # np.save(os.path.join(debugFolder, "img.npy"), data)
+
+    # Measure processing time
+    toc = perf_counter()
+    strProcessTime = "Total processing time: %.2f ms" % ((toc-tic)*1000.0)
+    logging.info(strProcessTime)
+
+    # Send this as a text message back to the client
+    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
+    
+    return process_image(data, rawHead, connection, config, metadata)
+
+
+def process_image(data, rawHead, connection, config, metadata):
 
     field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x,
                      metadata.encoding[0].reconSpace.fieldOfView_mm.y,
                      metadata.encoding[0].reconSpace.fieldOfView_mm.z)
+    field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
 
     recon_matrix = (metadata.encoding[0].reconSpace.matrixSize.x,
                     metadata.encoding[0].reconSpace.matrixSize.y,
                     metadata.encoding[0].reconSpace.matrixSize.z)
-
-    resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
 
     if save_unsigned:
         int_max = 65535
@@ -544,59 +517,45 @@ def process_raw(data, parGroup, config, metadata, sensmaps=None, chunk_sz=250, c
 
     # save one scaling in 'static' variable
     try:
-        process_raw.imascale
+        process_image.imascale
     except:
         empirical_factor = 1e-8
-        process_raw.imascale = int_max * empirical_factor
-        process_raw.imascale *= np.sqrt(np.prod(data.shape))
-        process_raw.imascale /= np.prod(resolution)
+        resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
+        process_image.imascale = int_max * empirical_factor
+        process_image.imascale *= np.sqrt(np.prod(data.shape))
+        process_image.imascale /= np.prod(resolution)
         # not sure whether we need to account for chunksz or sel_x (probably)
 
-    data *= process_raw.imascale
+    data *= process_image.imascale
 
     # convert to int
     data = np.minimum(int_max, np.around(data))
     data = data.astype(np.uint16 if save_unsigned else np.int16)
 
-#    export_nifti(data, metadata, os.path.join(debugFolder, 'img.nii.gz'))
-
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            str(int_max+1)})
-    xml = meta.serialize()
+                         'WindowWidth':            str(int_max+1),
+                         'Keep_image_geometry':    1})
+    xml = meta.serialize() 
+    logging.debug("Image MetaAttributes: %s", xml)
 
-    images = []
-    n_par = data.shape[-1]
-    logging.debug("data.shape %s" % (data.shape,))
+    # Format as ISMRMRD image data
+    imagesOut = []
+    data = np.moveaxis(data, 2, 0)  # move partitions to front for looping
+    for key, item in enumerate(data):
+        # Create new MRD instance for the processed image
+        # NOTE: from_array() takes input data as [x y z coil], which is
+        # different than the internal representation in the "data" field as
+        # [coil z y x], so we need to transpose
+        tmpImg = ismrmrd.Image.from_array(item.transpose())
 
-    # Wrong Sequence or Protocol detected, aborting...
-    # Number of slices announced via protocol: 1
-    # Delivered slice index of current MDH: 1 (allowed: 0..0)
-    # Fazit:
-    # image.slice auf partition index setzen bringt nichts
+        # Set the header information
+        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead))
+        tmpImg.field_of_view = field_of_view
+        tmpImg.image_index = key
+        tmpImg.attribute_string = xml
+        imagesOut.append(tmpImg)
 
-    for par in range(n_par):
-        # Format as ISMRMRD image data
-        image = ismrmrd.Image.from_array(data[...,par], parGroup[par])
-
-        image.field_of_view = tuple(ctypes.c_float(item) for item in field_of_view)
-
-        if n_par>1:
-            image.image_index = 1 + par
-            image.image_series_index = 1 + parGroup[par].idx.repetition
-            image.user_int[0] = par # is this correct??
-            # if vol_pos is None:
-            #     vol_pos = image.position[-1]
-            # image.position[-1] = vol_pos + (par - n_par//2) * FOVz / rNz # funktioniert, muss aber noch richtig angepasst werden (+vorzeichen check!!!)
-        else:
-            image.image_index = 1 + parGroup[par].idx.repetition
-
-        image.attribute_string = xml
-        images.append(image)
-
-    # logging.debug("Image MetaAttributes: %s", xml)
-    logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
-
-    return images
+    return imagesOut

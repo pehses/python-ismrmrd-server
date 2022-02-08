@@ -277,7 +277,7 @@ def main(args):
                 # Write DICOM files
                 fileName = "%02.0f_%s_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, dicomDset.InstanceNumber)
                 print("  Writing file %s" % fileName)
-                dicomDset.save_as(os.path.join(args.out_folder, fileName), write_like_original=False)
+                dicomDset.save_as(os.path.join(args.out_folder, fileName), write_like_original=args.write_like_original)
     return
 
 if __name__ == '__main__':
@@ -286,6 +286,7 @@ if __name__ == '__main__':
     parser.add_argument('filename',           help='Input file')
     parser.add_argument('-g', '--in-group',   help='Input data group')
     parser.add_argument('-o', '--out-folder', help='Output folder')
+    parser.add_argument('-w', '--write-like-original', action="store_true", help='')
 
     args = parser.parse_args()
 

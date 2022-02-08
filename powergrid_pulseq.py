@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import base64
 import ctypes
+import tempfile
 
 from bart import bart
 import subprocess
@@ -25,6 +26,8 @@ from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
+
+tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
 ########################
 # Main Function
@@ -49,6 +52,7 @@ def process(connection, config, metadata):
         fast_recon = False
 
     # Coil Compression: Compress number of coils by n_compr coils
+    # WIP: not working for SMS data atm
     n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     if n_compr > 0 and n_compr<n_cha:
@@ -552,7 +556,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     if pcSENSE:
         if mpi:
             subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts

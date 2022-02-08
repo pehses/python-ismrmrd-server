@@ -218,6 +218,10 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
         
+        use_girf = False
+        if metadata.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+            use_girf = True
+
         # calculate full number of samples - for segmented ADCs
         nsamples = dset_acq.number_of_samples
         try:
@@ -259,7 +263,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # gradients from protocol file - calculate trajectory with girf
         else:
             rotmat = calc_rotmat(dset_acq)
-            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
+            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
@@ -351,7 +355,11 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         # switch array order to [samples, dims]
         pred_trj = np.swapaxes(pred_trj,0,1)
     else:
-        pred_trj = None
+        # use non-shifted base trajectory
+        pred_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
+        pred_trj *= 1e-3 * fov[:,np.newaxis]
+        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+        pred_trj = np.swapaxes(pred_trj,0,1)
         k0 = None
 
     # calculate base trajectory for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)

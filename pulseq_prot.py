@@ -228,8 +228,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
 
-        # resize data - traj_dims: [kx,ky,kz,t,(GIRF-)k0]
-        dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+        # resize data - traj_dims: [kx,ky,kz]
+        dset_acq.resize(trajectory_dimensions=3, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
         # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol
         # check should be a pretty robust
@@ -237,20 +237,21 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
             reco_trj = prot_acq.traj[:,:3]
             base_trj = reco_trj.copy()
         else:
+            use_girf = False
+            if metadata.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+                use_girf = True
             rotmat = calc_rotmat(dset_acq)
-            reco_trj, base_trj, k0 = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
-            dset_acq.traj[:,4] = k0.copy()
+            base_trj, reco_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
         dset_acq.traj[:,:3] = reco_trj.copy()
-        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
     
     if return_basetrj:
         return base_trj
  
 
-def calc_traj(acq, hdr, ncol, rotmat):
+def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
         acq: acquisition from hdf5 protocol file
@@ -265,78 +266,83 @@ def calc_traj(acq, hdr, ncol, rotmat):
     grad = np.swapaxes(acq.traj[:],0,1) # [dims, samples] [T/m]
     dims = grad.shape[0]
 
-    fov = hdr.encoding[0].reconSpace.fieldOfView_mm.x
+    # WIP: currently unclear how to set z-FOV / scale trajectory correctly for SMS-recon with phase blips
+    fov = np.array([hdr.encoding[0].reconSpace.fieldOfView_mm.x,
+                    hdr.encoding[0].reconSpace.fieldOfView_mm.y,
+                    hdr.encoding[0].reconSpace.fieldOfView_mm.z])
+
     dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value
     
-    # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI
+    # delay before trajectory begins
     gradshift = hdr.userParameters.userParameterDouble[1].value
 
     # ADC sampling time
     adctime = dwelltime * np.arange(0.5, ncol)
 
-    # add some zeros around gradient for right interpolation
+    # add some zeros around gradient for correct interpolation
     zeros = 10
     grad = np.concatenate((np.zeros([dims,zeros]), grad, np.zeros([dims,zeros])), axis=1)
     gradshift -= zeros*dt_grad
 
     # time vector for interpolation
     gradtime = dt_grad * np.arange(grad.shape[-1]) + gradshift
+    gradtime += dt_grad/2 - dt_skope/2 # account for cumsum - dt_skope/2 seems to be necessary
 
-    # add z-dir for prediction if necessary
+    # add zero z-dir if necessary
     if dims == 2:
         grad = np.concatenate((grad, np.zeros([1, grad.shape[1]])), axis=0)
 
     ##############################
     ## girf trajectory prediction:
     ##############################
+    if use_girf:
+        dependencyFolder = "/tmp/share/dependency"
+        girf = np.load(os.path.join(dependencyFolder, "girf_10us.npy"))
 
-    dependencyFolder = "/tmp/share/dependency"
-    girf = np.load(os.path.join(dependencyFolder, "girf_10us.npy"))
+        # rotation to phys coord system
+        grad_phys = gcs_to_dcs(grad, rotmat)
 
-    # rotation to phys coord system
-    grad_phys = gcs_to_dcs(grad, rotmat)
+        # gradient prediction
+        pred_grad = grad_pred(grad_phys, girf)
+        pred_grad = pred_grad[1:]
 
-    # gradient prediction
-    pred_grad = grad_pred(grad_phys, girf)
-    k0 = pred_grad[0] # 0th order field [T]
-    pred_grad = pred_grad[1:]
+        # rotate back to logical system
+        pred_grad = dcs_to_gcs(pred_grad, rotmat)
 
-    # rotate back to logical system
-    pred_grad = dcs_to_gcs(pred_grad, rotmat)
+        # calculate trajectory [1/m]
+        pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
 
-    # calculate global phase term k0 [rad]
-    k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
+        # scale with FOV for BART & PowerGrid recon
+        pred_trj *= 1e-3 * fov[:,np.newaxis]
 
-    # calculate trajectory [1/m]
-    pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
+        # set z-axis for 3D imaging if trajectory is two-dimensional 
+        if dims == 2:
+            nz = hdr.encoding[0].encodedSpace.matrixSize.z
+            partition = acq.idx.kspace_encode_step_2
+            kz = partition - nz//2
+            pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
+
+        # align trajectory to scanner ADC
+        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+
+        # switch array order to [samples, dims]
+        pred_trj = np.swapaxes(pred_trj,0,1)
+    else:
+        # use non-shifted base trajectory
+        pred_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
+        pred_trj *= 1e-3 * fov[:,np.newaxis]
+        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
+        pred_trj = np.swapaxes(pred_trj,0,1)
+
+    # calculate base trajectory for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    # interpolate to ADC and shift base_trj by 10us 
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
-
-    # scale with FOV for BART & PowerGrid recon
-    pred_trj *= 1e-3 * fov
-    base_trj *= 1e-3 * fov
-
-    # set z-axis if trajectory is two-dimensional
-    if dims == 2:
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z
-        partition = acq.idx.kspace_encode_step_2
-        kz = partition - nz//2
-        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])
-
-    # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
-    gradtime += dt_grad/2 - dt_skope/2
-
-    # align trajectory to scanner ADC
-    # shift base_trj by 10us to undo the FOV shift applied by the scanner, see fov_shift_spiral_reapply in reco_helper.py
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) 
-    pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
-    k0 = intp_axis(adctime, gradtime, k0, axis=0)
-
-    # switch array order to [samples, dims]
-    pred_trj = np.swapaxes(pred_trj,0,1)
+    base_trj *= 1e-3 * fov[:,np.newaxis]
+    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
     base_trj = np.swapaxes(base_trj,0,1)
 
-    return pred_trj, base_trj, k0
-
+    return base_trj, pred_trj
+        
 def grad_pred(grad, girf):
     """
     gradient prediction with girf

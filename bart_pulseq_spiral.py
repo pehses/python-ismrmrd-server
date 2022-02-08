@@ -153,7 +153,7 @@ def process_spiral(connection, config, metadata, prot_file):
                     idx_upper = (item.idx.segment+1) * item.number_of_samples
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:,idx_lower:idx_upper] = item.data[:]
                 if item.idx.segment == nsegments - 1:
-                    # Reapply FOV Shift with predicted trajectory
+                    # Reapply FOV Shift with predicted trajectory - only works, if GIRF trajectory prediction was used
                     sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
 

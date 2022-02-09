@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS mrd_converter
+FROM nvidia/cuda:11.6.0-devel-ubuntu20.04 AS mrd_converter
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -152,7 +152,7 @@ RUN  cd /opt/code \
      
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM nvidia/cuda:11.4.2-runtime-ubuntu20.04
+FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 

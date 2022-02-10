@@ -230,11 +230,11 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     data, trj = sort_spiral_data(group, metadata, dmtx)
     
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-        nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
     else:
-        nufft_config = 'nufft -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 

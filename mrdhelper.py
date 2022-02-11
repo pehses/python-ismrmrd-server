@@ -1,6 +1,7 @@
 # MRD Helper functions
 import ismrmrd
 import re
+import subprocess
 
 def update_img_header_from_raw(imgHead, rawHead):
     """Populate ImageHeader fields from AcquisitionHeader"""
@@ -132,3 +133,7 @@ def create_roi(x, y, rgb = (1, 0, 0), thickness = 1, style = 0, visibility = 1):
         roi.append('%f' % xy[i][1])
 
     return roi
+
+
+def get_git_revision_short_hash() -> str:
+    return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()

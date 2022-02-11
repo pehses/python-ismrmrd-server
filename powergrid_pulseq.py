@@ -629,11 +629,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-3,-2,-1))
-        # Normalize and convert to int16 for online recon
-        if online_recon:
-            dsets[k] *= 32767 * 0.8 / dsets[k].max()
+        # Normalize and convert to int16 for online recon - WIP: try also for offline reco
+        if online_recon and k<2:
+            dsets[k] *= 65535 / dsets[0].max() # uses max of T2 weighted, should be always also global max
             dsets[k] = np.around(dsets[k])
-            dsets[k] = dsets[k].astype(np.int16)
+            dsets[k] = dsets[k].astype(np.uint16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',

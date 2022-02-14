@@ -169,7 +169,8 @@ def fov_shift(sig, shift):
 
 def fov_shift_spiral(sig, trj, shift, matr_sz):
     """ 
-    shift field of view of spiral data
+    Shift the field of view of spiral data
+
     sig: raw data [ncha, nsamples]
     trj: trajectory [3, nsamples]
     shift: shift [x_shift, y_shift] in voxel
@@ -185,12 +186,9 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
 
     return sig
 
-# the fov-shift from the Pulseq sequence is not correct 
-# tried to reapply it with the predicted trajectory, but also doesnt work properly
-# need to consider one grad_raster_time delay - in which direction???
 def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     """ 
-    re-apply FOV shift on spiral/noncartesian data
+    Re-apply FOV shift on spiral/noncartesian data, when FOV positioning in the Pulseq sequence is enabled
     first undo field of view shift with nominal, then reapply with predicted trajectory
 
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment

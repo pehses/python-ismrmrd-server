@@ -173,10 +173,10 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
     """ 
     Shift field of view of spiral data
 
-    sig: raw data [ncha, nsamples]
-    trj: trajectory [3, nsamples]
-    shift: shift [x_shift, y_shift] in voxel
-    matr_sz: matrix size of reco
+    sig: raw data [coils, samples]
+    trj: trajectory [samples, dims]
+    shift: FOV shift [x_shift, y_shift] in voxel
+    matr_sz: matrix size [x,y] of reco
     """
 
     if (abs(shift[0]) < 1e-2) and (abs(shift[1]) < 1e-2):
@@ -184,7 +184,7 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
         return sig
 
     kmax = matr_sz/2
-    sig *= np.exp(-1j*(shift[0]*np.pi*trj[0]/kmax+shift[1]*np.pi*trj[1]/kmax))[np.newaxis]
+    sig *= np.exp(-1j*(shift[0]*np.pi*trj[:,0]/kmax[0]+shift[1]*np.pi*trj[:,1]/kmax[1]))
 
     return sig
 

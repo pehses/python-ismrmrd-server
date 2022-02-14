@@ -144,7 +144,10 @@ def dcs_to_gcs(grads, rotmat):
     return grads
 
 def intp_axis(newgrid, oldgrid, data, axis=0):
-    # interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
+    """
+    Interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
+    """
+
     tmp = np.moveaxis(data.copy(), axis, 0)
     newshape = (len(newgrid),) + tmp.shape[1:]
     tmp = tmp.reshape((len(oldgrid), -1))
@@ -168,7 +171,8 @@ def fov_shift(sig, shift):
 
 def fov_shift_spiral(sig, trj, shift, matr_sz):
     """ 
-    shift field of view of spiral data
+    Shift field of view of spiral data
+
     sig: raw data [ncha, nsamples]
     trj: trajectory [3, nsamples]
     shift: shift [x_shift, y_shift] in voxel
@@ -184,12 +188,9 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
 
     return sig
 
-# the fov-shift from the Pulseq sequence is not correct 
-# tried to reapply it with the predicted trajectory, but also doesnt work properly
-# need to consider one grad_raster_time delay - in which direction???
 def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     """ 
-    re-apply FOV shift on spiral/noncartesian data
+    Re-apply FOV shift on spiral/noncartesian data, when FOV positioning in the Pulseq sequence is enabled
     first undo field of view shift with nominal, then reapply with predicted trajectory
 
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment

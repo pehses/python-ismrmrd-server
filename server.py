@@ -73,14 +73,14 @@ class Server:
             # Decide what program to use based on config
             # If not one of these explicit cases, try to load file matching name of config
             if (config == "simplefft"):
-                import simplefft
-                importlib.reload(simplefft)
+                import simplefft3D
+                importlib.reload(simplefft3D)
                 logging.info("Starting simplefft processing based on config")
-                simplefft.process(connection, config, metadata)
+                simplefft3D.process(connection, config, metadata)
             elif (config == "bart_pics"):
                 import bart_pics
                 importlib.reload(bart_pics)
-                logging.info("Starting simplefft_bart processing based on config")
+                logging.info("Starting bart_pics processing based on config")
                 bart_pics.process(connection, config, metadata)
             elif (config == "bart_cs"):
                 import bart_cs

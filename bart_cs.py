@@ -27,12 +27,12 @@ use_multiprocessing = False  # not implemented yet (bart & numpy use multiproces
 # sane defaults:
 use_gpu = True
 os_removal = True
-reduce_fov_x = True
-zf_to_orig_sz = False
+reduce_fov_x = False
+zf_to_orig_sz = True
 apply_prewhitening = True
 ncc = 16      # number of compressed coils
-n_maps = 2    # set to 2 in case of fold-over / too tight FoV
-save_unsigned = False  # not sure whether FIRE supports it (or how)
+n_maps = 1    # set to 2 in case of fold-over / too tight FoV
+save_unsigned = True  # not sure whether FIRE supports it (or how)
 
 # override defaults:
 # reduce_fov_x = False
@@ -434,7 +434,7 @@ def sort_into_kspace(group, metadata):  # used for acs scan
     return kspace
 
 
-def process_acs(group, config, metadata, chunk_sz=8):
+def process_acs(group, config, metadata, chunk_sz=32):
 
     if len(group)==0:
         # nothing to do
@@ -475,9 +475,9 @@ def process_acs(group, config, metadata, chunk_sz=8):
     return sensmaps
 
 
-# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
 # def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30):
-def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
+# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
 
     logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
 
@@ -550,6 +550,9 @@ def process_image(data, rawHead, config, metadata):
         process_image.imascale = int_max * empirical_factor
         process_image.imascale *= np.sqrt(np.prod(data.shape))
         process_image.imascale /= np.prod(resolution)
+
+        #test
+        process_image.imascale = int_max/np.max(data)
         # not sure whether we need to account for chunksz or sel_x (probably)
 
     data *= process_image.imascale
@@ -557,7 +560,7 @@ def process_image(data, rawHead, config, metadata):
     export_nifti(data, metadata, os.path.join(debugFolder, 'img.nii.gz'))
 
     # convert to int
-    data = np.minimum(int_max, np.around(data))
+    data = np.minimum(int_max, np.floor(data))
     data = data.astype(np.uint16 if save_unsigned else np.int16)
 
     # Set ISMRMRD Meta Attributes
@@ -566,33 +569,30 @@ def process_image(data, rawHead, config, metadata):
                          'WindowCenter':           str((int_max+1)//2),
                          'WindowWidth':            str(int_max+1),
                          'Keep_image_geometry':    1})
-    xml = meta.serialize() 
+
     # logging.debug("Image MetaAttributes: %s", xml)
 
-    # Flip matrix in RO/PE to be consistent with ICE
-    data = np.flip(data, (0, 1))
+    # Flip matrix in RO/PE/3D to be consistent with ICE
+    data = np.flip(data, (0, 1, 2))
 
-    # Format as ISMRMRD image data
-    field_of_view = list(field_of_view)
-    field_of_view[-1] /= data.shape[-1]
-    sl_thickness = field_of_view[-1]
-    field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
-    imagesOut = []
-    data = np.moveaxis(data, 2, 0)  # move partitions to front for looping
-    # for key, item in enumerate(data):
-    # Create new MRD instance for the processed image
-    # tmpImg = ismrmrd.Image.from_array(item)
-    tmpImg = ismrmrd.Image.from_array(data)
+    # Format as ISMRMRD image data    
+    image = ismrmrd.Image.from_array(data)
+    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
+    image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
+    image.image_index = 1
 
-    # Set the header information
-    tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead))
-    tmpImg.field_of_view = field_of_view
-    # tmpImg.image_index = key
-    # tmpImg.slice = key
-    # # logging.debug(f'position = {tmpImg.position}')
-    # tmpImg.position[-1] = tmpImg.position[-1] + sl_thickness * (key - data.shape[-1]//2)
+    logging.debug("Image data has %d elements", image.data.size)
 
-    tmpImg.attribute_string = xml
-    imagesOut.append(tmpImg)
+    # Add image orientation directions to MetaAttributes if not already present
+    if meta.get('ImageRowDir') is None:
+        meta['ImageRowDir'] = ["{:.18f}".format(image.getHead().read_dir[0]), "{:.18f}".format(image.getHead().read_dir[1]), "{:.18f}".format(image.getHead().read_dir[2])]
 
-    return imagesOut
+    if meta.get('ImageColumnDir') is None:
+        meta['ImageColumnDir'] = ["{:.18f}".format(image.getHead().phase_dir[0]), "{:.18f}".format(image.getHead().phase_dir[1]), "{:.18f}".format(image.getHead().phase_dir[2])]
+
+    xml = meta.serialize()
+    image.attribute_string = xml
+
+    # logging.debug("Image MetaAttributes: %s", xml)
+
+    return image

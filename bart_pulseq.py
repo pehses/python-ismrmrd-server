@@ -1,9 +1,8 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
-import base64
+import importlib
 
 import bart_pulseq_spiral 
 import bart_pulseq_cartesian
@@ -51,18 +50,14 @@ def process(connection, config, metadata):
     check_signature(metadata, prot_hdr) # check MD5 signature
 
     if trajtype == 'spiral':
-        import importlib
         importlib.reload(bart_pulseq_spiral)
         logging.info("Starting spiral reconstruction.")
         bart_pulseq_spiral.process_spiral(connection, config, metadata, prot_file)
     elif trajtype == 'cartesian':
-        import importlib
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
         bart_pulseq_cartesian.process_cartesian(connection, config, metadata, prot_file)
     elif trajtype == 'other':
-        pass
-        import importlib
         importlib.reload(bart_jemris)
         logging.info("Starting JEMRIS reconstruction.")
         bart_jemris.process(connection, config, metadata, prot_file)

@@ -1,17 +1,22 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
 import numpy as np
-import base64
 import ctypes
 import tempfile
+import psutil
 
 from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
+
+from scipy.ndimage import  median_filter, gaussian_filter
+from scipy.ndimage.morphology import binary_fill_holes
+from skimage.transform import resize
+from skimage.restoration import unwrap_phase
+from dipy.segment.mask import median_otsu
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
@@ -413,7 +418,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
         # 3D filtering of field map
-        from scipy.ndimage import gaussian_filter
         if slc_sel is not None:
             fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
         else:
@@ -531,7 +535,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
     # MPI and hyperthreading
     mpi = True
     hyperthreading = True
-    import psutil
     if hyperthreading:
         cores = psutil.cpu_count(logical = True) # number of logical cores
         mpi_cmd = 'mpirun --use-hwthread-cpus'
@@ -733,7 +736,6 @@ def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
     # Insert Field Map
     if process_raw.fmap is not None:
         fmap = process_raw.fmap
-        from scipy.ndimage import gaussian_filter
         fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
@@ -943,11 +945,6 @@ def calc_fmap(imgs, te_diff, metadata):
         imgs: [nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
         te_diff: TE difference [s]
     """
-    from skimage.restoration import unwrap_phase
-    from skimage.transform import resize
-    from scipy.ndimage import gaussian_filter, median_filter
-    from scipy.ndimage.morphology import binary_fill_holes
-    from dipy.segment.mask import median_otsu
     
     phasediff = imgs[...,0] * np.conj(imgs[...,1]) # phase difference
     phasediff = np.sum(phasediff, axis=-1) # coil combination
@@ -1023,10 +1020,6 @@ def process_shots(group, metadata, sensmaps_shots):
 def calc_phasemaps(shotimgs, mask, metadata):
     """ Calculate phase maps for phase corrected reconstruction
     """
-
-    from skimage.restoration import unwrap_phase
-    from scipy.ndimage import  median_filter, gaussian_filter
-    from skimage.transform import resize
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
 

@@ -57,7 +57,7 @@ def process(connection, config, metadata):
         fast_recon = False
 
     # Coil Compression: Compress number of coils by n_compr coils
-    # WIP: not working for SMS data atm
+    # WIP: not working properly for SMS data atm, as compression matrix is calibrated for each slice
     n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     if n_compr > 0 and n_compr<n_cha:
@@ -102,8 +102,12 @@ def process(connection, config, metadata):
     insert_hdr(prot_file, metadata)
 
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1 and slc_sel is not None:
-        raise ValueError("SMS reconstruction is not possible for single slices.")
+    if sms_factor > 1:
+        if slc_sel is not None:
+            raise ValueError("SMS reconstruction is not possible for single slices.")
+        if n_compr > 0:
+            cc_cha = n_cha
+            logging.debug("Coil compression deactivated, as its currently not possible for SMS data.")
 
     # Get additional arrays from protocol file - e.g. for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
@@ -321,7 +325,7 @@ def process(connection, config, metadata):
                             shotgroup = shotimgs[item.idx.slice][item.idx.contrast]
                         else:
                             shotgroup = None
-                        images = process_raw_online(group, metadata, sensmaps, shotgroup, cc_cha, slc_sel)
+                        images = singleslice_online_recon(group, metadata, sensmaps, shotgroup, cc_cha, slc_sel)
                         logging.debug("Sending images to client:\n%s", images)
                         connection.send_image(images)
 
@@ -628,21 +632,24 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
 
-    # Correct orientation
+    # Correct orientation, normalize and convert to int16 for online recon
+    int_max = np.iinfo(np.uint16).max
+    imascale = dsets[0].max() # use max of T2 weighted, should be also global max
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-3,-2,-1))
-        # Normalize and convert to int16 for online recon - WIP: try also for offline reco
-        if online_recon and k<2:
-            dsets[k] *= 65535 / dsets[0].max() # uses max of T2 weighted, should be always also global max
-            dsets[k] = np.around(dsets[k])
-            dsets[k] = dsets[k].astype(np.uint16)
+        if k<2:
+            dsets[k] *= int_max / imascale # T2 and diff images
+        else:
+            dsets[k] *= int_max / dsets[k].max() # ADC maps
+        dsets[k] = np.around(dsets[k])
+        dsets[k] = dsets[k].astype(np.uint16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           '16384',
-                        'WindowWidth':            '32768',
+                        'WindowCenter':           str((int_max+1)//2),
+                        'WindowWidth':            str(int_max+1),
                         'Keep_image_geometry':    '1',
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
@@ -702,170 +709,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
-
-    logging.debug("Image MetaAttributes: %s", xml)
-    logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
-
-    return images
-
-def process_raw_online(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
-
-    logging.debug("Do fast single slice online reconstruction.")
-    
-    # Write ISMRMRD file for PowerGrid
-    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
-    if os.path.exists(tmp_file):
-        os.remove(tmp_file)
-    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
-
-    # Write header
-    dset_tmp.write_xml_header(metadata.toXML())
-    hdr_pg = ismrmrd.xsd.CreateFromDocument(dset_tmp.read_xml_header()) # copy to modify header
-    hdr_pg.encoding[0].encodingLimits.slice.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.set.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.contrast.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.phase.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(hdr_pg.toXML())
-
-    # Insert Sensitivity Maps
-    sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
-    fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
-    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
-
-    # Insert Field Map
-    if process_raw.fmap is not None:
-        fmap = process_raw.fmap
-        fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
-    else:
-        fmap_path = dependencyFolder+"/fmap.npz"
-        if not os.path.exists(fmap_path):
-            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
-            logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
-        else:
-            fmap = np.load(fmap_path, allow_pickle=True)
-            if 'name' not in fmap:
-                fmap['name'] = 'No name.'
-        if fmap_shape != list(fmap['fmap'].shape):
-            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-            fmap['fmap'] = np.zeros(fmap_shape)
-        if 'params' in fmap:
-            logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-
-    fmap_data = np.asarray(fmap['fmap'][slc_sel])
-    fmap_mask = np.asarray(fmap['mask'][slc_sel])
-    fmap_name = fmap['name']
-    dset_tmp.append_array('FieldMap', fmap_data)
-    logging.debug("Field Map name: %s", fmap_name)
-
-    # Calculate phase maps from shot images and append if necessary
-    pcSENSE = False
-    if shotimgs is not None:
-        pcSENSE = True
-        shotimgs = np.stack(shotimgs)[np.newaxis,np.newaxis] # stack shots & add axes for contrast & slice (which are =1 here)
-        mask = fmap_mask.copy()
-        phasemaps = calc_phasemaps(shotimgs, mask, metadata)
-        dset_tmp.append_array("PhaseMaps", phasemaps)
-
-    # Insert acquisitions
-    for acq in acqGroup:
-        slc_ix = acq.idx.slice
-        acq.idx.slice = 0
-        acq.idx.set = 0
-        acq.idx.contrast = 0
-        acq.idx.phase = 0
-        acq.idx.average = 0
-        if process_raw.cc_mat is not None:
-            cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix])
-            acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
-            acq.data[:] = cc_data[0,:,0].T
-
-        save_trj = acq.traj[:,:4].copy()
-        acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
-        acq.traj[:] = save_trj.copy()
-        dset_tmp.append_acquisition(acq)
-
-    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
-    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap)
-    dset_tmp.close()
-
-    # Define in- and output for PowerGrid
-    pg_dir = dependencyFolder+"/powergrid_results"
-    if not os.path.exists(pg_dir):
-        os.makedirs(pg_dir)
-    if os.path.exists(pg_dir+"/images_pg.npy"):
-        os.remove(pg_dir+"/images_pg.npy")
-    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
-
-    """ PowerGrid reconstruction
-    """
- 
-    temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
-    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
-
-    # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2'
-    logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
-    if pcSENSE:
-        subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else:
-        pg_opts += ' -F NUFFT'
-        subproc = 'PowerGridIsmrmrd ' + pg_opts
-    # Run in bash
-    try:
-        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        # logging.debug(process.stdout)
-    except subprocess.CalledProcessError as e:
-        logging.debug(e.stdout)
-        raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
-
-    # Image data is saved as .npy
-    data = np.load(pg_dir + "/images_pg.npy")
-    data = np.abs(data)
-
-    """
-    """
-
-    # data to [nz,ny,nx]
-    data = np.transpose(data, [3,4,2,1,0,5,6,7])
-    data = data[0,0,0,0,0]
-
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 1, 2)
-    data = np.flip(data, (0,1,2))
-
-    logging.debug("Image data is size %s" % (data.shape,))
-   
-    # Normalize and convert to int16
-    data *= 32767 * 0.8 / data.max()
-    data = np.around(data)
-    data = data.astype(np.int16)
-
-    # Set ISMRMRD Meta Attributes
-    meta = ismrmrd.Meta({'DataRole':               'Image',
-                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           '16384',
-                        'WindowWidth':            '32768',
-                        'Keep_image_geometry':    '1',
-                        'PG_Options':              pg_opts,
-                        'Field Map':               fmap_name})
-
-    xml = meta.serialize()
-    images = []
-    for nz in range(data.shape[0]):
-        image = ismrmrd.Image.from_array(data[nz], acquisition=acqGroup[0])
-        image.image_index = process_raw.img_ix
-        process_raw.img_ix += 1
-        image.image_series_index = 1
-        image.slice = 0
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
@@ -1210,3 +1053,173 @@ def reshape_fmap_sms(fmap, sms_factor):
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
     return fmap
+
+# %%
+#########################
+# For testing: Single slice online reconstruction
+#########################
+
+def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
+
+    logging.debug("Do fast single slice online reconstruction.")
+    
+    # Write ISMRMRD file for PowerGrid
+    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
+    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
+
+    # Write header
+    dset_tmp.write_xml_header(metadata.toXML())
+    hdr_pg = ismrmrd.xsd.CreateFromDocument(dset_tmp.read_xml_header()) # copy to modify header
+    hdr_pg.encoding[0].encodingLimits.slice.maximum = 0
+    hdr_pg.encoding[0].encodingLimits.set.maximum = 0
+    hdr_pg.encoding[0].encodingLimits.contrast.maximum = 0
+    hdr_pg.encoding[0].encodingLimits.phase.maximum = 0
+    hdr_pg.encoding[0].encodingLimits.average.maximum = 0
+    dset_tmp.write_xml_header(hdr_pg.toXML())
+
+    # Insert Sensitivity Maps
+    sens = np.transpose(sensmaps[slc_sel], [3,2,1,0])
+    fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
+    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
+
+    # Insert Field Map
+    if process_raw.fmap is not None:
+        fmap = process_raw.fmap
+        fmap['fmap'][slc_sel] = gaussian_filter(fmap['fmap'][slc_sel], sigma=1)
+    else:
+        fmap_path = dependencyFolder+"/fmap.npz"
+        if not os.path.exists(fmap_path):
+            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
+            logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+        else:
+            fmap = np.load(fmap_path, allow_pickle=True)
+            if 'name' not in fmap:
+                fmap['name'] = 'No name.'
+        if fmap_shape != list(fmap['fmap'].shape):
+            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
+            fmap['fmap'] = np.zeros(fmap_shape)
+        if 'params' in fmap:
+            logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+
+    fmap_data = np.asarray(fmap['fmap'][slc_sel])
+    fmap_mask = np.asarray(fmap['mask'][slc_sel])
+    fmap_name = fmap['name']
+    dset_tmp.append_array('FieldMap', fmap_data)
+    logging.debug("Field Map name: %s", fmap_name)
+
+    # Calculate phase maps from shot images and append if necessary
+    pcSENSE = False
+    if shotimgs is not None:
+        pcSENSE = True
+        shotimgs = np.stack(shotimgs)[np.newaxis,np.newaxis] # stack shots & add axes for contrast & slice (which are =1 here)
+        mask = fmap_mask.copy()
+        phasemaps = calc_phasemaps(shotimgs, mask, metadata)
+        dset_tmp.append_array("PhaseMaps", phasemaps)
+
+    # Insert acquisitions
+    for acq in acqGroup:
+        slc_ix = acq.idx.slice
+        acq.idx.slice = 0
+        acq.idx.set = 0
+        acq.idx.contrast = 0
+        acq.idx.phase = 0
+        acq.idx.average = 0
+        if process_raw.cc_mat is not None:
+            cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix])
+            acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
+            acq.data[:] = cc_data[0,:,0].T
+
+        save_trj = acq.traj[:,:4].copy()
+        acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
+        acq.traj[:] = save_trj.copy()
+        dset_tmp.append_acquisition(acq)
+
+    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
+    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
+    ts = min(ts_time, ts_fmap)
+    dset_tmp.close()
+
+    # Define in- and output for PowerGrid
+    pg_dir = dependencyFolder+"/powergrid_results"
+    if not os.path.exists(pg_dir):
+        os.makedirs(pg_dir)
+    if os.path.exists(pg_dir+"/images_pg.npy"):
+        os.remove(pg_dir+"/images_pg.npy")
+    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
+
+    """ PowerGrid reconstruction
+    """
+ 
+    temp_intp = 'hanning' # hanning / histo / minmax
+    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
+    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
+
+    # Define PowerGrid options
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2'
+    logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
+    if pcSENSE:
+        subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
+    else:
+        pg_opts += ' -F NUFFT'
+        subproc = 'PowerGridIsmrmrd ' + pg_opts
+    # Run in bash
+    try:
+        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # logging.debug(process.stdout)
+    except subprocess.CalledProcessError as e:
+        logging.debug(e.stdout)
+        raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
+
+    # Image data is saved as .npy
+    data = np.load(pg_dir + "/images_pg.npy")
+    data = np.abs(data)
+
+    """
+    """
+
+    # data to [nz,ny,nx]
+    data = np.transpose(data, [3,4,2,1,0,5,6,7])
+    data = data[0,0,0,0,0]
+
+    # correct orientation at scanner (consistent with ICE)
+    data = np.swapaxes(data, 1, 2)
+    data = np.flip(data, (0,1,2))
+
+    logging.debug("Image data is size %s" % (data.shape,))
+   
+    # Normalize and convert to uint16
+    int_max = np.iinfo(np.uint16).max
+    data *= int_max / data.max()
+    data = np.around(data)
+    data = data.astype(np.uint16)
+
+    # Set ISMRMRD Meta Attributes
+    meta = ismrmrd.Meta({'DataRole':               'Image',
+                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                        'WindowCenter':           str((int_max+1)//2),
+                        'WindowWidth':            str(int_max+1),
+                        'Keep_image_geometry':    '1',
+                        'PG_Options':              pg_opts,
+                        'Field Map':               fmap_name})
+
+    xml = meta.serialize()
+    images = []
+    for nz in range(data.shape[0]):
+        image = ismrmrd.Image.from_array(data[nz], acquisition=acqGroup[0])
+        image.image_index = process_raw.img_ix
+        process_raw.img_ix += 1
+        image.image_series_index = 1
+        image.slice = 0
+        image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        images.append(image)
+
+    logging.debug("Image MetaAttributes: %s", xml)
+    logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
+
+    return images

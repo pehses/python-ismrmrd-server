@@ -3,48 +3,86 @@
 
 import numpy as np
 
-# These are copied from ismrmrdtools.coils, which depends on scipy
-# (wip: import from ismrmrdtools and add scipy to container image)
-def calculate_prewhitening(noise, scale_factor=1.0, normalize=True):
+
+## Noise-prewhitening
+
+def calculate_prewhitening(noise, scale_factor=1.):
     '''Calculates the noise prewhitening matrix
 
-    :param noise: Input noise data (array or matrix), ``[coil, nsamples]``
+    :param noise: Input noise data (2D array), ``[coil, nsamples]``
     :scale_factor: Applied on the noise covariance matrix. Used to
                    adjust for effective noise bandwith and difference in
                    sampling rate between noise calibration and actual measurement:
                    scale_factor = (T_acq_dwell/T_noise_dwell)*NoiseReceiverBandwidthRatio
 
-    :returns w: Prewhitening matrix, ``[coil, coil]``, w*data is prewhitened
+    :returns w: Prewhitening matrix, ``[coil, coil]``, w @ data is prewhitened
     '''
-
-    noise = noise.reshape((noise.shape[0], noise.size//noise.shape[0]))
-
-    R = np.cov(noise)
-    if normalize:
-        R /= np.mean(abs(np.diag(R)))
-    R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
-    # R = sqrtm(np.linalg.inv(R))
-    R = np.linalg.inv(np.linalg.cholesky(R))
-
-    return R
+    dmtx = (noise @ np.conj(noise).T)/noise.shape[1]
+    dmtx = np.linalg.inv(np.linalg.cholesky(dmtx))
+    dmtx *= np.sqrt(2)*np.sqrt(scale_factor)
+    return dmtx
 
 def apply_prewhitening(data, dmtx):
     '''Apply the noise prewhitening matrix
 
-    :param noise: Input noise data (array or matrix), ``[coil, ...]``
+    :param data: Input data (array or matrix), ``[coil, ...]``
     :param dmtx: Input noise prewhitening matrix
 
     :returns w_data: Prewhitened data, ``[coil, ...]``,
     '''
+    return dmtx @ data
 
-    s = data.shape
-    return np.matmul(dmtx, data.reshape(data.shape[0],data.size//data.shape[0])).reshape(s)
+## Coil compression
 
-def calc_rotmat(acq):
-        phase_dir = np.asarray(acq.phase_dir)
-        read_dir = np.asarray(acq.read_dir)
-        slice_dir = np.asarray(acq.slice_dir)
-        return np.round(np.concatenate([phase_dir[:,np.newaxis], read_dir[:,np.newaxis], slice_dir[:,np.newaxis]], axis=1), 6)
+def calibrate_scc(data):
+    # input data: [ncha, nsamples]
+    # output: [ncha, ncha]
+    U, s, _ = np.linalg.svd(data, full_matrices=False)
+    mtx = np.conj(U.T)
+    return mtx, s
+
+def calibrate_cc(items, ncc, apply_cc=True):
+    """ Calibrate coil compression matrix
+
+    items: list of ISMRMRD acquisitions
+    ncc: number of virtual coils
+    """
+    
+    if ncc == 0 or ncc >= items[0].data.shape[0]:
+        return None  # nothing to do
+
+    data = np.asarray([acq.data for acq in items])
+    nc = data.shape[1]
+    cc_matrix, s = calibrate_scc(np.moveaxis(data, 1, 0).reshape([nc, -1]))
+    cc_matrix = cc_matrix[:ncc, :]
+
+    # apply coil compression
+    if apply_cc:
+        data = cc_matrix @ data
+
+        # write data back to acsGroup:
+        for acq, dat in zip(items, data):
+            acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0])
+            acq.data[:] = dat
+
+    return cc_matrix
+
+def apply_cc(item, cc_matrix):
+    """ Apply coil compression matrix
+
+    item: ISMRMRD acquisition
+    cc_matrix: coil compression matrix [nc_new,nc_old]
+    """
+    if cc_matrix is None:
+        return
+
+    data = cc_matrix @ item.data
+
+    # store modified data
+    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+    item.data[:] = data
+
+## Oversampling removal
 
 def remove_os(data, axis=0):
     '''Remove oversampling (assumes os factor 2)
@@ -54,6 +92,14 @@ def remove_os(data, axis=0):
     data = np.delete(data, cut, axis=axis)
     data = np.fft.fft(data, axis=axis)
     return data
+
+## Rotations
+
+def calc_rotmat(acq):
+        phase_dir = np.asarray(acq.phase_dir)
+        read_dir = np.asarray(acq.read_dir)
+        slice_dir = np.asarray(acq.slice_dir)
+        return np.round(np.concatenate([phase_dir[:,np.newaxis], read_dir[:,np.newaxis], slice_dir[:,np.newaxis]], axis=1), 6)
 
 def pcs_to_dcs(grads, patient_position='HFS'):
     """ Convert from patient coordinate system (PCS, physical) 
@@ -143,18 +189,7 @@ def dcs_to_gcs(grads, rotmat):
     
     return grads
 
-def intp_axis(newgrid, oldgrid, data, axis=0):
-    # interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
-    tmp = np.moveaxis(data.copy(), axis, 0)
-    newshape = (len(newgrid),) + tmp.shape[1:]
-    tmp = tmp.reshape((len(oldgrid), -1))
-    n_elem = tmp.shape[-1]
-    intp_data = np.zeros((len(newgrid), n_elem), dtype=data.dtype)
-    for k in range(n_elem):
-        intp_data[:, k] = np.interp(newgrid, oldgrid, tmp[:, k])
-    intp_data = intp_data.reshape(newshape)
-    intp_data = np.moveaxis(intp_data, 0, axis)
-    return intp_data 
+## FOV shifts
 
 def fov_shift(sig, shift):
     """ Performs inplane fov shift for Cartesian data of shape [nx,ny,nz,nc]
@@ -218,7 +253,8 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
 
     return sig
 
-    
+## K-space filter
+
 def filt_ksp(kspace, traj, filt_fac=0.95):
     """filter outer kspace data with hanning filter to avoid Gibbs Ringing
 
@@ -247,3 +283,57 @@ def filt_ksp(kspace, traj, filt_fac=0.95):
 
     return kspace * filt
     
+
+## Interpolation
+
+def intp_axis(newgrid, oldgrid, data, axis=0):
+    # interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
+    tmp = np.moveaxis(data.copy(), axis, 0)
+    newshape = (len(newgrid),) + tmp.shape[1:]
+    tmp = tmp.reshape((len(oldgrid), -1))
+    n_elem = tmp.shape[-1]
+    intp_data = np.zeros((len(newgrid), n_elem), dtype=data.dtype)
+    for k in range(n_elem):
+        intp_data[:, k] = np.interp(newgrid, oldgrid, tmp[:, k])
+    intp_data = intp_data.reshape(newshape)
+    intp_data = np.moveaxis(intp_data, 0, axis)
+    return intp_data 
+
+
+## Old
+
+# These are copied from ismrmrdtools.coils, which depends on scipy
+def calculate_prewhitening_old(noise, scale_factor=1.0, normalize=True):
+    '''Calculates the noise prewhitening matrix
+
+    :param noise: Input noise data (array or matrix), ``[coil, nsamples]``
+    :scale_factor: Applied on the noise covariance matrix. Used to
+                   adjust for effective noise bandwith and difference in
+                   sampling rate between noise calibration and actual measurement:
+                   scale_factor = (T_acq_dwell/T_noise_dwell)*NoiseReceiverBandwidthRatio
+
+    :returns w: Prewhitening matrix, ``[coil, coil]``, w*data is prewhitened
+    '''
+
+    noise = noise.reshape((noise.shape[0], noise.size//noise.shape[0]))
+
+    R = np.cov(noise)
+    if normalize:
+        R /= np.mean(abs(np.diag(R)))
+    R[np.diag_indices_from(R)] = abs(R[np.diag_indices_from(R)])
+    # R = sqrtm(np.linalg.inv(R))
+    R = np.linalg.inv(np.linalg.cholesky(R))
+
+    return R
+
+def apply_prewhitening_old(data, dmtx):
+    '''Apply the noise prewhitening matrix
+
+    :param noise: Input noise data (array or matrix), ``[coil, ...]``
+    :param dmtx: Input noise prewhitening matrix
+
+    :returns w_data: Prewhitened data, ``[coil, ...]``,
+    '''
+
+    s = data.shape
+    return np.matmul(dmtx, data.reshape(data.shape[0],data.size//data.shape[0])).reshape(s)

@@ -19,7 +19,7 @@ from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
+from reco_helper import calculate_prewhitening, apply_prewhitening, calibrate_cc, apply_cc, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
 
@@ -167,7 +167,6 @@ def process(connection, config, metadata):
     offres = None 
     shotimgs = None
     sens_shots = False
-    phs = None
     phs_ref = [None] * n_slc
     base_trj = None
     skope = False
@@ -179,7 +178,6 @@ def process(connection, config, metadata):
         sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
-    max_refcontr = 0
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
         te_diff = echo_times[1] - echo_times[0] # [s]
@@ -189,9 +187,9 @@ def process(connection, config, metadata):
         process_raw.fmap = None
 
     if cc_cha != n_cha:
-        process_raw.cc_mat = [None] * n_slc # compression matrix
+        process_acs.cc_mat = [None] * n_slc # compression matrix
     else:
-        process_raw.cc_mat = None
+        process_acs.cc_mat = None
     process_raw.img_ix = 1 # img idx counter for single slice recos
 
     # read protocol acquisitions - faster than doing it one by one
@@ -256,13 +254,19 @@ def process(connection, config, metadata):
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                         acsGroup[item.idx.slice].append(item)
-                        if item.idx.contrast > max_refcontr:
-                            max_refcontr = item.idx.contrast
-                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and item.idx.contrast==max_refcontr:
-                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                            sensmaps[item.idx.slice], sensmaps_shots[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
-                            acsGroup[item.idx.slice].clear()
                         continue
+
+                    # Coil Compression calibration
+                    if cc_cha < n_cha:
+                        cc_data = [acsGroup[item.idx.slice * x] for x in range(sms_factor)]
+                        if sms_factor > 1:
+                            cc_data = [item for sublist in cc_data for item in sublist] # flatten list
+                        process_acs.cc_mat[item.idx.slice] = calibrate_cc(cc_data, cc_cha, apply_cc=False)
+
+                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                    if sensmaps[item.idx.slice] is None:
+                        sensmaps[item.idx.slice], sensmaps_shots[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
+                        acsGroup[item.idx.slice].clear()
 
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
@@ -500,11 +504,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                         continue
                     else:
                         acq.idx.slice = 0
-                # Coil compression
-                if process_raw.cc_mat is not None:
-                    cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix]) # SVD based Coil compression
-                    acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
-                    acq.data[:] = cc_data[0,:,0].T
+                # Apply coil compression
+                if process_acs.cc_mat is not None:
+                    apply_cc(acq, process_acs.cc_mat)
 
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
                 save_trj = acq.traj[:,:4].copy()
@@ -734,27 +736,16 @@ def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=Fal
         # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         # data = fov_shift(data, shift)
 
-        # SVD based Coil compression 
-        n_cha = metadata.acquisitionSystemInformation.receiverChannels
-        if cc_cha < n_cha:
-            logging.debug(f'Calculate coil compression matrix.')
-            process_raw.cc_mat[slc_ix] = bart(1, f'cc -A -M -S -p {cc_cha}', data[...,0])
-            data_sens = np.zeros_like(data)[...,:cc_cha,:]
-            for k in range(data.shape[-1]):
-                data_sens[...,k] = bart(1, f'ccapply -S -p {cc_cha}', data[...,k], process_raw.cc_mat[slc_ix])
-        else:
-            data_sens = data.copy()
-
         # ESPIRiT calibration - use only first contrast
         gpu = False
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             gpu = True
-        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data_sens[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
 
         # Field Map calculation - if acquired (dont use coil compressed data)
         refimg = cifftn(data, [0,1,2])
@@ -997,6 +988,10 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
 
     for acq in group:
+
+        # Apply coil compression
+        apply_cc(acq, process_acs.cc_mat[acq.idx.slice])
+
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
         contr = acq.idx.contrast
@@ -1126,10 +1121,8 @@ def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc
         acq.idx.contrast = 0
         acq.idx.phase = 0
         acq.idx.average = 0
-        if process_raw.cc_mat is not None:
-            cc_data = bart(1, f'ccapply -S -p {cc_cha}', acq.data[:].T[np.newaxis,:,np.newaxis], process_raw.cc_mat[slc_ix])
-            acq.resize(trajectory_dimensions=acq.trajectory_dimensions, number_of_samples=acq.number_of_samples, active_channels=cc_cha)
-            acq.data[:] = cc_data[0,:,0].T
+        if process_acs.cc_mat is not None:
+            apply_cc(acq, process_acs.cc_mat)
 
         save_trj = acq.traj[:,:4].copy()
         acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)

@@ -57,17 +57,16 @@ def process(connection, config, metadata):
         fast_recon = False
 
     # Coil Compression: Compress number of coils by n_compr coils
-    # WIP: not working properly for SMS data atm, as compression matrix is calibrated for each slice
-    n_compr = 0
+    n_compr = 16
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     if n_compr > 0 and n_compr<n_cha:
-        cc_cha = n_cha - n_compr
-        logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+        process_acs.cc_cha = n_cha - n_compr
+        logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
     elif n_compr<0 or n_compr>=n_cha:
-        cc_cha = n_cha
+        process_acs.cc_cha = n_cha
         logging.debug('Invalid number of compressed coils.')
     else:
-        cc_cha = n_cha
+        process_acs.cc_cha = n_cha
 
     # ----------------------------- #
 
@@ -101,15 +100,12 @@ def process(connection, config, metadata):
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 
+    # Check SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1:
-        if slc_sel is not None:
+    if sms_factor > 1 and slc_sel is not None:
             raise ValueError("SMS reconstruction is not possible for single slices.")
-        if n_compr > 0:
-            cc_cha = n_cha
-            logging.debug("Coil compression deactivated, as its currently not possible for SMS data.")
 
-    # Get additional arrays from protocol file - e.g. for diffusion imaging
+    # Get additional arrays from protocol file for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
     # parameters for reapplying FOV shift
@@ -171,6 +167,10 @@ def process(connection, config, metadata):
     base_trj = None
     skope = False
 
+    # Set some globally available variables
+    process_acs.cc_mat = [None] * n_slc # compression matrix
+    process_raw.img_ix = 1 # img idx counter for single slice recos
+
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
         # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
@@ -185,12 +185,6 @@ def process(connection, config, metadata):
     else:
         te_diff = None
         process_raw.fmap = None
-
-    if cc_cha != n_cha:
-        process_acs.cc_mat = [None] * n_slc # compression matrix
-    else:
-        process_acs.cc_mat = None
-    process_raw.img_ix = 1 # img idx counter for single slice recos
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
@@ -257,16 +251,19 @@ def process(connection, config, metadata):
                         continue
 
                     # Coil Compression calibration
-                    if cc_cha < n_cha:
-                        cc_data = [acsGroup[item.idx.slice * x] for x in range(sms_factor)]
-                        if sms_factor > 1:
-                            cc_data = [item for sublist in cc_data for item in sublist] # flatten list
-                        process_acs.cc_mat[item.idx.slice] = calibrate_cc(cc_data, cc_cha, apply_cc=False)
+                    if process_acs.cc_cha < n_cha and process_acs.cc_mat[item.idx.slice] is None:
+                        cc_data = [acsGroup[item.idx.slice + n_slc//sms_factor*k] for k in range(sms_factor)]
+                        cc_data = [item for sublist in cc_data for item in sublist] # flatten list
+                        cc_mat = calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
+                        for k in range(sms_factor):
+                            process_acs.cc_mat[item.idx.slice + n_slc//sms_factor*k] = cc_mat
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     if sensmaps[item.idx.slice] is None:
-                        sensmaps[item.idx.slice], sensmaps_shots[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
-                        acsGroup[item.idx.slice].clear()
+                        for k in range(sms_factor):
+                            slc_ix = item.idx.slice + n_slc//sms_factor*k
+                            sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
+                            acsGroup[slc_ix].clear()
 
                     # Process imaging scans - deal with ADC segments
                     if item.idx.segment == 0:
@@ -329,14 +326,14 @@ def process(connection, config, metadata):
                             shotgroup = shotimgs[item.idx.slice][item.idx.contrast]
                         else:
                             shotgroup = None
-                        images = singleslice_online_recon(group, metadata, sensmaps, shotgroup, cc_cha, slc_sel)
+                        images = singleslice_online_recon(group, metadata, sensmaps, shotgroup, slc_sel)
                         logging.debug("Sending images to client:\n%s", images)
                         connection.send_image(images)
 
                 # Process acquisitions with PowerGrid - full recon
                 if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) and not fast_recon):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel, online_recon)
+                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel, online_recon)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup.clear()
@@ -385,7 +382,7 @@ def process(connection, config, metadata):
 # Process Data
 #########################
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc_sel=None, online_recon=False):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=None, online_recon=False):
 
     # average acquisitions before reco
     avg_before = True 
@@ -505,8 +502,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
                     else:
                         acq.idx.slice = 0
                 # Apply coil compression
-                if process_acs.cc_mat is not None:
-                    apply_cc(acq, process_acs.cc_mat)
+                if process_acs.cc_mat[slc_ix] is not None:
+                    apply_cc(acq, process_acs.cc_mat[slc_ix])
 
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
                 save_trj = acq.traj[:,:4].copy()
@@ -717,12 +714,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, cc_cha, slc
 
     return images
 
-def process_acs(group, metadata, cc_cha, dmtx=None, te_diff=None, sens_shots=False):
+def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     """ Process reference scans for parallel imaging calibration
     """
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = remove_os(data)
         data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
         slc_ix = group[0].idx.slice
@@ -956,8 +952,6 @@ def sort_spiral_data(group, metadata):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
     contr_max = 0
@@ -975,10 +969,15 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2_max = enc2
         if contr > contr_max:
             contr_max = contr
+            
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
 
-    nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.x
-    # ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nc = process_acs.cc_cha
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     n_contr = contr_max + 1
 
@@ -988,9 +987,6 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
 
     for acq in group:
-
-        # Apply coil compression
-        apply_cc(acq, process_acs.cc_mat[acq.idx.slice])
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
@@ -1013,10 +1009,16 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc1 += cy - cenc1
             enc2 += cz - cenc2
         
-        if dmtx is None:
-            kspace[enc1, enc2, :, col, contr] += acq.data
-        else:
-            kspace[enc1, enc2, :, col, contr] += apply_prewhitening(acq.data, dmtx)
+        # Noise-whitening
+        if dmtx is not None:
+            acq.data[:] = apply_prewhitening(acq.data, dmtx)
+        
+        # Apply coil compression
+        if process_acs.cc_mat[acq.idx.slice] is not None:
+            apply_cc(acq, process_acs.cc_mat[acq.idx.slice])
+
+        kspace[enc1, enc2, :, col, contr] += acq.data   
+        
         if contr==0:
             counter[enc1, enc2] += 1
 
@@ -1054,7 +1056,7 @@ def reshape_fmap_sms(fmap, sms_factor):
 # For testing: Single slice online reconstruction
 #########################
 
-def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc_sel):
+def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs, slc_sel):
 
     logging.debug("Do fast single slice online reconstruction.")
     
@@ -1121,8 +1123,8 @@ def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs, cc_cha, slc
         acq.idx.contrast = 0
         acq.idx.phase = 0
         acq.idx.average = 0
-        if process_acs.cc_mat is not None:
-            apply_cc(acq, process_acs.cc_mat)
+        if process_acs.cc_mat[slc_ix] is not None:
+            apply_cc(acq, process_acs.cc_mat[slc_ix])
 
         save_trj = acq.traj[:,:4].copy()
         acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)

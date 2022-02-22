@@ -62,7 +62,7 @@ def calibrate_cc(items, ncc, apply_cc=True):
 
         # write data back to acsGroup:
         for acq, dat in zip(items, data):
-            acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0])
+            acq.resize(number_of_samples=dat.shape[-1], active_channels=dat.shape[0], trajectory_dimensions=item.trajectory_dimensions)
             acq.data[:] = dat
 
     return cc_matrix
@@ -79,7 +79,7 @@ def apply_cc(item, cc_matrix):
     data = cc_matrix @ item.data
 
     # store modified data
-    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0], trajectory_dimensions=item.trajectory_dimensions)
     item.data[:] = data
 
 ## Oversampling removal

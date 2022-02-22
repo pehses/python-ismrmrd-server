@@ -179,9 +179,6 @@ def process_cartesian(connection, config, metadata, prot_file):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = group[0].number_of_samples
-
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
     for acq in group:
@@ -196,7 +193,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if enc2 > enc2_max:
             enc2_max = enc2
 
-    nx = 2*metadata.encoding[0].encodedSpace.matrixSize.x
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
+
+    nc = metadata.acquisitionSystemInformation.receiverChannels
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
@@ -244,7 +247,6 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = remove_os(data)
 
         # ESPIRiT
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
@@ -261,7 +263,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=False):
 
     data = sort_into_kspace(group, metadata, dmtx)
-    data = remove_os(data)
 
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)

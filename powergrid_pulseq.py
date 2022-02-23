@@ -32,7 +32,7 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
+# tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
 ########################
 # Main Function
@@ -57,7 +57,7 @@ def process(connection, config, metadata):
         fast_recon = False
 
     # Coil Compression: Compress number of coils by n_compr coils
-    n_compr = 16
+    n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     if n_compr > 0 and n_compr<n_cha:
         process_acs.cc_cha = n_cha - n_compr

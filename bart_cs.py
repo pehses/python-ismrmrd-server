@@ -487,7 +487,8 @@ def process_acs(group, config, metadata, chunk_sz=8):
     # ESPIRiT calibration
     if chunk_sz>0:
         # espirit_econ: reduce memory footprint by chunking
-        eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
+        logging.debug(f"eon = bart(1, 'ecalib {gpu_str} -m {n_maps} -1', acs)")
+        eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)
 
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
@@ -501,9 +502,11 @@ def process_acs(group, config, metadata, chunk_sz=8):
         for i in range(0, nz, chunk_sz):
             sl = slice(i, i+chunk_sz)
             sl_len = len(range(*sl.indices(nz)))
-            sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
+            logging.debug(f"sensmaps[:,:,{i}] = bart(1, 'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sl_len}', eon[:,:,{sl}])")
+            sensmaps[:,:,sl] = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sl_len}', eon[:,:,sl])
     else:
-        sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
+        logging.debug(f"sensmaps = bart(1, 'ecalib {gpu_str} -m {n_maps}', acs)")
+        sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
 
     # np.save(os.path.join(debugFolder, "acs.npy"), acs)
     # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
@@ -521,6 +524,7 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
     pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
     if chunk_sz==0 or chunk_sz>=data.shape[0]:
+        logging.debug(f"data = bart(1, '{pics_str}', data, sensmaps)")
         data = bart(1, pics_str, data, sensmaps)
         data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
     else:
@@ -533,6 +537,7 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
             ix0 = max(0, i-chunk_overlap)
             sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
             block = cfft(data[sl_ov], 0)
+            logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl_ov}])")
             block = bart(1, pics_str, block, sensmaps[sl_ov])
             block = block[slice(i-ix0, i-ix0+sl_len)]
             # store reconstructed data in first coil element

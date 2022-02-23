@@ -33,12 +33,15 @@ apply_prewhitening = True
 ncc = 16      # number of compressed coils
 n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
+filter_type = None
 
 # override defaults:
 # reduce_fov_x = False
 # zf_to_orig_sz = True
-# ncc = 32  # we have time...
+ncc = 32  # we have time...
 sel_x = None
+# filter_type = 'long_component'
+# filter_type = 'biexponential'
 
 
 def export_nifti(data, metadata, filename):
@@ -180,6 +183,40 @@ def calibrate_cc(items):
     return cc_matrix
 
 
+def apply_filter(item, kcenter_seg=73):
+
+    if filter_type is None:
+        return
+
+    def decay(t, tau, amp):
+        return amp * np.exp(-t/tau)
+
+    def bidecay(t, tau1, tau2, amp1, amp2):
+        return amp1 * np.exp(-t/tau1) + amp2 * np.exp(-t/tau2)
+    
+    # these were determind from refvolt=220V data (not quite right)
+    tau = [100.07897875, 8.54900408]  # unit: 'refocussing pulses'
+    amp = [2.14106668, 4.3746221]
+
+    segment = item.idx.segment
+    if filter_type is 'long_component':
+        # make sure that scale is one in k-space center
+        a = 1/decay(kcenter_seg, tau[0], 1)
+        scale = 1 / decay(segment, tau[0], a)
+    else:
+        # make sure that scale is one in k-space center
+        a = bidecay(kcenter_seg, *tau, *amp)
+        amp[0] = amp[0]/a
+        amp[1] = amp[1]/a
+        scale = 1/ bidecay(segment, *tau, *amp)
+
+    logging.debug(f'lin={item.idx.kspace_encode_step_1}, par={item.idx.kspace_encode_step_2}, seg={segment}, scale={scale}')
+    item.data[:] = scale * item.data[:]
+
+    return
+
+
+
 def process(connection, config, metadata):
 
     logging.info("Config: \n%s", config)
@@ -253,9 +290,9 @@ def process(connection, config, metadata):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_HPFEEDBACK_DATA):
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):  # deactivate pc for now
                     continue
-                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
+                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):  # skope sync scans
                     continue
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
@@ -290,6 +327,8 @@ def process(connection, config, metadata):
 
                 # apply coil-compression
                 apply_cc(item, cc_matrix[item.idx.slice])
+
+                apply_filter(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -434,7 +473,7 @@ def sort_into_kspace(group, metadata):  # used for acs scan
     return kspace
 
 
-def process_acs(group, config, metadata, chunk_sz=32):
+def process_acs(group, config, metadata, chunk_sz=8):
 
     if len(group)==0:
         # nothing to do
@@ -449,8 +488,6 @@ def process_acs(group, config, metadata, chunk_sz=32):
     if chunk_sz>0:
         # espirit_econ: reduce memory footprint by chunking
         eon = bart(1, 'ecalib %s -m %d -1'%(gpu_str, n_maps), acs)
-
-        logging.debug(bart.stdout)
 
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
@@ -467,7 +504,6 @@ def process_acs(group, config, metadata, chunk_sz=32):
             sensmaps[:,:,sl] = bart(1, 'ecaltwo %s -m %d %d %d %d'%(gpu_str, n_maps, nx, ny, sl_len), eon[:,:,sl])
     else:
         sensmaps = bart(1, 'ecalib %s-m %d'%(gpu_str, n_maps), acs)
-        logging.debug(bart.stdout)
 
     # np.save(os.path.join(debugFolder, "acs.npy"), acs)
     # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
@@ -486,7 +522,6 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
 
     if chunk_sz==0 or chunk_sz>=data.shape[0]:
         data = bart(1, pics_str, data, sensmaps)
-        logging.debug(bart.stdout)
         data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
     else:
         data = cifft(data, 0)
@@ -499,7 +534,6 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
             sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
             block = cfft(data[sl_ov], 0)
             block = bart(1, pics_str, block, sensmaps[sl_ov])
-            logging.debug(bart.stdout)
             block = block[slice(i-ix0, i-ix0+sl_len)]
             # store reconstructed data in first coil element
             data_out[sl] = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims

@@ -10,6 +10,8 @@ import tempfile
 import ctypes
 import mrdhelper
 import constants
+from multiprocessing import Pool
+from functools import partial
 from time import perf_counter
 
 from bart import bart
@@ -36,9 +38,9 @@ save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 
 # override defaults:
-# reduce_fov_x = False
-# zf_to_orig_sz = True
-ncc = 32  # we have time...
+reduce_fov_x = True
+zf_to_orig_sz = False
+# ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
@@ -473,7 +475,13 @@ def sort_into_kspace(group, metadata):  # used for acs scan
     return kspace
 
 
-def process_acs(group, config, metadata, chunk_sz=8):
+def ecaltwo(nx, ny, sig):
+    gpu_str = "-g" if use_gpu else ""
+    maps = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
+    return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
+
+
+def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
     if len(group)==0:
         # nothing to do
@@ -482,13 +490,20 @@ def process_acs(group, config, metadata, chunk_sz=8):
     gpu_str = "-g" if use_gpu else ""
 
     acs = sort_into_kspace(group, metadata)
-    nx, ny, nz, _ = acs.shape
+    nx, ny, nz, nc = acs.shape
+    
+    if chunk_sz is None:
+        def next_powerof2(x):
+            return 1 << (x.bit_length()-1)
+        # this should usually work
+        chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc) + 0.5))
+        chunk_sz = max(1, chunk_sz // threads)
 
     # ESPIRiT calibration
     if chunk_sz>0:
         # espirit_econ: reduce memory footprint by chunking
         logging.debug(f"eon = bart(1, 'ecalib {gpu_str} -m {n_maps} -1', acs)")
-        eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)
+        eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
 
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
@@ -498,12 +513,24 @@ def process_acs(group, config, metadata, chunk_sz=8):
         eon = np.concatenate((eon[:,:,:cutpos,:], tmp, eon[:,:,cutpos:,:]), axis=2)
         eon = fft.fft(eon, axis=2, norm='backward')
 
-        sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
-        for i in range(0, nz, chunk_sz):
-            sl = slice(i, i+chunk_sz)
-            sl_len = len(range(*sl.indices(nz)))
-            logging.debug(f"sensmaps[:,:,{i}] = bart(1, 'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sl_len}', eon[:,:,{sl}])")
-            sensmaps[:,:,sl] = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sl_len}', eon[:,:,sl])
+        tic = perf_counter()
+
+        logging.debug(f"loop: 'bart ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
+        # sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
+
+        slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
+        chunks = (eon[:,:,sl] for sl in slcs)
+        
+        if threads is None or threads <= 0:
+            sensmaps = [partial(ecaltwo, nx, ny) for sig in chunks]
+        else:
+            with Pool(threads) as p:
+                sensmaps = p.map(partial(ecaltwo, nx, ny), chunks)
+
+        sensmaps = np.concatenate(sensmaps, axis=0)
+        sensmaps = np.moveaxis(sensmaps, 0, 2)
+
+        logging.debug(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
     else:
         logging.debug(f"sensmaps = bart(1, 'ecalib {gpu_str} -m {n_maps}', acs)")
         sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
@@ -514,35 +541,65 @@ def process_acs(group, config, metadata, chunk_sz=8):
     return sensmaps
 
 
-def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
+def pics_chunk(data, pics_str, chunk_overlap, sl):
+    nx = data.shape[0]
+    i = sl.start
+    sl_len = len(range(*sl.indices(nx)))
+    ix0 = max(0, i-chunk_overlap)
+    sl_ov = slice(ix0, i+sl_len+chunk_overlap)
+    block = cfft(data[sl_ov], 0)
+    block = bart(1, pics_str, block, sensmaps[sl_ov])
+    block = block[slice(i-ix0, i-ix0+sl_len)]
+    block = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
+    return block
+
+
+#def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
 # def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30):
-# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
+
+    threads = 4
+    chunk_sz = 128 // threads
 
     logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
 
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
+    tic = perf_counter()
     if chunk_sz==0 or chunk_sz>=data.shape[0]:
         logging.debug(f"data = bart(1, '{pics_str}', data, sensmaps)")
         data = bart(1, pics_str, data, sensmaps)
         data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
+        threads = 1
     else:
         data = cifft(data, 0)
-        data_out = np.zeros(data.shape[:3], dtype=np.float32)
         nx = data.shape[0]
-        for i in range(0, nx, chunk_sz):
-            sl = slice(i, i+chunk_sz)
-            sl_len = len(range(*sl.indices(nx)))
-            ix0 = max(0, i-chunk_overlap)
-            sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
-            block = cfft(data[sl_ov], 0)
-            logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl_ov}])")
-            block = bart(1, pics_str, block, sensmaps[sl_ov])
-            block = block[slice(i-ix0, i-ix0+sl_len)]
-            # store reconstructed data in first coil element
-            data_out[sl] = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
-        data = data_out
+
+        if threads is not None and threads > 1:
+            slcs = (slice(i, i+chunk_sz) for i in range(0, nx, chunk_sz))
+            with Pool(threads) as p:
+                data = p.map(partial(pics_chunk, data, pics_str, chunk_overlap), slcs)
+            data = np.ararray(data)
+        else:
+            data_out = []
+            for i in range(0, nx, chunk_sz):
+                sl = slice(i, i+chunk_sz)
+                sl_len = len(range(*sl.indices(nx)))
+                ix0 = max(0, i-chunk_overlap)
+                sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
+                block = cfft(data[sl_ov], 0)
+                logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl_ov}])")
+                block = bart(1, pics_str, block, sensmaps[sl_ov])
+                block = block[slice(i-ix0, i-ix0+sl_len)]
+                block = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
+                data_out.append(block)  
+
+            data = np.asarray(data_out)
+            del data_out
+
+    logging.debug(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
+
 
     # zero-fill up to full fov in case partial recon. in x
     if reduce_fov_x and zf_to_orig_sz:

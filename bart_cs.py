@@ -33,14 +33,14 @@ reduce_fov_x = False
 zf_to_orig_sz = True
 apply_prewhitening = True
 ncc = 16      # number of compressed coils
-n_maps = 1    # set to 2 in case of fold-over / too tight FoV
+n_maps = 2    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 
 # override defaults:
-reduce_fov_x = True
-zf_to_orig_sz = False
-# ncc = 32  # we have time...
+# reduce_fov_x = True
+# zf_to_orig_sz = False
+ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
@@ -496,7 +496,7 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
         def next_powerof2(x):
             return 1 << (x.bit_length()-1)
         # this should usually work
-        chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc) + 0.5))
+        chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc*n_maps) + 0.5))
         chunk_sz = max(1, chunk_sz // threads)
 
     # ESPIRiT calibration
@@ -541,24 +541,23 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
     return sensmaps
 
 
-def pics_chunk(data, pics_str, chunk_overlap, sl):
-    nx = data.shape[0]
-    i = sl.start
-    sl_len = len(range(*sl.indices(nx)))
-    ix0 = max(0, i-chunk_overlap)
-    sl_ov = slice(ix0, i+sl_len+chunk_overlap)
-    block = cfft(data[sl_ov], 0)
-    block = bart(1, pics_str, block, sensmaps[sl_ov])
-    block = block[slice(i-ix0, i-ix0+sl_len)]
-    block = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
-    return block
+def pics_chunk(pics_str, chunk):
+    block = chunk[0]
+    sensmap = chunk[1]
+    cut_slc = chunk[2]
+
+    block = cfft(block, 0)
+    block = bart(1, pics_str, block, sensmap)
+    block = block[cut_slc]
+    block = block[(slice(None),) * 3 + (block.ndim-3) * (0,)]  # select first 3 dims
+    return abs(block)
 
 
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
 # def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30):
 def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
 
-    threads = 4
+    threads = 1
     chunk_sz = 128 // threads
 
     logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
@@ -577,10 +576,15 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         nx = data.shape[0]
 
         if threads is not None and threads > 1:
-            slcs = (slice(i, i+chunk_sz) for i in range(0, nx, chunk_sz))
+            slcs = (slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz))
+            cut_start = ((i if i<chunk_overlap else chunk_overlap) for i in range(0, nx, chunk_sz))
+            cut_stop = ((a + chunk_sz if i+chunk_sz < nx else -1) for a, i in zip(cut_start, range(0, nx, chunk_sz)))
+            cut_slcs = (slice(a, b) for a, b in zip(cut_start, cut_stop))
+            blocks = (data[sl] for sl in slcs)
+            sensblocks = (sensmaps[sl] for sl in slcs)
+
             with Pool(threads) as p:
-                data = p.map(partial(pics_chunk, data, pics_str, chunk_overlap), slcs)
-            data = np.ararray(data)
+                data_out = p.map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cut_slcs))
         else:
             data_out = []
             for i in range(0, nx, chunk_sz):
@@ -592,11 +596,22 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
                 logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl_ov}])")
                 block = bart(1, pics_str, block, sensmaps[sl_ov])
                 block = block[slice(i-ix0, i-ix0+sl_len)]
-                block = abs(block[(slice(None),) * 3 + (block.ndim-3) * (0,)])  # select first 3 dims
-                data_out.append(block)  
 
-            data = np.asarray(data_out)
-            del data_out
+                # noch nicht ganz richtig, nx-1 kommt als groesse heraus:
+                # sl = slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap)
+                # block = cfft(data[sl], 0)
+                # cut_start = i if i<chunk_overlap else chunk_overlap
+                # cut_stop = cut_start + chunk_sz if i+chunk_sz < nx else -1
+                # logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl}])")
+                # block = bart(1, pics_str, block, sensmaps[sl])
+                # block = block[slice(cut_start, cut_stop)]
+
+                block = block[(slice(None),) * 3 + (block.ndim-3) * (0,)]  # select first 3 dims
+                data_out.append(abs(block))
+
+        data = np.concatenate(data_out, axis=0)
+        del data_out
+        logging.debug(f"data.shape = {data.shape}")    
 
     logging.debug(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
 
@@ -610,12 +625,14 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
             data = data_out
 
     # Remove phase oversampling
-    offset = (data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)//2
-    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.y]
+    if data.shape[1] > metadata.encoding[0].reconSpace.matrixSize.y:
+        offset = (data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)//2
+        data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.y]
 
     # Remove partition oversampling
-    offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
-    data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
+    if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:
+        offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
+        data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
 
     logging.debug("Image data is size %s" % (data.shape,))
     

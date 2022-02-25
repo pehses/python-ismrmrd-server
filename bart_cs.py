@@ -33,7 +33,7 @@ reduce_fov_x = False
 zf_to_orig_sz = True
 apply_prewhitening = True
 ncc = 16      # number of compressed coils
-n_maps = 2    # set to 2 in case of fold-over / too tight FoV
+n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 
@@ -212,7 +212,7 @@ def apply_filter(item, kcenter_seg=73):
         amp[1] = amp[1]/a
         scale = 1/ bidecay(segment, *tau, *amp)
 
-    logging.debug(f'lin={item.idx.kspace_encode_step_1}, par={item.idx.kspace_encode_step_2}, seg={segment}, scale={scale}')
+    # logging.debug(f'lin={item.idx.kspace_encode_step_1}, par={item.idx.kspace_encode_step_2}, seg={segment}, scale={scale}')
     item.data[:] = scale * item.data[:]
 
     return
@@ -296,6 +296,13 @@ def process(connection, config, metadata):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):  # skope sync scans
                     continue
+                # elif item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION):  # not in python-ismrmrd yet (todo)
+                elif item.is_flag_set(31):
+                    continue
+                # elif item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE):  # not in python-ismrmrd yet (todo)
+                elif item.is_flag_set(30):
+                    continue
+                    
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
                    item.data[:,:] = item.data[:,:] * corr_factors
@@ -554,11 +561,11 @@ def pics_chunk(pics_str, chunk):
 
 
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
-# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30):
-def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30):
+# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
 
-    threads = 1
-    chunk_sz = 128 // threads
+    if threads is not None and threads > 1:
+        chunk_sz = 128 // threads
 
     logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
 
@@ -665,7 +672,7 @@ def process_image(data, rawHead, config, metadata):
         process_image.imascale /= np.prod(resolution)
 
         #test
-        process_image.imascale = int_max/np.max(data)
+        # process_image.imascale = int_max/np.max(data)
         # not sure whether we need to account for chunksz or sel_x (probably)
 
     data *= process_image.imascale

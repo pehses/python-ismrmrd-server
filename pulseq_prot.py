@@ -329,44 +329,32 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         pred_grad = pred_grad[1:]
 
         # rotate back to logical system
-        pred_grad = dcs_to_gcs(pred_grad, rotmat)
+        pred_grad = dcs_to_gcs(pred_grad, rotmat).real
 
         # calculate global phase term k0 [rad]
         k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
-
-        # calculate trajectory [1/m]
-        pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
-
-        # scale with FOV for BART & PowerGrid recon
-        pred_trj *= 1e-3 * fov[:,np.newaxis]
-
-        # set z-axis for 3D imaging if trajectory is two-dimensional 
-        # this only works for Cartesian sampling in kz (works also with CAIPI)
-        if dims == 2:
-            nz = hdr.encoding[0].encodedSpace.matrixSize.z
-            partition = acq.idx.kspace_encode_step_2
-            kz = partition - nz//2
-            pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
-
-        # align trajectory to scanner ADC
-        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
         k0 = intp_axis(adctime, gradtime, k0, axis=0)
-
-        # switch array order to [samples, dims]
-        pred_trj = np.swapaxes(pred_trj,0,1)
     else:
-        # use non-shifted base trajectory
-        pred_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
-        pred_trj *= 1e-3 * fov[:,np.newaxis]
-        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
-        pred_trj = np.swapaxes(pred_trj,0,1)
+        pred_grad = grad.copy()
         k0 = None
 
-    # calculate base trajectory for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
-    # interpolate to ADC and shift base_trj by 10us 
+    pred_trj = np.cumsum(pred_grad, axis=1) * dt_grad * gammabar # calculate trajectory [1/m]
+    pred_trj *= 1e-3 * fov[:,np.newaxis] # scale with FOV for BART & PowerGrid recon
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
     base_trj *= 1e-3 * fov[:,np.newaxis]
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
+
+    # set z-axis for 3D imaging if trajectory is two-dimensional 
+    # this only works for Cartesian sampling in kz (works also with CAIPI)
+    if dims == 2:
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z
+        partition = acq.idx.kspace_encode_step_2
+        kz = partition - nz//2
+        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
+        base_trj[2] =  kz * np.ones(base_trj.shape[1])
+
+    pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1) # align trajectory to scanner ADC
+    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]   
+    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
     base_trj = np.swapaxes(base_trj,0,1)
 
     return base_trj, pred_trj, k0

@@ -5,7 +5,6 @@ import itertools
 import logging
 from cfft import cfft, cifft, fft  # before numpy import to avoid MKL bug!
 import numpy as np
-import multiprocessing
 import tempfile
 import ctypes
 import mrdhelper
@@ -15,6 +14,32 @@ from functools import partial
 from time import perf_counter
 
 from bart import bart
+
+
+import multiprocessing
+import multiprocessing.pool
+
+
+class NoDaemonProcess(multiprocessing.Process):
+    @property
+    def daemon(self):
+        return False
+
+    @daemon.setter
+    def daemon(self, value):
+        pass
+
+
+class NoDaemonContext(type(multiprocessing.get_context())):
+    Process = NoDaemonProcess
+
+
+# We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
+# because the latter is only a wrapper function, not a proper class.
+class NestablePool(multiprocessing.pool.Pool):
+    def __init__(self, *args, **kwargs):
+        kwargs['context'] = NoDaemonContext()
+        super(NestablePool, self).__init__(*args, **kwargs)
 
 
 # Folder for sharing data/debugging
@@ -40,10 +65,11 @@ filter_type = None
 # override defaults:
 # reduce_fov_x = True
 # zf_to_orig_sz = False
-ncc = 32  # we have time...
+# ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
+use_multiprocessing = True
 
 
 def export_nifti(data, metadata, filename):
@@ -274,7 +300,7 @@ def process(connection, config, metadata):
     cc_matrix = [None] * max_no_of_slices  # for coil compression
 
     if use_multiprocessing:
-        pool = multiprocessing.Pool(processes=4)
+        pool = NestablePool(processes=2)
 
     # Start timer
     tic = perf_counter()
@@ -332,7 +358,10 @@ def process(connection, config, metadata):
                     cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice])
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
+                    if use_multiprocessing:
+                        sensmaps[item.idx.slice] = pool.apply_async(process_acs, (acsGroup[item.idx.slice], config, metadata))
+                    else:
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
 
                 # apply coil-compression
                 apply_cc(item, cc_matrix[item.idx.slice])
@@ -347,10 +376,10 @@ def process(connection, config, metadata):
                     # images = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice])
                     # logging.debug("Sending images to client:\n%s", images)
                     # connection.send_image(images)
-                    if use_multiprocessing:
-                        pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
-                    else:
-                        process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
+                    # if use_multiprocessing:
+                    #     pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
+                    # else:
+                    process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
                     acqGroup = []
 
                     # Measure processing time
@@ -403,11 +432,14 @@ def process(connection, config, metadata):
             logging.info("Processing a group of k-space data (untriggered)")
             if sensmaps[acqGroup[-1].idx.slice] is None:
                 # run parallel imaging calibration
-                sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata)
-            if use_multiprocessing:
-                pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
-            else:
-                process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
+                if use_multiprocessing:
+                    res = pool.apply_async(process_acs, (acsGroup[item.idx.slice], config, metadata))
+                else:
+                    sensmaps[acqGroup[-1].idx.slice] = process_acs(acsGroup[acqGroup[-1].idx.slice], config, metadata)
+            # if use_multiprocessing:
+            #     pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
+            # else:
+            process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
             acqGroup = []
             del push_to_kspace.kspace
 
@@ -490,6 +522,8 @@ def ecaltwo(nx, ny, sig):
 
 def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
+    chunk_sz = 1
+
     if len(group)==0:
         # nothing to do
         return None
@@ -504,7 +538,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
             return 1 << (x.bit_length()-1)
         # this should usually work
         chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc*n_maps) + 0.5))
-        chunk_sz = max(1, chunk_sz // threads)
+        if threads is not None and threads>1:
+            chunk_sz = max(1, chunk_sz//threads)
 
     # ESPIRiT calibration
     if chunk_sz>0:
@@ -528,8 +563,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
         slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
         chunks = (eon[:,:,sl] for sl in slcs)
         
-        if threads is None or threads <= 0:
-            sensmaps = [partial(ecaltwo, nx, ny) for sig in chunks]
+        if threads is None or threads < 2:
+            sensmaps = [ecaltwo(nx, ny, sig) for sig in chunks]
         else:
             with Pool(threads) as p:
                 sensmaps = p.map(partial(ecaltwo, nx, ny), chunks)
@@ -565,15 +600,17 @@ def pics_chunk(pics_str, chunk):
 def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
 
     if threads is not None and threads > 1:
-        chunk_sz = 128 // threads
+        chunk_sz = max(1, 128 // threads)
 
-    logging.debug(f"Raw data is size {data.shape}; Sensmaps shape is {sensmaps.shape}")
+    logging.debug(f"Raw data is size {data.shape}")
 
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
     tic = perf_counter()
     if chunk_sz==0 or chunk_sz>=data.shape[0]:
+        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+            sensmaps = sensmaps.get()
         logging.debug(f"data = bart(1, '{pics_str}', data, sensmaps)")
         data = bart(1, pics_str, data, sensmaps)
         data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
@@ -581,7 +618,8 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
     else:
         data = cifft(data, 0)
         nx = data.shape[0]
-
+        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+            sensmaps = sensmaps.get()
         if threads is not None and threads > 1:
             slcs = (slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz))
             cut_start = ((i if i<chunk_overlap else chunk_overlap) for i in range(0, nx, chunk_sz))

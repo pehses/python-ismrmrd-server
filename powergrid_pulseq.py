@@ -291,12 +291,6 @@ def process(connection, config, metadata):
 
                         # Reapply FOV Shift with predicted trajectory
                         data = fov_shift_spiral_reapply(data, pred_trj, base_trj, shift, matr_sz)
-                        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-                        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-                        #--- and for reconstruction of old data                                     ---#
-                        # rotmat = calc_rotmat(item)
-                        # shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
-                        # data = fov_shift_spiral(data, np.swapaxes(pred_trj,0,1), shift, matr_sz[0])
 
                         # filter signal to avoid Gibbs Ringing
                         traj_filt = np.swapaxes(acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,:3],0,1) # traj to [dim, samples]
@@ -569,7 +563,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, slc_sel=Non
         else:
             subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
     else:
-        pg_opts += ' -F NUFFT'
+        if sms_factor > 1:
+            pg_opts += ' -F DFT'
+        else:
+            pg_opts += ' -F NUFFT'
         if mpi:
             subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
         else:
@@ -723,15 +720,6 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
 
         slc_ix = group[0].idx.slice
 
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # rotmat = calc_rotmat(group[0])
-        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan has no rotmat in protocol
-        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        # data = fov_shift(data, shift)
-
         # ESPIRiT calibration - use only first contrast
         gpu = False
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -843,8 +831,6 @@ def process_shots(group, metadata, sensmaps_shots):
         img = bart(1, pics_config, np.expand_dims(trj[:,:,k],2), np.expand_dims(data[:,:,k],2), sensmaps)
         imgs.append(img)
     
-    np.save(debugFolder + "/" + "shotimgs.npy", imgs)
-
     return imgs
 
 def calc_phasemaps(shotimgs, mask, metadata):
@@ -855,6 +841,9 @@ def calc_phasemaps(shotimgs, mask, metadata):
 
     phasemaps = np.conj(shotimgs[:,:,0,np.newaxis]) * shotimgs # 1st shot is taken as reference phase
     phasemaps = np.angle(phasemaps)
+
+    np.save(debugFolder + "/" + "shotimgs.npy", shotimgs)
+    np.save(debugFolder + "/" + "phsmaps_wrapped.npy", phasemaps)
 
     # phase unwrapping & interpolation to higher resolution
     unwrapped_phasemaps = np.zeros([phasemaps.shape[0],phasemaps.shape[1],phasemaps.shape[2],nx,nx])

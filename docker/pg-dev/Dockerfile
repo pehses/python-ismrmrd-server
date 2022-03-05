@@ -1,4 +1,4 @@
-FROM ubuntu:20.04 AS mrd_converter
+FROM ubuntu:20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -8,7 +8,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
        wget ca-certificates libhdf5-serial-dev build-essential libxml2-dev libxslt1-dev\
-       libfftw3-dev git liblapacke-dev libopenblas-dev libboost-all-dev curl
+       libfftw3-dev git liblapacke-dev libopenblas-dev curl openmpi-bin
 
 # Install Latest CMake
 RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
@@ -32,23 +32,14 @@ RUN cd /opt/code \
     && make -j $(nproc) \
     && make install
 
-# siemens_to_ismrmrd converter
-RUN cd /opt/code \
-    && git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git \
-    && cd siemens_to_ismrmrd \
-    && cp /opt/code/python-ismrmrd-server/parameter_maps/* parameter_maps/ \
-    && mkdir build \
-    && cd build \
-    && cmake ../ \
-    && make -j $(nproc) \
-    && make install
-
 ### Dependencies for PowerGrid ###
 
 # Download and install NVIDIA HPC SDK
 RUN  wget https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-20-11_20.11_amd64.deb \
      https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-2020_20.11_amd64.deb \
      && apt-get install --yes ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
+
+RUN rm nvhpc-*
 
 # Handle NVIDIA HPC SDK specific stuff
 ENV NVARCH=Linux_x86_64
@@ -74,7 +65,6 @@ ENV MANPATH="${MANPATH}:${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/man"
 
 # Install custom compile of boost - only necessary runtime components
 RUN wget -O ~/boost_1_75_0.tar.bz2 -c 'https://sourceforge.net/projects/boost/files/boost/1.75.0/boost_1_75_0.tar.bz2/download' --max-redirect=100 \
-    && apt-get -y remove --purge libboost-all-dev \
     && cd ~ \
     && tar xjf ~/boost_1_75_0.tar.bz2 \
     && cd ~/boost_1_75_0/ \

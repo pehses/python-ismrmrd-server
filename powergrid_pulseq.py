@@ -18,7 +18,7 @@ from skimage.transform import resize
 from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
 
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calibrate_cc, apply_cc, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -41,21 +41,18 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 def process(connection, config, metadata):
     
     # -- Some manual parameters --- #
-    
-    # WIP: Reconstruct only first contrast after that data was acquired
-    process_raw.first_contrast = False
 
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     process_raw.slc_sel = None
+
+    # Reconstruct only first contrast after that data was acquired
+    process_raw.first_contrast = False
     if len(metadata.userParameters.userParameterLong) > 0:
         online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
         if online_slc >= 0:
             process_raw.slc_sel = int(online_slc)
-            fast_recon = True
         else:
-            fast_recon = False
-    else:
-        fast_recon = False
+            process_raw.first_contrast = True # reconstruct only first contrast, if complete volume is processed online
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -77,16 +74,16 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # ISMRMRD protocol file
-    protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
+    prot_folder = os.path.join(dependencyFolder, "pulseq_protocols")
     prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
-    prot_file = protFolder + "/" + prot_filename + ".h5"
+    prot_file = prot_folder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
     if not os.path.isfile(prot_file):
-        protFolder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
+        prot_folder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
         date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-        protFolder_loc = os.path.join(protFolder_local, date)
-        prot_file_loc = protFolder_loc + "/" + prot_filename + ".h5"
+        prot_folder_loc = os.path.join(prot_folder_local, date)
+        prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"
         if os.path.isfile(prot_file_loc):
             prot_file = prot_file_loc
         else:
@@ -168,10 +165,7 @@ def process(connection, config, metadata):
     base_trj = None
     skope = False
     first_contrast_recon = False
-
-    # Set some globally available variables
     process_acs.cc_mat = [None] * n_slc # compression matrix
-    process_raw.img_ix = 1 # img idx counter for single slice recos
 
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
@@ -188,13 +182,9 @@ def process(connection, config, metadata):
         te_diff = None
         process_raw.fmap = None
 
-    # read protocol acquisitions - faster than doing it one by one
+    # read protocol acquisitions - faster than using read_acquisition
     logging.debug("Reading in protocol acquisitions.")
-    acqs = []
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    for n in range(prot.number_of_acquisitions()):
-        acqs.append(prot.read_acquisition(n))
-    prot.close()
+    acqs = read_acqs(prot_file)
 
     try:
         for item in connection:
@@ -315,25 +305,12 @@ def process(connection, config, metadata):
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
                             offres = None
 
-                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                    if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
-                        if shotimgs is not None:
-                            shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots[item.idx.slice])
-
-                    # Process acquisitions with PowerGrid - fast single slice online reco
-                    if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and fast_recon):
-                        logging.info("Processing a group of k-space data")
-                        group = acqGroup[item.idx.slice][item.idx.contrast]
-                        if shotimgs is not None:
-                            shotgroup = shotimgs[item.idx.slice][item.idx.contrast]
-                        else:
-                            shotgroup = None
-                        images = singleslice_online_recon(group, metadata, sensmaps, shotgroup)
-                        logging.debug("Sending images to client:\n%s", images)
-                        connection.send_image(images)
+                        shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots[item.idx.slice])
 
                 # Process acquisitions with PowerGrid - full recon
-                if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) or first_contrast_recon) and not fast_recon:
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) or first_contrast_recon:
                     logging.info("Processing a group of k-space data")
                     if first_contrast_recon: [[acq_grp[0] for acq_grp in acqGroup]]
                     images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
@@ -623,7 +600,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     if n_bval > 0 and "b_values" in prot_arrays and not process_raw.first_contrast:
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        b0 = np.expand_dims(np.abs(data[:,:n_b0].mean(1)), 1)
+        b0 = np.expand_dims(np.abs(data[:,:n_b0].mean(1)), 1) # averages over b=0 repetitions
         diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
         scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
         b0 *= scale
@@ -659,37 +636,34 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
 
-    if process_raw.slc_sel is None:
-        meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
-        meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
-    else:
-        meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
-        meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
-
     xml = meta.serialize()
 
     series_ix = 0
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    slc_eff = n_slc // sms_factor
+    res = metadata.encoding[0].encodedSpace.matrixSize.z // n_slc
     for data_ix,data in enumerate(dsets):
-        # Format as ISMRMRD image data 
-        # WIP: send data with repetition dimension (leave out the rep for loop)
-
+        # Format as ISMRMRD image data [nx,ny,nz] - WIP: slices are sent as nz to avoid recalculation of position here, is this working correctly??
+        # Evtl reps wie vorher slc senden (image_ix, statt series_ix für reps erhöhen)
         if data_ix < 2:
-            for contr in range(data.shape[1]):
-                series_ix += 1
-                img_ix = 0
-                for phs in range(data.shape[2]):
-                    for slc in range(data.shape[3]):
+            for rep in range(data.shape[0]):
+                for contr in range(data.shape[1]):
+                    series_ix += 1
+                    for phs in range(data.shape[2]):
                         for nz in range(data.shape[4]):
-                            img_ix += 1
                             if process_raw.slc_sel is None:
-                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[0][contr][0])
+                                image = ismrmrd.Image.from_array(np.moveaxis(data[rep,contr,phs,:,nz],0,-1), acquisition=acqGroup[0][contr][0])
                                 image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
+                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                             else:
-                                image = ismrmrd.Image.from_array(np.moveaxis(data[:,contr,phs,slc,nz],0,-1), acquisition=acqGroup[process_raw.slc_sel][contr][0])
+                                image = ismrmrd.Image.from_array(np.moveaxis(data[rep,contr,phs,:,nz],0,-1), acquisition=acqGroup[process_raw.slc_sel][contr][0])
                                 image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[process_raw.slc_sel][contr][0].getHead()))
-                            image.image_index = img_ix
+                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
+                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
+
+                            image.image_index = 1
                             image.image_series_index = series_ix
-                            image.slice = slc
                             if 'b_values' in prot_arrays:
                                 image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
                             if 'Directions' in prot_arrays and data_ix==1:
@@ -723,48 +697,50 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     """ Process reference scans for parallel imaging calibration
     """
-    if len(group)>0:
-        data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
-        slc_ix = group[0].idx.slice
+    if len(group)==0:
+        raise ValueError("Process ACS was triggered for empty acquisition group.")
 
-        # ESPIRiT calibration - use only first contrast
-        gpu = False
-        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
-            gpu = True
-        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
-            logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
-        else:
-            logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
+    data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+    data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
-        # Field Map calculation - if acquired (dont use coil compressed data)
-        refimg = cifftn(data, [0,1,2])
-        if te_diff is not None and data.shape[-1] > 1:
-            process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
+    slc_ix = group[0].idx.slice
 
-        # calculate low resolution sensmaps for shot images (dont use coil compressed data)
-        if sens_shots:
-            os_region = metadata.userParameters.userParameterDouble[4].value
-            if np.allclose(os_region,0):
-                os_region = 0.25 # use default if no region provided
-            nx = metadata.encoding[0].encodedSpace.matrixSize.x
-            data = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data)
-            if gpu and data.shape[2] > 1:
-                sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data[...,0])
-            else:
-                sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data[...,0])
-        else:
-            sensmaps_shots = None
-
-        np.save(debugFolder + "/" + "refimg.npy", refimg)
-        np.save(debugFolder + "/" + "acs.npy", data)
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
-        return sensmaps, sensmaps_shots
+    # ESPIRiT calibration - use only first contrast
+    gpu = False
+    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+        gpu = True
+    if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        logging.debug("Run Espirit on GPU.")
+        sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
     else:
-        return None
+        logging.debug("Run Espirit on CPU.")
+        sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
+
+    # Field Map calculation - if acquired (dont use coil compressed data)
+    refimg = cifftn(data, [0,1,2])
+    if te_diff is not None and data.shape[-1] > 1:
+        process_raw.fmap['fmap'][slc_ix], process_raw.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
+
+    # calculate low resolution sensmaps for shot images (dont use coil compressed data)
+    if sens_shots:
+        os_region = metadata.userParameters.userParameterDouble[4].value
+        if np.allclose(os_region,0):
+            os_region = 0.25 # use default if no region provided
+        nx = metadata.encoding[0].encodedSpace.matrixSize.x
+        data = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data)
+        if gpu and data.shape[2] > 1:
+            sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data[...,0])
+        else:
+            sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data[...,0])
+    else:
+        sensmaps_shots = None
+
+    np.save(debugFolder + "/" + "refimg.npy", refimg)
+    np.save(debugFolder + "/" + "acs.npy", data)
+    np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
+
+    return sensmaps, sensmaps_shots
 
 def calc_fmap(imgs, te_diff, metadata):
     """ Calculate field maps from reference images with two different contrasts
@@ -1048,172 +1024,3 @@ def reshape_fmap_sms(fmap, sms_factor):
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
     return fmap
-
-# %%
-#########################
-# For testing: Single slice online reconstruction
-# This will reconstruct data already during data acquisition
-#########################
-
-def singleslice_online_recon(acqGroup, metadata, sensmaps, shotimgs):
-
-    logging.debug("Do fast single slice online reconstruction.")
-    
-    # Write ISMRMRD file for PowerGrid
-    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
-    if os.path.exists(tmp_file):
-        os.remove(tmp_file)
-    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
-
-    # Write header
-    dset_tmp.write_xml_header(metadata.toXML())
-    hdr_pg = ismrmrd.xsd.CreateFromDocument(dset_tmp.read_xml_header()) # copy to modify header
-    hdr_pg.encoding[0].encodingLimits.slice.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.set.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.contrast.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.phase.maximum = 0
-    hdr_pg.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(hdr_pg.toXML())
-
-    # Insert Sensitivity Maps
-    sens = np.transpose(sensmaps[process_raw.slc_sel], [3,2,1,0])
-    fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
-    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
-
-    # Insert Field Map
-    if process_raw.fmap is not None:
-        fmap = process_raw.fmap
-        fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1)
-    else:
-        fmap_path = dependencyFolder+"/fmap.npz"
-        if not os.path.exists(fmap_path):
-            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
-            logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
-        else:
-            fmap = np.load(fmap_path, allow_pickle=True)
-            if 'name' not in fmap:
-                fmap['name'] = 'No name.'
-        if fmap_shape != list(fmap['fmap'].shape):
-            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-            fmap['fmap'] = np.zeros(fmap_shape)
-        if 'params' in fmap:
-            logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-
-    fmap_data = np.asarray(fmap['fmap'][process_raw.slc_sel])
-    fmap_mask = np.asarray(fmap['mask'][process_raw.slc_sel])
-    fmap_name = fmap['name']
-    dset_tmp.append_array('FieldMap', fmap_data)
-    logging.debug("Field Map name: %s", fmap_name)
-
-    # Calculate phase maps from shot images and append if necessary
-    pcSENSE = False
-    if shotimgs is not None:
-        pcSENSE = True
-        shotimgs = np.stack(shotimgs)[np.newaxis,np.newaxis] # stack shots & add axes for contrast & slice (which are =1 here)
-        mask = fmap_mask.copy()
-        phasemaps = calc_phasemaps(shotimgs, mask, metadata)
-        dset_tmp.append_array("PhaseMaps", phasemaps)
-
-    # Insert acquisitions
-    for acq in acqGroup:
-        slc_ix = acq.idx.slice
-        acq.idx.slice = 0
-        acq.idx.set = 0
-        acq.idx.contrast = 0
-        acq.idx.phase = 0
-        acq.idx.average = 0
-        if process_acs.cc_mat[slc_ix] is not None:
-            apply_cc(acq, process_acs.cc_mat[slc_ix])
-
-        save_trj = acq.traj[:,:4].copy()
-        acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
-        acq.traj[:] = save_trj.copy()
-        dset_tmp.append_acquisition(acq)
-
-    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
-    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap)
-    dset_tmp.close()
-
-    # Define in- and output for PowerGrid
-    pg_dir = dependencyFolder+"/powergrid_results"
-    if not os.path.exists(pg_dir):
-        os.makedirs(pg_dir)
-    if os.path.exists(pg_dir+"/images_pg.npy"):
-        os.remove(pg_dir+"/images_pg.npy")
-    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
-
-    """ PowerGrid reconstruction
-    """
- 
-    temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
-    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
-
-    # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 15 -D 2'
-    logging.debug("PowerGrid Reconstruction options: %s",  pg_opts)
-    if pcSENSE:
-        subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else:
-        pg_opts += ' -F NUFFT'
-        subproc = 'PowerGridIsmrmrd ' + pg_opts
-    # Run in bash
-    try:
-        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        # logging.debug(process.stdout)
-    except subprocess.CalledProcessError as e:
-        logging.debug(e.stdout)
-        raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
-
-    # Image data is saved as .npy
-    data = np.load(pg_dir + "/images_pg.npy")
-    data = np.abs(data)
-
-    """
-    """
-
-    # data to [nz,ny,nx]
-    data = np.transpose(data, [3,4,2,1,0,5,6,7])
-    data = data[0,0,0,0,0]
-
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 1, 2)
-    data = np.flip(data, (0,1,2))
-
-    logging.debug("Image data is size %s" % (data.shape,))
-   
-    # Normalize and convert to uint16
-    int_max = np.iinfo(np.uint16).max
-    data *= int_max / data.max()
-    data = np.around(data)
-    data = data.astype(np.uint16)
-
-    # Set ISMRMRD Meta Attributes
-    meta = ismrmrd.Meta({'DataRole':               'Image',
-                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           str((int_max+1)//2),
-                        'WindowWidth':            str(int_max+1),
-                        'Keep_image_geometry':    '1',
-                        'PG_Options':              pg_opts,
-                        'Field Map':               fmap_name})
-
-    xml = meta.serialize()
-    images = []
-    for nz in range(data.shape[0]):
-        image = ismrmrd.Image.from_array(data[nz], acquisition=acqGroup[0])
-        image.image_index = process_raw.img_ix
-        process_raw.img_ix += 1
-        image.image_series_index = 1
-        image.slice = 0
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
-
-    logging.debug("Image MetaAttributes: %s", xml)
-    logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
-
-    return images

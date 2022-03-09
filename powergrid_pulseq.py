@@ -618,17 +618,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     xml = meta.serialize()
 
     series_ix = 0
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    slc_eff = n_slc // sms_factor
-    res = metadata.encoding[0].encodedSpace.matrixSize.z // n_slc
+    img_ix = 0
     for data_ix,data in enumerate(dsets):
         # Format as ISMRMRD image data [nx,ny,nz] - WIP: slices are sent as nz to avoid recalculation of position here, is this working correctly??
-        # Evtl reps wie vorher slc senden (image_ix, statt series_ix für reps erhöhen)
         if data_ix < 2:
-            for rep in range(data.shape[0]):
-                for contr in range(data.shape[1]):
-                    series_ix += 1
-                    for phs in range(data.shape[2]):
+            for contr in range(data.shape[1]):
+                series_ix += 1
+                for phs in range(data.shape[2]):
+                    for rep in range(data.shape[0]): # save one repetition after another
+                        img_ix += 1
                         for nz in range(data.shape[4]):
                             if process_raw.slc_sel is None:
                                 image = ismrmrd.Image.from_array(np.moveaxis(data[rep,contr,phs,:,nz],0,-1), acquisition=acqGroup[0][contr][0])
@@ -640,9 +638,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[process_raw.slc_sel][contr][0].getHead()))
                                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
-
-                            image.image_index = 1
+                            image.image_index = img_ix
                             image.image_series_index = series_ix
+                            image.repetition = rep
+                            image.phase = phs
+                            image.contrast = contr
                             if 'b_values' in prot_arrays:
                                 image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
                             if 'Directions' in prot_arrays and data_ix==1:

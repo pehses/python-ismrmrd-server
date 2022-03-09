@@ -6,6 +6,7 @@ import numpy as np
 import ctypes
 import tempfile
 import psutil
+from time import perf_counter
 
 from bart import bart
 import subprocess
@@ -119,11 +120,7 @@ def process(connection, config, metadata):
 
     # Metadata should be MRD formatted header, but may be a string
     # if it failed conversion earlier
-
     try:
-        # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
-        # logging.info("Metadata: \n%s", metadata.serialize())
-
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
             metadata.encoding[0].trajectory.value, 
@@ -133,7 +130,6 @@ def process(connection, config, metadata):
             metadata.encoding[0].encodedSpace.fieldOfView_mm.x, 
             metadata.encoding[0].encodedSpace.fieldOfView_mm.y, 
             metadata.encoding[0].encodedSpace.fieldOfView_mm.z)
-
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
 
@@ -158,10 +154,8 @@ def process(connection, config, metadata):
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
     dmtx = None
-    offres = None 
     shotimgs = None
     sens_shots = False
-    phs_ref = [None] * n_slc
     base_trj = None
     skope = False
     first_contrast_recon = False
@@ -217,19 +211,7 @@ def process(connection, config, metadata):
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
                     noiseGroup.clear()
-                
-                # Phase correction scans (WIP: phase navigators not working correctly atm)
-                if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
-                    if item.idx.contrast == 0:
-                        phs_ref[item.idx.slice] = item.data[:]
-                    else:
-                        data = item.data[:] * np.conj(phs_ref[item.idx.slice]) # subtract reference phase
-                        data_sum = np.sum(data, axis=0) # sum weights coils by signal magnitude
-                        slope = np.sum(data_sum[:-1] * np.conj(data_sum[1:]))
-                        phs_slope = np.angle(slope)
-                        offres = phs_slope / 1e-6 # 1 us dwelltime of phase correction scans
-                    continue
-                
+                               
                 # Skope sync scans
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
@@ -295,15 +277,9 @@ def process(connection, config, metadata):
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] = filt_ksp(data, traj, filt_fac=0.95)
 
                         # Correct the global phase
-                        k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                         if skope:
+                            k0 = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,4]
                             acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*k0)
-                        # WIP: phase navigators not working correctly atm
-                        if not skope and offres is not None:
-                            t_vec = acqGroup[item.idx.slice][item.idx.contrast][-1].traj[:,3]
-                            global_phs = offres * t_vec + k0 # add up linear and GIRF predicted phase
-                            acqGroup[item.idx.slice][item.idx.contrast][-1].data[:] *= np.exp(-1j*global_phs)
-                            offres = None
 
                     if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
@@ -562,7 +538,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # Run in bash
     logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:
+        tic = perf_counter()
         process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        toc = perf_counter()
+        logging.debug(f"PowerGrid Reconstruction time: {toc-tic}.")
         # logging.debug(process.stdout)
         if mps_server:
             subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 

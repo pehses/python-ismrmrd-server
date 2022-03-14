@@ -9,6 +9,7 @@ import psutil
 from time import perf_counter
 
 from bart import bart
+import bartpy.tools
 import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
@@ -20,7 +21,7 @@ from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
 
 from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature, read_acqs
-from reco_helper import calculate_prewhitening, apply_prewhitening, calibrate_cc, apply_cc, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp
+from reco_helper import calculate_prewhitening, apply_prewhitening, calibrate_cc, apply_cc, calc_rotmat, pcs_to_gcs, remove_os, filt_ksp, add_naxes
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
 
@@ -145,6 +146,7 @@ def process(connection, config, metadata):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
+    half_refscan = True if metadata.encoding[0].parallelImaging.calibrationMode.value == "separate" else False # WIP: not tested
 
     acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
     noiseGroup = []
@@ -164,7 +166,8 @@ def process(connection, config, metadata):
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
         # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
+        # WIP: This does not work with multiple repetitions or averages atm (needs more list dimensions)
+        shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
         sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
@@ -221,7 +224,11 @@ def process(connection, config, metadata):
 
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                        acsGroup[item.idx.slice].append(item)
+                        if half_refscan:
+                            acsGroup[2*item.idx.slice].append(item)
+                            acsGroup[2*item.idx.slice+1].append(item)
+                        else:
+                            acsGroup[item.idx.slice].append(item)
                         continue
 
                     # Coil Compression calibration
@@ -283,7 +290,12 @@ def process(connection, config, metadata):
 
                     if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
-                        shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots[item.idx.slice])
+                        # WIP: Repetitions or Averages not possible atm
+                        sensmaps_shots_stack = []
+                        for k in range(sms_factor):
+                            slc_ix = item.idx.slice + n_slc//sms_factor*k
+                            sensmaps_shots_stack.append(sensmaps_shots[slc_ix])
+                        shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots_stack)
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) or first_contrast_recon:
@@ -413,8 +425,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # remove slice dimension, if field map was 3D
     if len(fmap_data) == 1: fmap_data = fmap_data[0]
     if len(fmap_mask) == 1: fmap_mask = fmap_mask[0]
-    if sms_factor > 1:
-            fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
+    fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
     dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
     logging.debug("Field Map name: %s", fmap_name)
@@ -424,11 +435,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     if shotimgs is not None:
         pcSENSE = True
         if process_raw.slc_sel is not None:
-            shotimgs = np.expand_dims(np.stack(shotimgs[process_raw.slc_sel]),0)
+            shotimgs = np.stack(shotimgs[process_raw.slc_sel, np.newaxis])
         else:
-            shotimgs = np.stack(shotimgs)
-        shotimgs = np.swapaxes(shotimgs, 0, 1) # swap slice & contrast as slice phase maps should be ordered [contrast, slice, shots, ny, nx]
-        mask = fmap_mask.copy()
+            shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
+        shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
+        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor)
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -520,17 +531,25 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -I {temp_intp} -t {ts} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-    if pcSENSE:
-        if mpi:
-            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
-        else:
-            subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else:
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+
+    if pcSENSE: # Multishot
+        if sms_factor > 1: # discrete Fourier transform
+            if mpi:
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+            else:
+                subproc = 'PowerGridPcSense ' + pg_opts
+        else: # nufft with time segmentation
+            if mpi:
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts + f' -I {temp_intp} -t {ts}'
+            else:
+                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts + f' -I {temp_intp} -t {ts}'
+    else: # Singleshot
+        pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
         if sms_factor > 1:
-            pg_opts += ' -F DFT'
+            pg_opts += ' -F DFT' # discrete Fourier transform,
         else:
-            pg_opts += ' -F NUFFT'
+            pg_opts += ' -F NUFFT' # nufft with time segmentation
         if mpi:
             subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
         else:
@@ -621,6 +640,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     img_ix = 0
     for data_ix,data in enumerate(dsets):
         # Format as ISMRMRD image data [nx,ny,nz] - WIP: slices are sent as nz to avoid recalculation of position here, is this working correctly??
+        # WIP: TEST ONLINE
         if data_ix < 2:
             for contr in range(data.shape[1]):
                 series_ix += 1
@@ -781,24 +801,47 @@ def process_shots(group, metadata, sensmaps_shots):
     """
 
     # sort data - no coil compression
-    data, trj = sort_spiral_data(group, metadata)
+    data, traj = sort_spiral_data(group, metadata)
 
-    # undo the swap in process_acs as BART needs different orientation
+    # stack SMS dimension
+    sensmaps_shots = np.stack(sensmaps_shots)
+
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    if sms_factor > 1:
+        sms = True
+        sms_dim = 13
+        data = add_naxes(data, sms_dim+1-data.ndim)
+        data = np.concatenate((data, np.zeros_like(data)),axis=sms_dim) # WIP: this might not work for stacked spiral
+        sensmaps_shots = add_naxes(sensmaps_shots, sms_dim+1-sensmaps_shots.ndim)
+        sensmaps_shots = np.moveaxis(sensmaps_shots,0,sms_dim)
+    else:
+        sms = False
+        sensmaps_shots = sensmaps_shots[0]
+
+    # undo the swap in process_acs as BART needs different orientation  
     sensmaps = np.swapaxes(sensmaps_shots, 0, 1) 
 
     # Reconstruct low resolution images
     # dont use GPU as it creates a lot of overhead, which causes longer recon times
-    pics_config = 'pics -l1 -r 0.001 -S -e -i 15 -t'
-
     imgs = []
     for k in range(data.shape[2]):
-        img = bart(1, pics_config, np.expand_dims(trj[:,:,k],2), np.expand_dims(data[:,:,k],2), sensmaps)
-        imgs.append(img)
+        traj_shot = traj[:,:,k,np.newaxis]
+        data_shot = data[:,:,k,np.newaxis]
+        pat = bartpy.tools.pattern(data_shot) # k-space pattern - needed for SMS recon - WIP: is this correct for non-SMS
+        img = bartpy.tools.pics(data_shot, sensmaps, t=traj_shot, l='1', r=0.001, S=True, e=True, i=15, M=sms, p=pat)
+        if sms:
+            img = np.moveaxis(img,-1,0)[...,0,0,0,0,0,0,0,0,0,0,0]
+        else:
+            img = img[np.newaxis]
+        imgs.append(img) # shot images in list with [nz,ny,nx]
     
     return imgs
 
 def calc_phasemaps(shotimgs, mask, metadata):
     """ Calculate phase maps for phase corrected reconstruction
+        WIP: still artifacts in the images
+             also it might make sense to set phasemaps to zero for b=0 images
+             as no phase correction is needed
     """
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
@@ -809,25 +852,22 @@ def calc_phasemaps(shotimgs, mask, metadata):
     np.save(debugFolder + "/" + "shotimgs.npy", shotimgs)
     np.save(debugFolder + "/" + "phsmaps_wrapped.npy", phasemaps)
 
-    # phase unwrapping & interpolation to higher resolution
-    unwrapped_phasemaps = np.zeros([phasemaps.shape[0],phasemaps.shape[1],phasemaps.shape[2],nx,nx])
-    for k in range(phasemaps.shape[0]):
-        for j in range(phasemaps.shape[1]):
-            for i in range(phasemaps.shape[2]):
-                unwrapped = unwrap_phase(phasemaps[k,j,i], wrap_around=(False, False))
-                unwrapped_phasemaps[k,j,i] = resize(unwrapped, [nx,nx])
+    phasemaps = np.swapaxes(phasemaps, 1, 2) # to [contrast, shot, slice, nz, ny, nx]
+    shape = [s for s in phasemaps.shape[:-2]]
+    phasemaps = phasemaps.reshape([-1]+[s for s in phasemaps.shape[2:]]) # to [-1, slice, nz, ny, nx]
 
-    # mask all slices - need to swap shot and slice axis
-    phasemaps = np.swapaxes(np.swapaxes(unwrapped_phasemaps, 1, 2) * mask, 1, 2)
-
-    # filter phasemaps - seems to make it worse as resolution of phase maps is low
-    phasemaps_filt = np.zeros_like(phasemaps)
-    for k in range(phasemaps_filt.shape[0]):
-        for j in range(phasemaps_filt.shape[1]):
-            for i in range(phasemaps_filt.shape[2]):
-                phasemaps_filt[k,j,i] = median_filter(phasemaps[k,j,i], size=9)
-                # phasemaps_filt[k,j,i] = gaussian_filter(filtered, sigma=0.5)
-    phasemaps = phasemaps_filt.copy()
+    # phase unwrapping, interpolation to higher resolution, filtering
+    unwrapped_phasemaps = np.zeros([s for s in phasemaps.shape[:-2]] + [nx, nx])
+    for i,item in enumerate(phasemaps): # contrast * shots
+        for j, slc in enumerate(item): # slice
+            for k, phsmap in enumerate(slc): # nz/sms-stack
+                phsmap = unwrap_phase(phsmap, wrap_around=(False, False))
+                phsmap = resize(phsmap, [nx,nx])
+                phsmap *= mask[j,k]
+                unwrapped_phasemaps[i,j,k] = median_filter(phsmap, size=9) # median filter seems to be better than Gaussian
+    
+    unwrapped_phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
+    unwrapped_phasemaps = np.swapaxes(unwrapped_phasemaps, 1, 2) # back to [contrast, slice, shot, nz, ny, nx]
 
     np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
     
@@ -984,7 +1024,6 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     return kspace
 
 def reshape_sens_sms(sens, sms_factor):
-    # WIP: is this correct???
     # reshape sensmaps array for sms imaging, sensmaps for one acquisition are stored at nz
     sens_cpy = sens.copy() # [slices, coils, nz, ny, nx]
     slices_eff = sens_cpy.shape[0]//sms_factor
@@ -994,10 +1033,8 @@ def reshape_sens_sms(sens, sms_factor):
     return sens
 
 def reshape_fmap_sms(fmap, sms_factor):
-    # WIP: is this correct???
     # reshape field map array for sms imaging
-
-    fmap_cpy = fmap.copy() # [slices, ny, nx] slices could also be nz for 3D refscan, but doesnt matter here
+    fmap_cpy = fmap.copy() # [slices, ny, nx] to [slices, nz, ny, nx]
     slices_eff = fmap_cpy.shape[0]//sms_factor
     fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype)
     for slc in range(fmap_cpy.shape[0]):

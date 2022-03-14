@@ -147,7 +147,7 @@ def process(connection, config, metadata):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
-    half_refscan = True if metadata.encoding[0].parallelImaging.calibrationMode.value == "separate" else False # WIP: not tested
+    half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
 
     acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
     noiseGroup = []
@@ -253,7 +253,8 @@ def process(connection, config, metadata):
                     if process_raw.first_contrast and item.idx.contrast > 0:
                         first_contrast_recon = True
                         
-                    # Process imaging scans - deal with ADC segments
+                    # Process imaging scans - deal with ADC segments 
+                    # (not needed in newer spiral sequence versions, but kept for compatibility also with other scanners)
                     if item.idx.segment == 0:
                         nsamples = item.number_of_samples
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction

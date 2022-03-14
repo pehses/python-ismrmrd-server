@@ -4,6 +4,7 @@ import os
 import logging
 import numpy as np
 import ctypes
+import xml.dom.minidom
 import tempfile
 import psutil
 from time import perf_counter
@@ -372,6 +373,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         metadata.encoding[0].encodingLimits.slice.maximum = 0
     if process_raw.first_contrast:
         metadata.encoding[0].encodingLimits.contrast.maximum = 0
+        metadata.encoding[0].encodingLimits.repetition.maximum = 0
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
@@ -470,6 +472,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         continue
                     else:
                         acq.idx.slice = 0
+                if process_raw.first_contrast and acq.idx.repetition > 0:
+                    continue                
                 # Apply coil compression
                 if process_acs.cc_mat[slc_ix] is not None:
                     apply_cc(acq, process_acs.cc_mat[slc_ix])
@@ -634,7 +638,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         'PG_Options':              pg_opts,
                         'Field Map':               fmap_name})
 
-    xml = meta.serialize()
+    xmlMeta = meta.serialize()
 
     series_ix = 0
     img_ix = 0
@@ -667,7 +671,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
                             if 'Directions' in prot_arrays and data_ix==1:
                                 image.user_float[:3] = prot_arrays['Directions'][phs]
-                            image.attribute_string = xml
+                            image.attribute_string = xmlMeta
                             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
@@ -682,13 +686,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                 image.image_index = img_ix
                 image.image_series_index = series_ix
                 image.slice = img_ix
-                image.attribute_string = xml
+                image.attribute_string = xmlMeta
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
 
-    logging.debug("Image MetaAttributes: %s", xml)
+    logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(xmlMeta).toprettyxml())
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
     return images

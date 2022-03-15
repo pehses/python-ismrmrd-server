@@ -225,11 +225,7 @@ def process(connection, config, metadata):
 
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                        if half_refscan:
-                            acsGroup[2*item.idx.slice].append(item)
-                            acsGroup[2*item.idx.slice+1].append(item)
-                        else:
-                            acsGroup[item.idx.slice].append(item)
+                        acsGroup[item.idx.slice].append(item)
                         continue
 
                     # Coil Compression calibration
@@ -397,9 +393,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap = process_raw.fmap
         # 3D filtering of field map
         if process_raw.slc_sel is not None:
-            fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1)
+            fmap['fmap'][process_raw.slc_sel] = fmap['fmap'][process_raw.slc_sel]
         else:
-            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1)
+            fmap['fmap'] = np.stack(gaussian_filter(fmap['fmap'], sigma=0.5))
     else:
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
@@ -585,10 +581,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # data should have output [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
     data = np.transpose(data, [3,4,2,1,0,5,6,7]).mean(axis=0)
-    if sms_factor > 1: # reorder sms slices
-        newshape = [_ for _ in data.shape]
-        newshape[3:5] = [newshape[3]*newshape[4], 1]
-        data = data.reshape(newshape, order='f')
+    # reorder sms slices
+    newshape = [_ for _ in data.shape]
+    newshape[3:5] = [newshape[3]*newshape[4], 1]
+    data = data.reshape(newshape, order='f')
 
     logging.debug("Image data is size %s" % (data.shape,))
    
@@ -622,7 +618,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     imascale = dsets[0].max() # use max of T2 weighted, should be also global max
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
-        dsets[k] = np.flip(dsets[k], (-3,-2,-1))
+        dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
         if k<2:
             dsets[k] *= int_max / imascale # T2 and diff images
         else:
@@ -643,6 +639,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     series_ix = 0
     img_ix = 0
+    n_slc = data.shape[3]
+    slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     for data_ix,data in enumerate(dsets):
         # Format as ISMRMRD image data [nx,ny,nz] - WIP: slices are sent as nz to avoid recalculation of position here, is this working correctly??
         # WIP: TEST ONLINE
@@ -651,46 +649,49 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                 series_ix += 1
                 for phs in range(data.shape[2]):
                     for rep in range(data.shape[0]): # save one repetition after another
-                        img_ix += 1
-                        for nz in range(data.shape[4]):
-                            if process_raw.slc_sel is None:
-                                image = ismrmrd.Image.from_array(np.moveaxis(data[rep,contr,phs,:,nz],0,-1), acquisition=acqGroup[0][contr][0])
-                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
-                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
-                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
-                            else:
-                                image = ismrmrd.Image.from_array(np.moveaxis(data[rep,contr,phs,:,nz],0,-1), acquisition=acqGroup[process_raw.slc_sel][contr][0])
-                                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[process_raw.slc_sel][contr][0].getHead()))
-                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
-                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
-                            image.image_index = img_ix
-                            image.image_series_index = series_ix
-                            image.repetition = rep
-                            image.phase = phs
-                            image.contrast = contr
-                            if 'b_values' in prot_arrays:
-                                image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
-                            if 'Directions' in prot_arrays and data_ix==1:
-                                image.user_float[:3] = prot_arrays['Directions'][phs]
-                            image.attribute_string = xmlMeta
-                            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                            images.append(image)
+                        for slc in range(data.shape[3]):
+                            img_ix += 1
+                            for nz in range(data.shape[4]):
+                                if process_raw.slc_sel is None:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                                    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
+                                    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+                                    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+                                else:
+                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,:,nz], acquisition=acqGroup[process_raw.slc_sel][contr][0])
+                                    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[process_raw.slc_sel][contr][0].getHead()))
+                                    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
+                                    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
+                                image.image_index = img_ix
+                                image.image_series_index = series_ix
+                                image.slice = slc
+                                image.repetition = rep
+                                image.phase = phs
+                                image.contrast = contr
+                                if 'b_values' in prot_arrays:
+                                    image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
+                                if 'Directions' in prot_arrays and data_ix==1:
+                                    image.user_float[:3] = prot_arrays['Directions'][phs]
+                                image.attribute_string = xmlMeta
+                                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                                       ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                                       ctypes.c_float(1)) # 2D
+                                image.position[2] += slc_res * (slc-(n_slc-1)/2) # correct image position
+                                logging.debug(f"Slice Pos: {image.position[2]}")
+                                images.append(image)
         else:
             # atm only ADC maps
             series_ix += 1
-            img_ix = 0
-            for img in data:
-                img_ix += 1
+            for ix, img in enumerate(data):
                 image = ismrmrd.Image.from_array(img[0])
                 image.image_index = img_ix
                 image.image_series_index = series_ix
-                image.slice = img_ix
+                image.slice = ix
                 image.attribute_string = xmlMeta
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                                       ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                       ctypes.c_float(1))                        
+                image.position[2] += slc_res * (ix-(n_slc-1)/2)
                 images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(xmlMeta).toprettyxml())

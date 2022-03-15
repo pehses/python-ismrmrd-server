@@ -872,8 +872,8 @@ def calc_phasemaps(shotimgs, mask, metadata):
                 phsmap *= mask[j,k]
                 unwrapped_phasemaps[i,j,k] = median_filter(phsmap, size=9) # median filter seems to be better than Gaussian
     
-    unwrapped_phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
-    unwrapped_phasemaps = np.swapaxes(unwrapped_phasemaps, 1, 2) # back to [contrast, slice, shot, nz, ny, nx]
+    phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
+    phasemaps = np.swapaxes(phasemaps, 1, 2) # back to [contrast, slice, shot, nz, ny, nx]
 
     np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
     

@@ -145,7 +145,7 @@ def process(connection, config, metadata):
 
     # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
 
@@ -243,12 +243,12 @@ def process(connection, config, metadata):
                             sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
                             acsGroup[slc_ix].clear()
 
-                    # Process only first contrast?
-                    if first_contrast_recon and item.idx.contrast > 0:
-                        continue
+                    # trigger online first contrast recon early
                     if process_raw.first_contrast and item.idx.contrast > 0:
-                        first_contrast_recon = True
-                        
+                        if len(acqGroup) > 0:
+                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                        continue
+
                     # Process imaging scans - deal with ADC segments 
                     # (not needed in newer spiral sequence versions, but kept for compatibility also with other scanners)
                     if item.idx.segment == 0:
@@ -296,13 +296,8 @@ def process(connection, config, metadata):
                         shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots_stack)
 
                 # Process acquisitions with PowerGrid - full recon
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) or first_contrast_recon:
-                    logging.info("Processing a group of k-space data")
-                    if first_contrast_recon: [[acq_grp[0] for acq_grp in acqGroup]]
-                    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
-                    logging.debug("Sending images to client:\n%s", images)
-                    connection.send_image(images)
-                    acqGroup.clear()
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -347,6 +342,16 @@ def process(connection, config, metadata):
 #########################
 # Process Data
 #########################
+
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan):
+    if half_refscan: # duplicate entries in lists
+        sensmaps = [val for val in sensmaps for _ in range(2)]
+        process_acs.cc_mat = [val for val in process_acs.cc_mat for _ in range(2)]
+    logging.info("Processing a group of k-space data")
+    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+    logging.debug("Sending images to client:\n%s", images)
+    connection.send_image(images)
+    acqGroup.clear()
 
 def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
@@ -434,7 +439,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     if shotimgs is not None:
         pcSENSE = True
         if process_raw.slc_sel is not None:
-            shotimgs = np.stack(shotimgs[process_raw.slc_sel, np.newaxis])
+            shotimgs = np.stack(shotimgs[process_raw.slc_sel])[np.newaxis]
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]

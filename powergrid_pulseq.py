@@ -506,7 +506,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap)
+    ts = min(ts_time, ts_fmap, 20) # more than 20 would take too long
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -557,7 +557,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
 
     if pcSENSE: # Multishot
-        if sms_factor > 1: # discrete Fourier transform
+        if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
             if mpi:
                 subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
             else:
@@ -570,7 +570,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     else: # Singleshot
         pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
         if sms_factor > 1:
-            pg_opts += ' -F DFT' # discrete Fourier transform,
+            pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
         else:
             pg_opts += ' -F NUFFT' # nufft with time segmentation
         if mpi:
@@ -622,7 +622,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
         b0 = np.expand_dims(np.abs(data[:,:n_b0].mean(1)), 1) # averages over b=0 repetitions
-        diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        diffw_imgs = np.abs(data[:,n_b0:]).reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
         scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
         b0 *= scale
         diffw_imgs *= scale
@@ -664,8 +664,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     for data_ix,data in enumerate(dsets):
-        # Format as ISMRMRD image data [nx,ny,nz] - WIP: slices are sent as nz to avoid recalculation of position here, is this working correctly??
-        # WIP: TEST ONLINE
+        # Format as ISMRMRD image data [nx,ny,nz]
         if data_ix < 2:
             for contr in range(data.shape[1]):
                 series_ix += 1
@@ -855,7 +854,7 @@ def process_shots(group, metadata, sensmaps_shots):
     for k in range(data.shape[2]):
         traj_shot = traj[:,:,k,np.newaxis]
         data_shot = data[:,:,k,np.newaxis]
-        pat = bartpy.tools.pattern(data_shot) # k-space pattern - needed for SMS recon - WIP: is this correct for non-SMS
+        pat = bartpy.tools.pattern(data_shot) # k-space pattern - needed for SMS recon
         img = bartpy.tools.pics(data_shot, sensmaps, t=traj_shot, l='1', r=0.001, S=True, e=True, i=15, M=sms, p=pat)
         if sms:
             img = np.moveaxis(img,-1,0)[...,0,0,0,0,0,0,0,0,0,0,0]
@@ -909,7 +908,8 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
         return (np.prod(arr, axis=axis))**(1.0/arr.shape[axis])
 
     b_val = prot_arrays['b_values']
-    n_bval = b_val.shape[0] - 1
+    n_bval = np.count_nonzero(b_val)
+    n_b0 = len(b_val) - n_bval
     directions = prot_arrays['Directions']
     n_directions = directions.shape[0]
 
@@ -922,9 +922,9 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0
     diff_log  = -np.log(diff_norm, out=np.zeros_like(diff_norm), where=diff_norm!=0)
     if n_bval<4:
-        d_dir = (diff_log / b_val[1:]).mean(-1)
+        d_dir = (diff_log / b_val[n_b0:]).mean(-1)
     else:
-        d_dir = np.polynomial.polynomial.polyfit(b_val[1:], diff_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape+[n_directions])
+        d_dir = np.polynomial.polynomial.polyfit(b_val[n_b0:], diff_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape+[n_directions])
 
     # calculate trace images (geometric mean)
     trace = geom_mean(diff, axis=-2)
@@ -933,11 +933,11 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
     trace_log  = -np.log(trace_norm, out=np.zeros_like(trace_norm), where=trace_norm!=0)
 
-    # calculate trace diffusion coefficient - WIP: Is the fitting function working right?
+    # calculate trace diffusion coefficient - WIP: Is the fitting function working correctly?
     if n_bval<3:
-        adc_map = (trace_log / b_val[1:]).mean(-1)
+        adc_map = (trace_log / b_val[n_b0:]).mean(-1)
     else:
-        adc_map = np.polynomial.polynomial.polyfit(b_val[1:], trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
+        adc_map = np.polynomial.polynomial.polyfit(b_val[n_b0:], trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
 
     adc_map *= mask
 

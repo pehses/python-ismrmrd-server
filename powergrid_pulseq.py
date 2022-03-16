@@ -4,6 +4,7 @@ import os
 import logging
 import numpy as np
 import ctypes
+import copy
 import xml.dom.minidom
 import tempfile
 import psutil
@@ -148,8 +149,10 @@ def process(connection, config, metadata):
     n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
+    if half_refscan and n_slc%2:
+        raise ValueError("Odd number of slices with halved number of refscan slices is invalid.")
 
-    acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc)]
+    acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
     noiseGroup = []
     waveformGroup = []
 
@@ -161,8 +164,8 @@ def process(connection, config, metadata):
     sens_shots = False
     base_trj = None
     skope = False
-    first_contrast_recon = False
     process_acs.cc_mat = [None] * n_slc # compression matrix
+    process_raw.fmap = {'fmap': [None] * n_slc, 'mask': [None] * n_slc, 'name': 'Field Map from reference scan'}
 
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
@@ -175,10 +178,8 @@ def process(connection, config, metadata):
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
         te_diff = echo_times[1] - echo_times[0] # [s]
-        process_raw.fmap = {'fmap': [None] * n_slc, 'mask': [None] * n_slc, 'name': 'Field Map from reference scan'}
     else:
         te_diff = None
-        process_raw.fmap = None
 
     # read protocol acquisitions - faster than using read_acquisition
     logging.debug("Reading in protocol acquisitions.")
@@ -225,7 +226,14 @@ def process(connection, config, metadata):
 
                     # Process reference scans
                     if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
-                        acsGroup[item.idx.slice].append(item)
+                        if half_refscan:
+                            item.idx.slice *= 2
+                            acsGroup[item.idx.slice].append(item)
+                            item2 = copy.deepcopy(item)
+                            item2.idx.slice += 1
+                            acsGroup[item2.idx.slice].append(item2)
+                        else:
+                            acsGroup[item.idx.slice].append(item)
                         continue
 
                     # Coil Compression calibration
@@ -236,12 +244,24 @@ def process(connection, config, metadata):
                         for k in range(sms_factor):
                             process_acs.cc_mat[item.idx.slice + n_slc//sms_factor*k] = cc_mat
 
-                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    if sensmaps[item.idx.slice] is None:
-                        for k in range(sms_factor):
-                            slc_ix = item.idx.slice + n_slc//sms_factor*k
+                    for k in range(sms_factor):
+                        slc_ix = item.idx.slice + n_slc//sms_factor*k
+                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                        if sensmaps[slc_ix] is None:
                             sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
                             acsGroup[slc_ix].clear()
+                            # copy data
+                            if half_refscan:
+                                if slc_ix%2==0:
+                                    sensmaps[slc_ix+1] = sensmaps[slc_ix]
+                                    sensmaps_shots[slc_ix+1] = sensmaps_shots[slc_ix]
+                                    process_raw.fmap['fmap'][slc_ix+1] = process_raw.fmap['fmap'][slc_ix]
+                                    process_raw.fmap['mask'][slc_ix+1] = process_raw.fmap['mask'][slc_ix]
+                                if slc_ix%2==1:
+                                    sensmaps[slc_ix-1] = sensmaps[slc_ix]
+                                    sensmaps_shots[slc_ix-1] = sensmaps_shots[slc_ix]
+                                    process_raw.fmap['fmap'][slc_ix-1] = process_raw.fmap['fmap'][slc_ix]
+                                    process_raw.fmap['mask'][slc_ix-1] = process_raw.fmap['mask'][slc_ix]
 
                     # trigger online first contrast recon early
                     if process_raw.first_contrast and item.idx.contrast > 0:
@@ -344,9 +364,7 @@ def process(connection, config, metadata):
 #########################
 
 def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan):
-    if half_refscan: # duplicate entries in lists
-        sensmaps = [val for val in sensmaps for _ in range(2)]
-        process_acs.cc_mat = [val for val in process_acs.cc_mat for _ in range(2)]
+    # Start data processing
     logging.info("Processing a group of k-space data")
     images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
     logging.debug("Sending images to client:\n%s", images)
@@ -393,15 +411,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
-    # process_raw.fmap = None
-    if process_raw.fmap is not None:
+    # process_raw.fmap['fmap'][0] = None # just for debugging
+    if not any(fm is None for fm in process_raw.fmap['fmap']):
         fmap = process_raw.fmap
-        # 3D filtering of field map
         if process_raw.slc_sel is not None:
-            fmap['fmap'][process_raw.slc_sel] = fmap['fmap'][process_raw.slc_sel]
+            fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1)
         else:
-            fmap['fmap'] = np.stack(gaussian_filter(fmap['fmap'], sigma=0.5))
-    else:
+            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1) # 3D filtering, list will be converted to ndarray
+    else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):
             fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
@@ -605,7 +622,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
         b0 = np.expand_dims(np.abs(data[:,:n_b0].mean(1)), 1) # averages over b=0 repetitions
-        diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-1, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        diffw_imgs = np.abs(data[:,1:]).reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
         scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
         b0 *= scale
         diffw_imgs *= scale

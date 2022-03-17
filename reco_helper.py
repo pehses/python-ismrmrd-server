@@ -4,6 +4,12 @@
 import numpy as np
 
 
+# Root sum of squares
+
+def rss(img, axis=-1):
+    # root sum of squares along a given axis
+    return np.sqrt(np.sum(np.abs(img)**2, axis=axis))
+
 ## Noise-prewhitening
 
 def calculate_prewhitening(noise, scale_factor=1.):

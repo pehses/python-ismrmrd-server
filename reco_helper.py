@@ -235,21 +235,22 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     shift: shift [x_shift, y_shift] in voxel
     matr_sz: matrix size [x,y]
     """
-    pred_trj = np.swapaxes(pred_trj,0,1) # [dims, samples]
-    base_trj = np.swapaxes(base_trj,0,1)
+
+    pred_trj = pred_trj[:,:2]
+    base_trj = base_trj[:,:2]
 
     if (abs(shift[0]) < 1e-2) and (abs(shift[1]) < 1e-2):
         # nothing to do
         return sig
 
-    kmax_x = int(matr_sz[0]/2+0.5)
-    kmax_y = int(matr_sz[1]/2+0.5)
+    kmax = (matr_sz/2+0.5).astype(np.int32)[:2]
+    shift = shift[:2]
 
     # undo FOV shift from nominal traj
-    sig *= np.exp(1j*(shift[0]*np.pi*base_trj[0]/kmax_x+shift[1]*np.pi*base_trj[1]/kmax_y))[np.newaxis]
+    sig *= np.exp(1j*np.pi*(shift*base_trj/kmax).sum(axis=-1))
 
     # redo FOV shift with predicted traj
-    sig *= np.exp(-1j*(shift[0]*np.pi*pred_trj[0]/kmax_x+shift[1]*np.pi*pred_trj[1]/kmax_y))[np.newaxis]
+    sig *= np.exp(-1j*np.pi*(shift*pred_trj/kmax).sum(axis=-1))
 
     return sig
 
@@ -284,7 +285,7 @@ def filt_ksp(kspace, traj, filt_fac=0.95):
     return kspace * filt
     
 
-## Interpolation
+## Array manipulation
 
 def intp_axis(newgrid, oldgrid, data, axis=0):
     # interpolation along an axis (shape of newgrid, oldgrid and data see np.interp)
@@ -299,6 +300,12 @@ def intp_axis(newgrid, oldgrid, data, axis=0):
     intp_data = np.moveaxis(intp_data, 0, axis)
     return intp_data 
 
+def add_naxes(arr, n):
+    """ Adds n empty dimensions to the end of an array
+    """
+    for k in range(n):
+        arr = arr[...,np.newaxis]
+    return arr
 
 ## Old
 

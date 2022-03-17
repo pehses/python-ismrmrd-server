@@ -714,7 +714,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                                        ctypes.c_float(1)) # 2D
                                 image.position[2] += slc_res * (slc-(n_slc-1)/2) # correct image position
-                                logging.debug(f"Slice Pos: {image.position[2]}")
                                 images.append(image)
         else:
             # atm only ADC maps

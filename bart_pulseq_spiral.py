@@ -9,7 +9,7 @@ import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -114,11 +114,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
-    acqs = []
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    for n in range(prot.number_of_acquisitions()):
-        acqs.append(prot.read_acquisition(n))
-    prot.close()
+    acqs = read_acqs(prot_file)
 
     try:
         for item in connection:

@@ -8,7 +8,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
-from pulseq_prot import insert_hdr, insert_acq
+from pulseq_prot import insert_hdr, insert_acq, read_acqs
 
 """ Reconstruction of simulation data from Jemris
     and of scanner data acquired with JEMRIS sequences
@@ -83,11 +83,7 @@ def process(connection, config, metadata, prot_file=None):
     # read protocol acquisitions - faster than doing it one by one
     if prot_file is not None:
         logging.debug("Reading in protocol acquisitions.")
-        acqs = []
-        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-        for n in range(prot.number_of_acquisitions()):
-            acqs.append(prot.read_acquisition(n))
-        prot.close()
+        acqs = read_acqs(prot_file)
 
     try:
         for item in connection:

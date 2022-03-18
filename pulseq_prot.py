@@ -4,6 +4,7 @@ Includes trajectory prediction with the GIRF
 """
 
 import ismrmrd
+import h5py
 import numpy as np
 import os
 import logging
@@ -151,6 +152,19 @@ def check_signature(metadata, prot_hdr):
             logging.debug("Pulseq sequence has no signature.")
     except:
         logging.debug("Sequence signature not available.")
+
+def read_acqs(filename):
+    """ Reads all acquisitions of an ISMRMRD file and returns them as list.
+        This is faster than reading them one by one with file.read_acquisition().
+    """
+    file = h5py.File(filename, mode='r', driver='core')
+    acq_data = [item for item in file['dataset']['data']]
+    file.close()
+    acqs = [ismrmrd.Acquisition(acq['head']) for acq in acq_data]
+    for n in range(len(acqs)):
+        acqs[n].traj[:] = acq_data[n]['traj'].reshape((acqs[n].number_of_samples,acqs[n].trajectory_dimensions))[:]
+        acqs[n].data[:] = acq_data[n]['data'].view(np.complex64).reshape((acqs[n].active_channels, acqs[n].number_of_samples))[:]
+    return acqs
 
 def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
     """

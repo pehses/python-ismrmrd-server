@@ -65,7 +65,7 @@ filter_type = None
 # override defaults:
 # reduce_fov_x = True
 # zf_to_orig_sz = False
-# ncc = 32  # we have time...
+ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
@@ -272,6 +272,8 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
+    bart(0, 'version -V')
+    logging.info(f"bart version:\n{bart.stdout}")
     # # Check for GPU availability
     # global use_gpu
     # if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -517,6 +519,10 @@ def sort_into_kspace(group, metadata):  # used for acs scan
 def ecaltwo(nx, ny, sig):
     gpu_str = "-g" if use_gpu else ""
     maps = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
+    logging.info(bart.stdout)
+    if bart.ERR > 0:
+        logging.debug(bart.stderr)
+        raise RuntimeError
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
 
@@ -544,8 +550,11 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
     # ESPIRiT calibration
     if chunk_sz>0:
         # espirit_econ: reduce memory footprint by chunking
-        logging.debug(f"eon = bart(1, 'ecalib {gpu_str} -m {n_maps} -1', acs)")
         eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
+        logging.info(bart.stdout)
+        if bart.ERR > 0:
+            logging.debug(bart.stderr)
+            raise RuntimeError
 
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
@@ -574,8 +583,11 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
         logging.debug(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
     else:
-        logging.debug(f"sensmaps = bart(1, 'ecalib {gpu_str} -m {n_maps}', acs)")
         sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
+        logging.info(bart.stdout)
+        if bart.ERR > 0:
+            logging.debug(bart.stderr)
+            raise RuntimeError
 
     # np.save(os.path.join(debugFolder, "acs.npy"), acs)
     # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
@@ -590,36 +602,47 @@ def pics_chunk(pics_str, chunk):
 
     block = cfft(block, 0)
     block = bart(1, pics_str, block, sensmap)
+    logging.info(bart.stdout)
+    if bart.ERR > 0:
+        logging.debug(bart.stderr)
+        raise RuntimeError
     block = block[cut_slc]
     block = block[(slice(None),) * 3 + (block.ndim-3) * (0,)]  # select first 3 dims
     return abs(block)
 
 
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
-# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
-def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
+# def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
+
+    logging.info(f"Raw data is size {data.shape}")
 
     if threads is not None and threads > 1:
         chunk_sz = max(1, 128 // threads)
 
-    logging.debug(f"Raw data is size {data.shape}")
+    if chunk_sz == 0 or chunk_sz >= data.shape[0]:
+        threads = 1
+        process_in_chunks = False
+    else:
+        process_in_chunks = True
+        data = cifft(data, 0)
+
+    if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+        sensmaps = sensmaps.get()
 
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
     tic = perf_counter()
-    if chunk_sz==0 or chunk_sz>=data.shape[0]:
-        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
-            sensmaps = sensmaps.get()
-        logging.debug(f"data = bart(1, '{pics_str}', data, sensmaps)")
+    if not process_in_chunks:
         data = bart(1, pics_str, data, sensmaps)
+        logging.info(bart.stdout)
+        if bart.ERR > 0:
+            logging.debug(bart.stderr)
+            raise RuntimeError
         data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
-        threads = 1
     else:
-        data = cifft(data, 0)
         nx = data.shape[0]
-        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
-            sensmaps = sensmaps.get()
         if threads is not None and threads > 1:
             slcs = (slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz))
             cut_start = ((i if i<chunk_overlap else chunk_overlap) for i in range(0, nx, chunk_sz))
@@ -638,8 +661,11 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
                 ix0 = max(0, i-chunk_overlap)
                 sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
                 block = cfft(data[sl_ov], 0)
-                logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl_ov}])")
                 block = bart(1, pics_str, block, sensmaps[sl_ov])
+                logging.info(bart.stdout)
+                if bart.ERR > 0:
+                    logging.debug(bart.stderr)
+                    raise RuntimeError
                 block = block[slice(i-ix0, i-ix0+sl_len)]
 
                 # noch nicht ganz richtig, nx-1 kommt als groesse heraus:
@@ -656,9 +682,8 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
 
         data = np.concatenate(data_out, axis=0)
         del data_out
-        logging.debug(f"data.shape = {data.shape}")    
 
-    logging.debug(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
+    logging.info(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
 
 
     # zero-fill up to full fov in case partial recon. in x
@@ -679,7 +704,7 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
         data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
 
-    logging.debug("Image data is size %s" % (data.shape,))
+    logging.info("Image data is size %s" % (data.shape,))
     
     return process_image(data, rawHead, config, metadata)
 

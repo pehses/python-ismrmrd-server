@@ -118,6 +118,8 @@ def process(connection, config, metadata):
     # parameters for B0 correction
     dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value # [s]
     t_min = metadata.userParameters.userParameterDouble[3].value # [s]
+    spiral_delay = metadata.userParameters.userParameterDouble[1].value # [s]
+    t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
 
     logging.info("Config: \n%s", config)
 

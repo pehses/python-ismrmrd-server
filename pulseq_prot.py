@@ -281,7 +281,19 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
-    
+
+        # remove first ADCs as they can be corrupted
+        delay = metadata.userParameters.userParameterDouble[1].value
+        if delay > 0: # only do this if trajectory was sufficiently delayed
+            dwelltime = 1e-6 * metadata.userParameters.userParameterDouble[0].value
+            rm_ix = int(delay/dwelltime)
+            data_tmp = dset_acq.data[:,rm_ix:]
+            traj_tmp = dset_acq.traj[rm_ix:]
+            dset_acq.resize(trajectory_dimensions=dset_acq.trajectory_dimensions, number_of_samples=dset_acq.number_of_samples-rm_ix, active_channels=dset_acq.active_channels)
+            dset_acq.data[:] = data_tmp
+            dset_acq.traj[:] = traj_tmp
+            base_trj = base_trj[rm_ix:]
+
     if return_basetrj:
         return base_trj
  

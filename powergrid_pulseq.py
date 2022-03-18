@@ -52,8 +52,10 @@ def process(connection, config, metadata):
     if len(metadata.userParameters.userParameterLong) > 0:
         online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
         if online_slc >= 0:
+            logging.debug(f"Dataset is processed online. Only slice {online_slc} is reconstructed.")
             process_raw.slc_sel = int(online_slc)
         else:
+            logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
             process_raw.first_contrast = True # reconstruct only first contrast, if complete volume is processed online
 
     # Coil Compression: Compress number of coils by n_compr coils
@@ -516,7 +518,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap, 20) # more than 20 would take too long
+    ts = min(ts_time, ts_fmap) # more than 20 would take too long
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -539,7 +541,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # MPI and hyperthreading
     mpi = True
-    hyperthreading = True
+    hyperthreading = False
     if hyperthreading:
         cores = psutil.cpu_count(logical = True) # number of logical cores
         mpi_cmd = 'mpirun --use-hwthread-cpus'
@@ -657,10 +659,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
-        if k<2:
-            dsets[k] *= int_max / imascale # T2 and diff images
+        if dsets[k].ndim>4:
+            dsets[k] *= int_max / imascale # images from PowerGrid (T2 and diff images)
         else:
-            dsets[k] *= int_max / dsets[k].max() # ADC maps
+            dsets[k] *= int_max / dsets[k].max() # other images (ADC maps, Refimage)
         dsets[k] = np.around(dsets[k])
         dsets[k] = dsets[k].astype(np.uint16)
 

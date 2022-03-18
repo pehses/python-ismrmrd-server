@@ -13,7 +13,7 @@ import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os # , fov_shift, calc_rotmat, pcs_to_gcs
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from DreamMap import global_filter, calc_fa
 
 from skimage import filters
@@ -83,11 +83,7 @@ def process_cartesian_dream(connection, config, metadata, prot_file):
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
-    acqs = []
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    for n in range(prot.number_of_acquisitions()):
-        acqs.append(prot.read_acquisition(n))
-    prot.close()
+    acqs = read_acqs(prot_file)
 
     try:
         for item in connection:

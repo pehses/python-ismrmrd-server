@@ -52,8 +52,10 @@ def process(connection, config, metadata):
     if len(metadata.userParameters.userParameterLong) > 0:
         online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
         if online_slc >= 0:
+            logging.debug(f"Dataset is processed online. Only slice {online_slc} is reconstructed.")
             process_raw.slc_sel = int(online_slc)
         else:
+            logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
             process_raw.first_contrast = True # reconstruct only first contrast, if complete volume is processed online
 
     # Coil Compression: Compress number of coils by n_compr coils
@@ -516,7 +518,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap, 20) # more than 20 would take too long
+    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -535,16 +537,19 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
  
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
-    logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
+    if sms_factor > 1:
+        logging.debug(f'Readout is {1e3*readout_dur} ms. Use DFT for reconstruction as SMS was used.')
+    else:
+        logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # MPI and hyperthreading
     mpi = True
-    hyperthreading = True
+    hyperthreading = False # seems to slow down recon in some cases
     if hyperthreading:
-        cores = psutil.cpu_count(logical = True) # number of logical cores
+        cores = psutil.cpu_count(logical = True)
         mpi_cmd = 'mpirun --use-hwthread-cpus'
     else:
-        cores = psutil.cpu_count(logical = False) # number of phyiscal cores
+        cores = psutil.cpu_count(logical = False)
         mpi_cmd = 'mpirun'
 
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
@@ -573,10 +578,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             else:
                 subproc = 'PowerGridPcSense ' + pg_opts
         else: # nufft with time segmentation
+            pg_opts += f' -I {temp_intp} -t {ts}'
             if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts + f' -I {temp_intp} -t {ts}'
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
             else:
-                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts + f' -I {temp_intp} -t {ts}'
+                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
     else: # Singleshot
         pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
         if sms_factor > 1:
@@ -629,21 +635,27 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
     n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
     if n_bval > 0 and "b_values" in prot_arrays and not process_raw.first_contrast:
+        # Reshape Arrays and append
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        b0 = np.expand_dims(np.abs(data[:,:n_b0].mean(1)), 1) # averages over b=0 repetitions
-        diffw_imgs = np.abs(data[:,n_b0:]).reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        b0 = data[:,:n_b0]
+        b0_save = b0.copy().reshape([-1, 1]+[s for s in b0.shape[2:]]) # merge repetitions of b0 scans in first dimension
+        diffw_imgs = data[:,n_b0:].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+        dsets.append(b0_save)
+        dsets.append(diffw_imgs.copy())
+
+        # Calculate ADC maps
         scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
         b0 *= scale
         diffw_imgs *= scale
-        dsets.append(b0.copy())
-        dsets.append(diffw_imgs.copy())
         mask = fmap_mask.copy()
+        b0 = np.expand_dims(b0.mean(1), 1) # averages over b=0 repetitions
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
     else:
         dsets.append(data)
+        n_b0 = 0
 
     # Append reference image
     if process_raw.slc_sel is not None:
@@ -657,10 +669,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
-        if k<2:
-            dsets[k] *= int_max / imascale # T2 and diff images
+        if dsets[k].ndim>4:
+            dsets[k] *= int_max / imascale # images from PowerGrid (T2 and diff images)
         else:
-            dsets[k] *= int_max / dsets[k].max() # ADC maps
+            dsets[k] *= int_max / dsets[k].max() # other images (ADC maps, Refimage)
         dsets[k] = np.around(dsets[k])
         dsets[k] = dsets[k].astype(np.uint16)
 
@@ -670,10 +682,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         'WindowCenter':           str((int_max+1)//2),
                         'WindowWidth':            str(int_max+1),
                         'Keep_image_geometry':    '1',
-                        'PG_Options':              pg_opts,
+                        'PG_Options':              subproc,
                         'Field Map':               fmap_name})
-
-    xmlMeta = meta.serialize()
 
     series_ix = 0
     img_ix = 0
@@ -706,10 +716,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.phase = phs
                                 image.contrast = contr
                                 if 'b_values' in prot_arrays:
-                                    image.user_int[0] = int(prot_arrays['b_values'][contr+data_ix])
-                                if 'Directions' in prot_arrays and data_ix==1:
+                                    image.user_int[0] = 0 if data_ix==0 else int(prot_arrays['b_values'][n_b0-1+data_ix])
+                                if 'Directions' in prot_arrays and data_ix>0:
                                     image.user_float[:3] = prot_arrays['Directions'][phs]
-                                image.attribute_string = xmlMeta
+                                image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                                        ctypes.c_float(1)) # 2D
@@ -719,18 +729,19 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             # atm only ADC maps
             series_ix += 1
             for ix, img in enumerate(data):
-                image = ismrmrd.Image.from_array(img[0])
-                image.image_index = ix
+                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][0][0].getHead()))
+                image.image_index = ix + 1
                 image.image_series_index = series_ix
-                image.slice = ix
-                image.attribute_string = xmlMeta
+                image.slice = ix + 1
+                image.attribute_string = meta.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                        ctypes.c_float(1))                        
                 image.position[2] += slc_res * (ix-(n_slc-1)/2)
                 images.append(image)
 
-    logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(xmlMeta).toprettyxml())
+    logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(meta.serialize()).toprettyxml())
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
     return images

@@ -17,7 +17,7 @@ from cfft import cfftn, cifftn
 import mrdhelper
 
 from scipy.ndimage import  median_filter, gaussian_filter
-from scipy.ndimage.morphology import binary_fill_holes
+from scipy.ndimage.morphology import binary_fill_holes, binary_dilation
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
@@ -829,6 +829,7 @@ def calc_fmap(imgs, te_diff, metadata):
         mask = binary_fill_holes(mask[...,0])[...,np.newaxis]
     else:
         mask = binary_fill_holes(mask)
+    mask = binary_dilation(mask, iterations=2) # some extrapolation
 
     # apply masking and some regularization
     fmap *= mask

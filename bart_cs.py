@@ -538,17 +538,17 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
     nx, ny, nz, nc = acs.shape
 
     if chunk_sz is None:
-        def next_powerof2(x):
-            return 1 << (x.bit_length()-1)
         # this should usually work
-        chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc*n_maps) + 0.5))
+        gpu_mem = 48 * 1024**3  # bytes
+        chunk_sz = gpu_mem / (8*nx*ny*nc*nc*n_maps)
         if threads is not None and threads>1:
-            #chunk_sz = max(1, chunk_sz//threads)
-            chunk_sz = max(1, chunk_sz//(2*threads))  # just to be on the safe side
-        chunk_sz = 1  # seems to be buggy otherwise
+            chunk_sz /= threads
+        chunk_sz /= 2  # reserve some memory for overhead
+        chunk_sz = 2 * (chunk_sz//2)  # round down to multiple of 2
+        chunk_sz = int(max(1, chunk_sz))
 
     # ESPIRiT calibration
-    if chunk_sz>0:
+    if chunk_sz>0 and chunk_sz<nz:
         # espirit_econ: reduce memory footprint by chunking
         eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
         logging.info(bart.stdout)
@@ -602,17 +602,15 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 def pics_chunk(pics_str, chunk):
     block = chunk[0]
     sensmap = chunk[1]
-    cut_slc = chunk[2]
+    cut = chunk[2]
 
     block = cfft(block, 0)
-    block = bart(1, pics_str, block, sensmap)
-    logging.info(bart.stdout)
+    block = abs(bart(1, pics_str, block, sensmap))
+    logging.debug(bart.stdout)
     if bart.ERR > 0:
         logging.debug(bart.stderr)
         raise RuntimeError
-    block = block[cut_slc]
-    block = block[(slice(None),) * 3 + (block.ndim-3) * (0,)]  # select first 3 dims
-    return abs(block)
+    return block[cut]
 
 
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
@@ -631,61 +629,36 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         process_in_chunks = True
         data = cifft(data, 0)
 
-    if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
-        sensmaps = sensmaps.get()
-
     gpu_str = "-g" if use_gpu else ""
     pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
+    if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+        sensmaps = sensmaps.get()
+
     tic = perf_counter()
     if not process_in_chunks:
-        data = bart(1, pics_str, data, sensmaps)
+        data = abs(bart(1, pics_str, data, sensmaps))
         logging.info(bart.stdout)
         if bart.ERR > 0:
             logging.debug(bart.stderr)
             raise RuntimeError
-        data = abs(data[(slice(None),) * 3 + (data.ndim-3) * (0,)])  # select first 3 dims
     else:
         nx = data.shape[0]
+        cut_start = [(i if i<chunk_overlap else chunk_overlap) for i in range(0, nx, chunk_sz)]
+        cut_stop = [(a + chunk_sz if i+chunk_sz < nx else None) for a, i in zip(cut_start, range(0, nx, chunk_sz))]
+        cuts = [slice(a, b) for a, b in zip(cut_start, cut_stop)]
+        slcs = [slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz)]
+        blocks = (data[sl] for sl in slcs)
+        sensblocks = (sensmaps[sl] for sl in slcs)
+        
         if threads is not None and threads > 1:
-            slcs = (slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz))
-            cut_start = ((i if i<chunk_overlap else chunk_overlap) for i in range(0, nx, chunk_sz))
-            cut_stop = ((a + chunk_sz if i+chunk_sz < nx else -1) for a, i in zip(cut_start, range(0, nx, chunk_sz)))
-            cut_slcs = (slice(a, b) for a, b in zip(cut_start, cut_stop))
-            blocks = (data[sl] for sl in slcs)
-            sensblocks = (sensmaps[sl] for sl in slcs)
-
             with Pool(threads) as p:
-                data_out = p.map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cut_slcs))
+                data = p.map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts))
         else:
-            data_out = []
-            for i in range(0, nx, chunk_sz):
-                sl = slice(i, i+chunk_sz)
-                sl_len = len(range(*sl.indices(nx)))
-                ix0 = max(0, i-chunk_overlap)
-                sl_ov = slice(ix0, i+chunk_sz+chunk_overlap)
-                block = cfft(data[sl_ov], 0)
-                block = bart(1, pics_str, block, sensmaps[sl_ov])
-                logging.info(bart.stdout)
-                if bart.ERR > 0:
-                    logging.debug(bart.stderr)
-                    raise RuntimeError
-                block = block[slice(i-ix0, i-ix0+sl_len)]
-
-                # noch nicht ganz richtig, nx-1 kommt als groesse heraus:
-                # sl = slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap)
-                # block = cfft(data[sl], 0)
-                # cut_start = i if i<chunk_overlap else chunk_overlap
-                # cut_stop = cut_start + chunk_sz if i+chunk_sz < nx else -1
-                # logging.debug(f"data = bart(1, '{pics_str}', block, sensmaps[{sl}])")
-                # block = bart(1, pics_str, block, sensmaps[sl])
-                # block = block[slice(cut_start, cut_stop)]
-
-                block = block[(slice(None),) * 3 + (block.ndim-3) * (0,)]  # select first 3 dims
-                data_out.append(abs(block))
-
-        data = np.concatenate(data_out, axis=0)
-        del data_out
+            data = list(map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts)))
+        
+    data = np.concatenate(data, axis=0)
+    data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
 
     logging.info(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
 

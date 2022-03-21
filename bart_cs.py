@@ -3,7 +3,8 @@ import os
 import sys
 import itertools
 import logging
-from cfft import cfft, cifft, fft  # before numpy import to avoid MKL bug!
+# from cfft import cfft, cifft, fft, ifft
+from cfft_mkl import cfft, cifft, fft, ifft
 import numpy as np
 import tempfile
 import ctypes
@@ -49,7 +50,7 @@ tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper; benchmark 1: 131.
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
-use_multiprocessing = False  # not implemented yet (bart & numpy use multiprocessing anyway)
+use_multiprocessing = False  # multiprocessing is always used; this only activates/deactivates additional threading
 
 # sane defaults:
 use_gpu = True
@@ -221,7 +222,7 @@ def apply_filter(item, kcenter_seg=73):
 
     def bidecay(t, tau1, tau2, amp1, amp2):
         return amp1 * np.exp(-t/tau1) + amp2 * np.exp(-t/tau2)
-    
+
     # these were determind from refvolt=220V data (not quite right)
     tau = [100.07897875, 8.54900408]  # unit: 'refocussing pulses'
     amp = [2.14106668, 4.3746221]
@@ -330,7 +331,6 @@ def process(connection, config, metadata):
                 # elif item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE):  # not in python-ismrmrd yet (todo)
                 elif item.is_flag_set(30):
                     continue
-                    
 
                 if item.is_flag_set(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA):
                    item.data[:,:] = item.data[:,:] * corr_factors
@@ -528,8 +528,6 @@ def ecaltwo(nx, ny, sig):
 
 def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
-    chunk_sz = 1
-
     if len(group)==0:
         # nothing to do
         return None
@@ -538,14 +536,16 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
     acs = sort_into_kspace(group, metadata)
     nx, ny, nz, nc = acs.shape
-    
+
     if chunk_sz is None:
         def next_powerof2(x):
             return 1 << (x.bit_length()-1)
         # this should usually work
         chunk_sz = next_powerof2(int(24*(500*500*384*32) / (nx*ny*nz*nc*n_maps) + 0.5))
         if threads is not None and threads>1:
-            chunk_sz = max(1, chunk_sz//threads)
+            #chunk_sz = max(1, chunk_sz//threads)
+            chunk_sz = max(1, chunk_sz//(2*threads))  # just to be on the safe side
+        chunk_sz = 1  # seems to be buggy otherwise
 
     # ESPIRiT calibration
     if chunk_sz>0:
@@ -558,11 +558,15 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
-        eon = fft.ifft(eon, axis=2, norm='forward')
+        tic = perf_counter()
+        eon = ifft(eon, axis=2, norm='forward')
         tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
         cutpos = eon.shape[2]//2
         eon = np.concatenate((eon[:,:,:cutpos,:], tmp, eon[:,:,cutpos:,:]), axis=2)
-        eon = fft.fft(eon, axis=2, norm='backward')
+        eon = fft(eon, axis=2, norm='backward')
+        toc = perf_counter()
+        strProcessTime = "FFT interpolation processing time: %.2f s" % (toc-tic)
+        logging.info(strProcessTime)
 
         tic = perf_counter()
 
@@ -571,7 +575,7 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
         slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
         chunks = (eon[:,:,sl] for sl in slcs)
-        
+
         if threads is None or threads < 2:
             sensmaps = [ecaltwo(nx, ny, sig) for sig in chunks]
         else:
@@ -705,7 +709,7 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
 
     logging.info("Image data is size %s" % (data.shape,))
-    
+
     return process_image(data, rawHead, config, metadata)
 
 
@@ -758,7 +762,7 @@ def process_image(data, rawHead, config, metadata):
     # Flip matrix in RO/PE/3D to be consistent with ICE
     data = np.flip(data, (0, 1, 2))
 
-    # Format as ISMRMRD image data    
+    # Format as ISMRMRD image data
     image = ismrmrd.Image.from_array(data)
     image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
     image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)

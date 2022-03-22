@@ -16,8 +16,7 @@ import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
 
-from scipy.ndimage import  median_filter, gaussian_filter
-from scipy.ndimage.morphology import binary_fill_holes, binary_dilation
+from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
@@ -381,7 +380,7 @@ def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_ar
     # Start data processing
     logging.info("Processing a group of k-space data")
     images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
-    logging.debug("Sending images to client:\n%s", images)
+    logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
@@ -429,9 +428,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     if process_acs.fmap is not None:
         fmap = process_acs.fmap
         if process_raw.slc_sel is not None:
-            fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1)
+            fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1.5)
         else:
-            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1) # 3D filtering, list will be converted to ndarray
+            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1.5) # 3D filtering, list will be converted to ndarray
     else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
         if not os.path.exists(fmap_path):

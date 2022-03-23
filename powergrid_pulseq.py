@@ -146,7 +146,7 @@ def process(connection, config, metadata):
     logging.info(f"Reference Voltage: {ref_volt}")
 
     # Initialize lists for datasets
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # effective slices acquired (slices/sms_factor)
     n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
@@ -284,11 +284,6 @@ def process(connection, config, metadata):
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
-
-                        # variables for reapplying FOV shift (see below)
-                        pred_trj = item.traj[:]
-                        rotmat = rh.calc_rotmat(item)
-                        shift = rh.pcs_to_gcs(np.asarray(item.position), rotmat) / res
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -304,11 +299,14 @@ def process(connection, config, metadata):
                             last_item.data[:] = rh.apply_prewhitening(last_item.data[:], dmtx)
 
                         # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
-                        if process_acs.cc_mat[item.idx.slice] is not None:
-                            rh.apply_cc(last_item, process_acs.cc_mat[item.idx.slice])
+                        if process_acs.cc_mat[last_item.idx.slice] is not None:
+                            rh.apply_cc(last_item, process_acs.cc_mat[last_item.idx.slice])
 
                         # Reapply FOV Shift with predicted trajectory
-                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
+                        rotmat = rh.calc_rotmat(item)
+                        shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
+                        shift_px = shift / res # shift in pixel
+                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], last_item.traj[:], base_trj, shift_px, matr_sz)
 
                         # filter signal to avoid Gibbs Ringing
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
@@ -690,6 +688,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -702,12 +701,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                             for nz in range(data.shape[4]):
                                 if process_raw.slc_sel is None:
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
-                                    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][contr][0].getHead()))
                                     meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
                                     meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 else:
                                     image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[process_raw.slc_sel][contr][0])
-                                    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[process_raw.slc_sel][contr][0].getHead()))
                                     meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
                                     meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
                                 image.image_index = img_ix
@@ -724,22 +721,23 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                                        ctypes.c_float(1)) # 2D
-                                image.position[2] += slc_res * (slc-(n_slc-1)/2) # correct image position
+                                offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
+                                image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
             # atm only ADC maps
             series_ix += 1
-            for ix, img in enumerate(data):
+            for slc, img in enumerate(data):
                 image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
-                image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), acqGroup[0][0][0].getHead()))
-                image.image_index = ix + 1
+                image.image_index = slc + 1
                 image.image_series_index = series_ix
-                image.slice = ix + 1
+                image.slice = slc + 1
                 image.attribute_string = meta.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                       ctypes.c_float(1))                        
-                image.position[2] += slc_res * (ix-(n_slc-1)/2)
+                                       ctypes.c_float(1))
+                offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]    
+                image.position[:] += rh.gcs_to_pcs(offset, rotmat)
                 images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(meta.serialize()).toprettyxml())

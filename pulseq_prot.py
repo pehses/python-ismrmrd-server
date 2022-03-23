@@ -258,7 +258,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
         dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
-        # trajectory already inserted in data - e.g. from Skope system
+        # trajectory already inserted from Skope system
+        # kz should be set to zero, if trajectory is 2-dimensional
         if traj_tmp.size > 0:
             dset_acq.traj[:,:3] = traj_tmp[:,:3]
             rotmat = calc_rotmat(dset_acq)

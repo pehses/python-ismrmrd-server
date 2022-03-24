@@ -721,7 +721,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                                        ctypes.c_float(1)) # 2D
-                                offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
+                                offset = [0, 0, -1*slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
                                 image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
@@ -736,7 +736,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                        ctypes.c_float(1))
-                offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]    
+                offset = [0, 0, -1*slc_res*(slc-(n_slc-1)/2)]    
                 image.position[:] += rh.gcs_to_pcs(offset, rotmat)
                 images.append(image)
 

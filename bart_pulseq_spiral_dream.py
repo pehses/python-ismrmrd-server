@@ -383,7 +383,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     
     # Format as ISMRMRD image data - send as 3D data
     image = ismrmrd.Image.from_array(np.moveaxis(data,-1,0), acquisition=group[0])
-    image.image_index = 1
+    image.image_index = group[0].idx.contrast
     image.image_series_index = 1
     image.slice = 0
     image.attribute_string = xml

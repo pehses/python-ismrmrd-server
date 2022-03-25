@@ -453,7 +453,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
-        kz = enc2 - nz//2
         enc.append([enc1, enc2])
         
         # append data after optional prewhitening

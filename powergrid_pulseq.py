@@ -714,7 +714,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.phase = phs
                                 image.contrast = contr
                                 if 'b_values' in prot_arrays:
-                                    image.user_int[0] = 0 if data_ix==0 else int(prot_arrays['b_values'][n_b0-1+data_ix])
+                                    image.user_int[0] = 0 if data_ix==0 else int(prot_arrays['b_values'][n_b0+contr])
                                 if 'Directions' in prot_arrays and data_ix>0:
                                     image.user_float[:3] = prot_arrays['Directions'][phs]
                                 image.attribute_string = meta.serialize()

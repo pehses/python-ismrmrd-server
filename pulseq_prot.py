@@ -105,7 +105,7 @@ def insert_hdr(prot_file, metadata):
     # acceleration
     if prot_e1.parallelImaging is not None:
         dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
-        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # also used for SMS factor
 
     prot.close()
 
@@ -373,7 +373,8 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     # set z-axis for 3D imaging if trajectory is two-dimensional 
     # this only works for Cartesian sampling in kz (works also with CAIPI)
     if dims == 2:
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z
+        Rz = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2 if hdr.encoding[0].parallelImaging is not None else 1
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z // Rz
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
         pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        

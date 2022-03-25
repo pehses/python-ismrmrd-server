@@ -381,7 +381,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     images = []
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data - send as 3D data
+    # Format as ISMRMRD image data - send as 3D data (WIP: orientation not correct at scanner)
     image = ismrmrd.Image.from_array(np.moveaxis(data,-1,0), acquisition=group[0])
     image.image_index = group[0].idx.contrast
     image.image_series_index = 1
@@ -446,11 +446,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 
 def sort_spiral_data(group, metadata, dmtx=None):
     
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-    rot_mat = calc_rotmat(group[0])
-
     sig = list()
     trj = list()
     enc = list()   

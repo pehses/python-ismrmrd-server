@@ -62,6 +62,7 @@ ncc = 16      # number of compressed coils
 n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
+nii_filename = 'img.nii.gz'
 
 # override defaults:
 # reduce_fov_x = True
@@ -76,16 +77,22 @@ use_multiprocessing = True
 def export_nifti(data, metadata, filename):
     import nibabel as nib
 
-    rotmat = np.zeros((4,4))
-    rotmat[0,2] = 1
-    rotmat[1,1] = 1
-    rotmat[2,0] = -1
-    rotmat[3,3] = 1
+    if os.path.exists(filename):
+        # append to existing file
+        nii = nib.load(filename)
+        nii = nib.Nifti1Image(np.concatenate((nii.get_fdata(), data[..., np.newaxis]), axis=-1), nii.affine)
+    else:
+        affine = np.zeros((4,4))
+        affine[0,2] = 1
+        affine[1,1] = 1
+        affine[2,0] = -1
+        affine[3,3] = 1
+        nii = nib.Nifti1Image(data[..., np.newaxis], affine)
 
-    nii = nib.Nifti1Image(data, rotmat)
     nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
     nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
     nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
+    
     nib.save(nii, filename)
 
 
@@ -272,6 +279,9 @@ def process(connection, config, metadata):
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
+
+    if nii_filename is not None and os.path.exists(os.path.join(debugFolder, nii_filename)):
+        os.remove(os.path.join(debugFolder, nii_filename))
 
     bart(0, 'version -V')
     logging.info(f"bart version:\n{bart.stdout}")
@@ -717,7 +727,7 @@ def process_image(data, rawHead, config, metadata):
 
     data *= process_image.imascale
 
-    export_nifti(data, metadata, os.path.join(debugFolder, 'img.nii.gz'))
+    export_nifti(data, metadata, os.path.join(debugFolder, nii_filename))
 
     # convert to int
     data = np.minimum(int_max, np.floor(data))

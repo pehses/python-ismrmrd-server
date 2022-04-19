@@ -95,17 +95,14 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
         dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
         dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
-    else:
-        # compatibility with older datasets, where the segment encoding limit parameter was not used
-        try:
-            dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
-        except:
-            pass
+    elif len(prot_hdr.userParameters.userParameterDouble) > 3:
+        # compatibility with older datasets, where a user parameter was used
+        dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
 
     # acceleration
     if prot_e1.parallelImaging is not None:
         dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
-        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # also used for SMS factor
 
     prot.close()
 
@@ -147,7 +144,7 @@ def check_signature(metadata, prot_hdr):
             try:
                 prot_signature = prot_hdr.userParameters.userParameterString[0].value
                 if prot_signature in hdr_signature:
-                    logging.debug(f"Signature check passed with signature {prot_signature}.")
+                    logging.debug(f"Signature check passed with signature {hdr_signature}.")
                 else:
                     logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
             except:
@@ -174,9 +171,9 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
-        prot_file:    ISMRMRD protocol file
+        prot_acq:     ISMRMRD protocol acquisition
         dset_acq:     Dataset acquisition
-        acq_ctr:      ISMRMRD acquisition number
+        metadata:     ISMRMRD header
         noncartesian: For noncartesian acquisitions a trajectory or readout gradients has to be provided
                       If readout gradients are provided, the GIRF is applied, but additional parameters have to be provided.
                       The unit for gradients is [T/m]
@@ -238,11 +235,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
 
         # calculate full number of samples - for segmented ADCs
         nsamples = dset_acq.number_of_samples
-        try:
-            # user parameter is kept for compatibility (see insert_hdr)
-            nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-        except:
-            nsegments = metadata.userParameters.userParameterDouble[2].value
+        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
         nsamples_full = int(nsamples*nsegments+0.5)
         if dset_acq.traj[:].size > 0:
             nsamples_full = dset_acq.traj.shape[0] # samples should already be reshaped if trajectory was added to the rawdata
@@ -258,7 +251,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
         dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
-        # trajectory already inserted in data - e.g. from Skope system
+        # trajectory already inserted from Skope system
+        # kz should be set to zero, if trajectory is 2-dimensional
         if traj_tmp.size > 0:
             dset_acq.traj[:,:3] = traj_tmp[:,:3]
             rotmat = calc_rotmat(dset_acq)
@@ -281,7 +275,19 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
-    
+
+        # remove first ADCs as they can be corrupted
+        delay = metadata.userParameters.userParameterDouble[1].value
+        if delay > 0: # only do this if trajectory was sufficiently delayed
+            dwelltime = 1e-6 * metadata.userParameters.userParameterDouble[0].value
+            rm_ix = int(delay/dwelltime)
+            data_tmp = dset_acq.data[:,rm_ix:]
+            traj_tmp = dset_acq.traj[rm_ix:]
+            dset_acq.resize(trajectory_dimensions=dset_acq.trajectory_dimensions, number_of_samples=dset_acq.number_of_samples-rm_ix, active_channels=dset_acq.active_channels)
+            dset_acq.data[:] = data_tmp
+            dset_acq.traj[:] = traj_tmp
+            base_trj = base_trj[rm_ix:]
+
     if return_basetrj:
         return base_trj
  
@@ -360,7 +366,8 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     # set z-axis for 3D imaging if trajectory is two-dimensional 
     # this only works for Cartesian sampling in kz (works also with CAIPI)
     if dims == 2:
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z
+        Rz = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2 if hdr.encoding[0].parallelImaging is not None else 1
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z // Rz
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
         pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        

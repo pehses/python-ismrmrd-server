@@ -9,7 +9,7 @@ import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 

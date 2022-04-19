@@ -29,8 +29,7 @@ RUN  cd /opt/code \
 
 # install spiraltraj for trajectory calculation
 RUN  cd /opt/code \
-     && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
-     && mv spiral-pypulseq-example/spiraltraj . \
+     && git clone https://github.com/mrphysics-bonn/spiraltraj.git \
      && cd spiraltraj \
      && pip3 wheel .
      

@@ -58,16 +58,15 @@ class Server:
                 logging.info("Connection closed without any data received")
                 return
 
-            # Second messages is the metadata (text)
-            metadata_xml = next(connection)
-            # logging.debug("XML Metadata: %s", metadata_xml)
+            # Second messages is the header (text)
+            hdr_xml = next(connection)
             try:
-                metadata = ismrmrd.xsd.CreateFromDocument(metadata_xml)
-                if (metadata.acquisitionSystemInformation.systemFieldStrength_T != None):
-                    logging.info("Data is from a %s %s at %1.1fT", metadata.acquisitionSystemInformation.systemVendor, metadata.acquisitionSystemInformation.systemModel, metadata.acquisitionSystemInformation.systemFieldStrength_T)
+                hdr = ismrmrd.xsd.CreateFromDocument(hdr_xml)
+                if (hdr.acquisitionSystemInformation.systemFieldStrength_T != None):
+                    logging.info("Data is from a %s %s at %1.1fT", hdr.acquisitionSystemInformation.systemVendor, hdr.acquisitionSystemInformation.systemModel, hdr.acquisitionSystemInformation.systemFieldStrength_T)
             except:
-                logging.warning("Metadata is not a valid MRD XML structure.  Passing on metadata as text")
-                metadata = metadata_xml
+                logging.warning("Header is not a valid MRD XML structure.  Passing on header as text")
+                hdr = hdr_xml
 
             # Decide what program to use based on config
             # If not one of these explicit cases, try to load file matching name of config
@@ -75,12 +74,12 @@ class Server:
                 import bart_jemris
                 importlib.reload(bart_jemris)
                 logging.info("Starting bart_jemris processing based on config")
-                bart_jemris.process(connection, config, metadata)
+                bart_jemris.process(connection, config, hdr)
             elif (config == "bart_pulseq"):
                 import bart_pulseq
                 importlib.reload(bart_pulseq)
                 logging.info("Starting bart_pulseq processing based on config")
-                bart_pulseq.process(connection, config, metadata)
+                bart_pulseq.process(connection, config, hdr)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:
@@ -102,10 +101,10 @@ class Server:
                     # Load module from file having exact name as config
                     module = importlib.import_module(config)
                     logging.info("Starting config %s", config)
-                    module.process(connection, config, metadata)
+                    module.process(connection, config, hdr)
                 except ImportError:
-                    logging.info("Unknown config '%s'.  Falling back to 'invertcontrast'", config)
-                    invertcontrast.process(connection, config, metadata)
+                    logging.info("Unknown config '%s'.  Falling back to 'bart_pulseq'", config)
+                    bart_pulseq.process(connection, config, hdr)
 
         except Exception as e:
             logging.exception(e)

@@ -8,7 +8,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
-from pulseq_prot import insert_hdr, insert_acq, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, read_acqs
 
 """ Reconstruction of simulation data from Jemris
     and of scanner data acquired with JEMRIS sequences
@@ -25,7 +25,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process(connection, config, metadata, prot_file=None):
+def process(connection, config, hdr, meta_file=None):
   
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
@@ -35,9 +35,9 @@ def process(connection, config, metadata, prot_file=None):
     logging.info("Config: \n%s", config)
   
     # Check if Pulseq or simulated data
-    if prot_file is not None:
+    if meta_file is not None:
         logging.debug("Reconstruction of scanner data.")
-        insert_hdr(prot_file, metadata)
+        insert_hdr(meta_file, hdr)
         simu = False
     else:
         logging.debug("Reconstruction of simulated data.")
@@ -49,41 +49,38 @@ def process(connection, config, metadata, prot_file=None):
     else:
         gpu = False
 
-    # Metadata should be MRD formatted header, but may be a string
-    # if it failed conversion earlier
     try:
-        logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
+        logging.info("Incoming dataset contains %d encodings", len(hdr.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory.value, 
-            metadata.encoding[0].encodedSpace.matrixSize.x, 
-            metadata.encoding[0].encodedSpace.matrixSize.y, 
-            metadata.encoding[0].encodedSpace.matrixSize.z, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.x, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.y, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.z)
+            hdr.encoding[0].trajectory.value, 
+            hdr.encoding[0].encodedSpace.matrixSize.x, 
+            hdr.encoding[0].encodedSpace.matrixSize.y, 
+            hdr.encoding[0].encodedSpace.matrixSize.z, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.x, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.y, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.z)
 
     except:
-        logging.info("Improperly formatted metadata: \n%s", metadata)
+        logging.info("Improperly formatted header: \n%s", hdr)
 
     # # Initialize lists for datasets
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
-    n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
+    n_slc = hdr.encoding[0].encodingLimits.slice.maximum + 1
+    n_contr = hdr.encoding[0].encodingLimits.contrast.maximum + 1
+    n_sets = hdr.encoding[0].encodingLimits.set.maximum + 1
+    n_avgs = hdr.encoding[0].encodingLimits.average.maximum + 1
 
     acqGroup = [[[[[] for _ in range(n_slc)] for _ in range(n_contr)] for _ in range(n_sets)] for _ in range(n_avgs)]
     noiseGroup = []
-    waveformGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_jemris = []
     dmtx = None
 
-    # read protocol acquisitions - faster than doing it one by one
-    if prot_file is not None:
-        logging.debug("Reading in protocol acquisitions.")
-        acqs = read_acqs(prot_file)
+    # read metadata acquisitions - faster than doing it one by one
+    if meta_file is not None:
+        logging.debug("Reading in metadata acquisitions.")
+        acqs = read_acqs(meta_file)
 
     try:
         for item in connection:
@@ -93,9 +90,9 @@ def process(connection, config, metadata, prot_file=None):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                # Insert acquisition protocol, if Pulseq data
-                if prot_file is not None:
-                    insert_acq(acqs[0], item, metadata, return_basetrj=False)
+                # Insert metadata of acquisitions, if Pulseq data
+                if meta_file is not None:
+                    insert_acq(acqs[0], item, hdr, return_basetrj=False)
                     acqs.pop(0)
 
                 # Jemris sensitivity maps - only if simulated data (ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is set in scanner data for some reason)
@@ -104,7 +101,7 @@ def process(connection, config, metadata, prot_file=None):
                     if np.sum(sensmap_coil.shape) == 3: # simulated without coil array
                         continue
                     sens_fov = item.user_int[0]
-                    sensmap_coil = intp_sensmaps(sensmap_coil, sens_fov, metadata)
+                    sensmap_coil = intp_sensmaps(sensmap_coil, sens_fov, hdr)
                     sensmaps_jemris.append(sensmap_coil)
                     continue
 
@@ -140,7 +137,7 @@ def process(connection, config, metadata, prot_file=None):
                     else:
                         continue
                 elif sensmaps[item.idx.slice] is None:
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], hdr, dmtx, gpu)
                     acsGroup[item.idx.slice].clear()
 
                 # Accumulate all imaging readouts in a group
@@ -151,7 +148,7 @@ def process(connection, config, metadata, prot_file=None):
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
                     group = acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice]
-                    images = process_raw(group, metadata, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu, simu)
+                    images = process_raw(group, hdr, dmtx, sensmaps[item.idx.slice], sensmaps_jemris, gpu, simu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.average][item.idx.set][item.idx.contrast][item.idx.slice].clear() # free memory
@@ -164,14 +161,14 @@ def process(connection, config, metadata, prot_file=None):
 # Process Data
 #########################
 
-def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
+def process_raw(group, hdr, dmtx=None, sensmaps=None, sensmaps_jemris=None, gpu=False, simu=True):
 
     force_pi = False # force parallel imaging recon by calculating sensitivity maps from raw data
     use_jemris_sens = True # take sensmaps from Jemris if no reference scan was used and sensitivities were not calculated from raw data
 
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = hdr.encoding[0].encodedSpace.matrixSize.x
+    ny = hdr.encoding[0].encodedSpace.matrixSize.y
+    nz = hdr.encoding[0].encodedSpace.matrixSize.z
     
     data, trj = sort_data(group, dmtx)
     logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, data.shape))
@@ -259,10 +256,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     xml = meta.serialize()
     
     images = []
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    n_sets = metadata.encoding[0].encodingLimits.set.maximum + 1
-    n_avgs = metadata.encoding[0].encodingLimits.average.maximum + 1
+    n_slc = hdr.encoding[0].encodingLimits.slice.maximum + 1
+    n_contr = hdr.encoding[0].encodingLimits.contrast.maximum + 1
+    n_sets = hdr.encoding[0].encodingLimits.set.maximum + 1
+    n_avgs = hdr.encoding[0].encodingLimits.average.maximum + 1
 
     # Format as ISMRMRD image data
     if simu:
@@ -290,9 +287,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
                 image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
                 image.slice = 0
                 image.attribute_string = xml
-                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         else:
             image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
@@ -300,20 +297,20 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
             image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
             image.slice = 0
             image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
 
     return images
 
-def process_acs(group, metadata, dmtx=None, gpu=False):
+def process_acs(group, hdr, dmtx=None, gpu=False):
     if len(group)>0:
         data, trj = sort_data(group, dmtx)
 
-        nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        ny = metadata.encoding[0].encodedSpace.matrixSize.y
-        nz = metadata.encoding[0].encodedSpace.matrixSize.z
+        nx = hdr.encoding[0].encodedSpace.matrixSize.x
+        ny = hdr.encoding[0].encodedSpace.matrixSize.y
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z
 
         if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             nufft_config = 'nufft -g -i -l 0.001 -t'
@@ -388,15 +385,15 @@ def sort_data(group, dmtx=None):
 
     return sig, trj
 
-def intp_sensmaps(sensmap_coil, sens_fov, metadata):
+def intp_sensmaps(sensmap_coil, sens_fov, hdr):
 
-    fov_x = int(metadata.encoding[0].reconSpace.fieldOfView_mm.x)
-    fov_y = int(metadata.encoding[0].reconSpace.fieldOfView_mm.y)
-    fov_z = int(metadata.encoding[0].reconSpace.fieldOfView_mm.z)
+    fov_x = int(hdr.encoding[0].reconSpace.fieldOfView_mm.x)
+    fov_y = int(hdr.encoding[0].reconSpace.fieldOfView_mm.y)
+    fov_z = int(hdr.encoding[0].reconSpace.fieldOfView_mm.z)
 
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = hdr.encoding[0].encodedSpace.matrixSize.x
+    ny = hdr.encoding[0].encodedSpace.matrixSize.y
+    nz = hdr.encoding[0].encodedSpace.matrixSize.z
 
     from skimage.transform import resize
     

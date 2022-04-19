@@ -7,7 +7,7 @@ import importlib
 import bart_pulseq_spiral 
 import bart_pulseq_cartesian
 import bart_jemris
-from pulseq_prot import check_signature
+from pulseq_helper import check_signature
 
 """ Checks trajectory type and launches reconstruction
 """
@@ -21,45 +21,36 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process(connection, config, metadata):
+def process(connection, config, hdr):
   
     # Create debug folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    protFolder = os.path.join(dependencyFolder, "pulseq_protocols")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree
-    prot_file = protFolder + "/" + prot_filename + ".h5"
+    meta_folder = os.path.join(dependencyFolder, "metadata")
+    meta_filename = os.path.splitext(hdr.userParameters.userParameterString[0].value)[0] # metadata filename (Siemens: raw data parameter tFree)
+    meta_file = meta_folder + "/" + meta_filename + ".h5"
+    if not os.path.isfile(meta_file):
+        raise ValueError("No metadata file available.")
 
-    # Check if local protocol folder is available, if protocol is not in dependency protocol folder
-    if not os.path.isfile(prot_file):
-        protFolder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
-        date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-        protFolder_loc = os.path.join(protFolder_local, date)
-        prot_file_loc = protFolder_loc + "/" + prot_filename + ".h5"
-        if os.path.isfile(prot_file_loc):
-            prot_file = prot_file_loc
-        else:
-            raise ValueError("No protocol file available.")
-
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
-    prot.close()
-    trajtype = prot_hdr.encoding[0].trajectory.value
-    check_signature(metadata, prot_hdr) # check MD5 signature
+    meta = ismrmrd.Dataset(meta_file, create_if_needed=False)
+    meta_hdr = ismrmrd.xsd.CreateFromDocument(meta.read_xml_header())
+    meta.close()
+    trajtype = meta_hdr.encoding[0].trajectory.value
+    check_signature(hdr, meta_hdr) # check MD5 signature
 
     if trajtype == 'spiral':
         importlib.reload(bart_pulseq_spiral)
         logging.info("Starting spiral reconstruction.")
-        bart_pulseq_spiral.process_spiral(connection, config, metadata, prot_file)
+        bart_pulseq_spiral.process_spiral(connection, config, hdr, meta_file)
     elif trajtype == 'cartesian':
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
-        bart_pulseq_cartesian.process_cartesian(connection, config, metadata, prot_file)
+        bart_pulseq_cartesian.process_cartesian(connection, config, hdr, meta_file)
     elif trajtype == 'other':
         importlib.reload(bart_jemris)
         logging.info("Starting JEMRIS reconstruction.")
-        bart_jemris.process(connection, config, metadata, prot_file)
+        bart_jemris.process(connection, config, hdr, meta_file)
     else:
         raise ValueError('Trajectory type not recognized')

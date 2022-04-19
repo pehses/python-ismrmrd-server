@@ -1,4 +1,4 @@
-""" Functions for Pulseq protocol insertion
+""" Functions for Pulseq metadata insertion
 
 Includes trajectory prediction with the GIRF
 """
@@ -10,134 +10,134 @@ import os
 import logging
 from reco_helper import calc_rotmat, gcs_to_dcs, dcs_to_gcs, intp_axis
 
-def insert_hdr(prot_file, metadata): 
+def insert_hdr(metadata_file, hdr): 
     """
-        Inserts the header from an ISMRMRD protocol file
-        prot_file:    ISMRMRD protocol file
-        metadata:     Dataset header
+        Inserts the header from an ISMRMRD metadata file
+        metadata: ISMRMRD metadata file
+        hdr:      Dataset header
     """
 
     #---------------------------
-    # Read protocol
+    # Read metadata
     #---------------------------
 
-    if (os.path.splitext(prot_file)[1] == ''):
-        prot_file += '.h5'
+    if (os.path.splitext(metadata_file)[1] == ''):
+        metadata_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+        metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
     except:
-        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
+        metadata_file = os.path.splitext(metadata_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+            metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
         except:
-            raise ValueError('Pulseq protocol file not found.')
+            raise ValueError('Pulseq metadata file not found.')
 
     #---------------------------
     # Process the header 
     #---------------------------
 
-    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
+    metadata_hdr = ismrmrd.xsd.CreateFromDocument(metadata.read_xml_header())
 
     # user parameters
-    if prot_hdr.userParameters is not None:
-        dset_udbl = metadata.userParameters.userParameterDouble
-        prot_udbl = prot_hdr.userParameters.userParameterDouble
-        for ix, param in enumerate(prot_udbl):
+    if metadata_hdr.userParameters is not None:
+        dset_udbl = hdr.userParameters.userParameterDouble
+        meta_udbl = metadata_hdr.userParameters.userParameterDouble
+        for ix, param in enumerate(meta_udbl):
             dset_udbl[ix].name = param.name
             dset_udbl[ix].value = param.value
 
     # encoding
-    dset_e1 = metadata.encoding[0]
-    prot_e1 = prot_hdr.encoding[0]
-    dset_e1.trajectory = prot_e1.trajectory
+    dset_e1 = hdr.encoding[0]
+    meta_e1 = metadata_hdr.encoding[0]
+    dset_e1.trajectory = meta_e1.trajectory
 
-    dset_e1.encodedSpace.matrixSize.x = prot_e1.encodedSpace.matrixSize.x
-    dset_e1.encodedSpace.matrixSize.y = prot_e1.encodedSpace.matrixSize.y
-    dset_e1.encodedSpace.matrixSize.z =  prot_e1.encodedSpace.matrixSize.z
+    dset_e1.encodedSpace.matrixSize.x = meta_e1.encodedSpace.matrixSize.x
+    dset_e1.encodedSpace.matrixSize.y = meta_e1.encodedSpace.matrixSize.y
+    dset_e1.encodedSpace.matrixSize.z =  meta_e1.encodedSpace.matrixSize.z
     
-    dset_e1.encodedSpace.fieldOfView_mm.x = prot_e1.encodedSpace.fieldOfView_mm.x
-    dset_e1.encodedSpace.fieldOfView_mm.y = prot_e1.encodedSpace.fieldOfView_mm.y
-    dset_e1.encodedSpace.fieldOfView_mm.z = prot_e1.encodedSpace.fieldOfView_mm.z
+    dset_e1.encodedSpace.fieldOfView_mm.x = meta_e1.encodedSpace.fieldOfView_mm.x
+    dset_e1.encodedSpace.fieldOfView_mm.y = meta_e1.encodedSpace.fieldOfView_mm.y
+    dset_e1.encodedSpace.fieldOfView_mm.z = meta_e1.encodedSpace.fieldOfView_mm.z
     
-    dset_e1.reconSpace.matrixSize.x = prot_e1.reconSpace.matrixSize.x
-    dset_e1.reconSpace.matrixSize.y = prot_e1.reconSpace.matrixSize.y
-    dset_e1.reconSpace.matrixSize.z = prot_e1.reconSpace.matrixSize.z
+    dset_e1.reconSpace.matrixSize.x = meta_e1.reconSpace.matrixSize.x
+    dset_e1.reconSpace.matrixSize.y = meta_e1.reconSpace.matrixSize.y
+    dset_e1.reconSpace.matrixSize.z = meta_e1.reconSpace.matrixSize.z
     
-    dset_e1.reconSpace.fieldOfView_mm.x = prot_e1.reconSpace.fieldOfView_mm.x
-    dset_e1.reconSpace.fieldOfView_mm.y = prot_e1.reconSpace.fieldOfView_mm.y
-    dset_e1.reconSpace.fieldOfView_mm.z = prot_e1.reconSpace.fieldOfView_mm.z
+    dset_e1.reconSpace.fieldOfView_mm.x = meta_e1.reconSpace.fieldOfView_mm.x
+    dset_e1.reconSpace.fieldOfView_mm.y = meta_e1.reconSpace.fieldOfView_mm.y
+    dset_e1.reconSpace.fieldOfView_mm.z = meta_e1.reconSpace.fieldOfView_mm.z
 
-    dset_e1.encodingLimits.slice.minimum = prot_e1.encodingLimits.slice.minimum
-    dset_e1.encodingLimits.slice.maximum = prot_e1.encodingLimits.slice.maximum
-    dset_e1.encodingLimits.slice.center = prot_e1.encodingLimits.slice.center
+    dset_e1.encodingLimits.slice.minimum = meta_e1.encodingLimits.slice.minimum
+    dset_e1.encodingLimits.slice.maximum = meta_e1.encodingLimits.slice.maximum
+    dset_e1.encodingLimits.slice.center = meta_e1.encodingLimits.slice.center
 
-    if prot_e1.encodingLimits.kspace_encoding_step_1 is not None:
-        dset_e1.encodingLimits.kspace_encoding_step_1.minimum = prot_e1.encodingLimits.kspace_encoding_step_1.minimum
-        dset_e1.encodingLimits.kspace_encoding_step_1.maximum = prot_e1.encodingLimits.kspace_encoding_step_1.maximum
-        dset_e1.encodingLimits.kspace_encoding_step_1.center = prot_e1.encodingLimits.kspace_encoding_step_1.center
-    if prot_e1.encodingLimits.average is not None:
-        dset_e1.encodingLimits.average.minimum = prot_e1.encodingLimits.average.minimum
-        dset_e1.encodingLimits.average.maximum = prot_e1.encodingLimits.average.maximum
-        dset_e1.encodingLimits.average.center = prot_e1.encodingLimits.average.center
-    if prot_e1.encodingLimits.phase is not None:
-        dset_e1.encodingLimits.phase.minimum = prot_e1.encodingLimits.phase.minimum
-        dset_e1.encodingLimits.phase.maximum = prot_e1.encodingLimits.phase.maximum
-        dset_e1.encodingLimits.phase.center = prot_e1.encodingLimits.phase.center
-    if prot_e1.encodingLimits.contrast is not None:
-        dset_e1.encodingLimits.contrast.minimum = prot_e1.encodingLimits.contrast.minimum
-        dset_e1.encodingLimits.contrast.maximum = prot_e1.encodingLimits.contrast.maximum
-        dset_e1.encodingLimits.contrast.center = prot_e1.encodingLimits.contrast.center
-    if prot_e1.encodingLimits.segment is not None:
-        dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
-        dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
-        dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
+    if meta_e1.encodingLimits.kspace_encoding_step_1 is not None:
+        dset_e1.encodingLimits.kspace_encoding_step_1.minimum = meta_e1.encodingLimits.kspace_encoding_step_1.minimum
+        dset_e1.encodingLimits.kspace_encoding_step_1.maximum = meta_e1.encodingLimits.kspace_encoding_step_1.maximum
+        dset_e1.encodingLimits.kspace_encoding_step_1.center = meta_e1.encodingLimits.kspace_encoding_step_1.center
+    if meta_e1.encodingLimits.average is not None:
+        dset_e1.encodingLimits.average.minimum = meta_e1.encodingLimits.average.minimum
+        dset_e1.encodingLimits.average.maximum = meta_e1.encodingLimits.average.maximum
+        dset_e1.encodingLimits.average.center = meta_e1.encodingLimits.average.center
+    if meta_e1.encodingLimits.phase is not None:
+        dset_e1.encodingLimits.phase.minimum = meta_e1.encodingLimits.phase.minimum
+        dset_e1.encodingLimits.phase.maximum = meta_e1.encodingLimits.phase.maximum
+        dset_e1.encodingLimits.phase.center = meta_e1.encodingLimits.phase.center
+    if meta_e1.encodingLimits.contrast is not None:
+        dset_e1.encodingLimits.contrast.minimum = meta_e1.encodingLimits.contrast.minimum
+        dset_e1.encodingLimits.contrast.maximum = meta_e1.encodingLimits.contrast.maximum
+        dset_e1.encodingLimits.contrast.center = meta_e1.encodingLimits.contrast.center
+    if meta_e1.encodingLimits.segment is not None:
+        dset_e1.encodingLimits.segment.minimum = meta_e1.encodingLimits.segment.minimum
+        dset_e1.encodingLimits.segment.maximum = meta_e1.encodingLimits.segment.maximum
+        dset_e1.encodingLimits.segment.center = meta_e1.encodingLimits.segment.center
 
     # acceleration
-    if prot_e1.parallelImaging is not None:
-        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
-        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
+    if meta_e1.parallelImaging is not None:
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = meta_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = meta_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
 
-    prot.close()
+    metadata.close()
 
-def get_ismrmrd_arrays(prot_file):
-    """ Returns all arrays appended to the protocol file and their
+def get_ismrmrd_arrays(metadata_file):
+    """ Returns all arrays appended to the metadata file and their
         respective keys as a tuple
 
     """
 
-    if (os.path.splitext(prot_file)[1] == ''):
-        prot_file += '.h5'
+    if (os.path.splitext(metadata_file)[1] == ''):
+        metadata_file += '.h5'
     try:
-        prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+        metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
     except:
-        prot_file = os.path.splitext(prot_file)[0] + '.hdf5'
+        metadata_file = os.path.splitext(metadata_file)[0] + '.hdf5'
         try:
-            prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
+            metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
         except:
-            raise ValueError('Pulseq protocol file not found.')
+            raise ValueError('Pulseq metadata file not found.')
 
     # get array keys - didnt find a better way
-    keys = list(prot.list())
+    keys = list(metadata.list())
     keys.remove('data')
     keys.remove('xml')
 
     arr = {}
     for key in keys:
-        arr[key] = prot.read_array(key, 0)
+        arr[key] = metadata.read_array(key, 0)
 
     return arr
 
-def check_signature(metadata, prot_hdr):
-    """ Check the MD5 signature of the Pulseq sequence against the protocol file
+def check_signature(hdr, meta_hdr):
+    """ Check the MD5 signature of the Pulseq sequence against the metadata file
 
     """
     try:
-        hdr_signature = metadata.userParameters.userParameterString[1].value
+        hdr_signature = hdr.userParameters.userParameterString[1].value
         if hdr_signature != 'NONE':
             try:
-                prot_signature = prot_hdr.userParameters.userParameterString[0].value
-                if prot_signature in hdr_signature:
-                    logging.debug(f"Signature check passed with signature {prot_signature}.")
+                meta_signature = meta_hdr.userParameters.userParameterString[0].value
+                if meta_signature in hdr_signature:
+                    logging.debug(f"Signature check passed with signature {hdr_signature}.")
                 else:
                     logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
             except:
@@ -160,13 +160,13 @@ def read_acqs(filename):
         acqs[n].data[:] = acq_data[n]['data'].view(np.complex64).reshape((acqs[n].active_channels, acqs[n].number_of_samples))[:]
     return acqs
 
-def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
+def insert_acq(meta_acq, dset_acq, hdr, noncartesian=True, return_basetrj=True):
     """
-        Inserts acquisitions from an ISMRMRD protocol file
+        Inserts acquisitions from an ISMRMRD metadata file
         
-        prot_file:    ISMRMRD protocol file
+        meta_acq:     Acquisition from ISMRMRD metadata file
         dset_acq:     Dataset acquisition
-        acq_ctr:      ISMRMRD acquisition number
+        hdr:          Dataset header
         noncartesian: For noncartesian acquisitions a trajectory or readout gradients has to be provided
                       If readout gradients are provided, the GIRF is applied, but additional parameters have to be provided.
                       The unit for gradients is [T/m]
@@ -185,36 +185,36 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     dset_acq.slice_dir[:] = -1 * np.asarray(dset_acq.slice_dir[:])
 
     # encoding counters
-    dset_acq.idx.kspace_encode_step_1 = prot_acq.idx.kspace_encode_step_1
-    dset_acq.idx.kspace_encode_step_2 = prot_acq.idx.kspace_encode_step_2
-    dset_acq.idx.slice = prot_acq.idx.slice
-    dset_acq.idx.contrast = prot_acq.idx.contrast
-    dset_acq.idx.phase = prot_acq.idx.phase
-    dset_acq.idx.average = prot_acq.idx.average
-    dset_acq.idx.repetition = prot_acq.idx.repetition
-    dset_acq.idx.set = prot_acq.idx.set
-    dset_acq.idx.segment = prot_acq.idx.segment
+    dset_acq.idx.kspace_encode_step_1 = meta_acq.idx.kspace_encode_step_1
+    dset_acq.idx.kspace_encode_step_2 = meta_acq.idx.kspace_encode_step_2
+    dset_acq.idx.slice = meta_acq.idx.slice
+    dset_acq.idx.contrast = meta_acq.idx.contrast
+    dset_acq.idx.phase = meta_acq.idx.phase
+    dset_acq.idx.average = meta_acq.idx.average
+    dset_acq.idx.repetition = meta_acq.idx.repetition
+    dset_acq.idx.set = meta_acq.idx.set
+    dset_acq.idx.segment = meta_acq.idx.segment
 
     # flags
-    if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
-    if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_REPETITION)
-    if prot_acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
         dset_acq.setFlag(ismrmrd.ACQ_IS_NOISE_MEASUREMENT)
         return
-    if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PHASECORR_DATA)
         return
-    if prot_acq.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
         dset_acq.setFlag(ismrmrd.ACQ_IS_DUMMYSCAN_DATA)
         return
-    if prot_acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+    if meta_acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
         dset_acq.setFlag(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)
         # for Jemris reconstructions we always need the trajectory, even if its Cartesian
-        dset_acq.resize(trajectory_dimensions=prot_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
+        dset_acq.resize(trajectory_dimensions=meta_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
         if dset_acq.traj.shape[-1] > 0:
-            dset_acq.traj[:] = prot_acq.traj[:]
+            dset_acq.traj[:] = meta_acq.traj[:]
         return
 
     # deal with noncartesian trajectories
@@ -223,7 +223,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         
         # calculate full number of samples
         nsamples = dset_acq.number_of_samples
-        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
+        nsegments = hdr.encoding[0].encodingLimits.segment.maximum + 1
         nsamples_full = int(nsamples*nsegments+0.5)
         nsamples_max = 65535
         if nsamples_full > nsamples_max:
@@ -235,17 +235,17 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # resize data - traj_dims: [kx,ky,kz]
         dset_acq.resize(trajectory_dimensions=3, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
-        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from protocol
+        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from metadata
         # check should be a pretty robust
-        if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
-            reco_trj = prot_acq.traj[:,:3]
+        if meta_acq.traj.shape[0] == dset_acq.data.shape[1] and meta_acq.traj[:,:3].max() > 1:
+            reco_trj = meta_acq.traj[:,:3]
             base_trj = reco_trj.copy()
         else:
             use_girf = False
-            if metadata.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+            if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
                 use_girf = True
             rotmat = calc_rotmat(dset_acq)
-            base_trj, reco_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
+            base_trj, reco_trj = calc_traj(meta_acq, hdr, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
@@ -258,8 +258,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
 def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
-        acq: acquisition from hdf5 protocol file
-        hdr: protocol header
+        acq: acquisition from metadata file
+        hdr: (merged) dataset (metadata) header
         ncol: number of samples
     """
     

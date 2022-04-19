@@ -9,7 +9,7 @@ import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
-from pulseq_prot import insert_hdr, insert_acq, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
@@ -28,13 +28,13 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process_spiral(connection, config, metadata, prot_file):
+def process_spiral(connection, config, hdr, meta_file):
   
     # Set a slice for single slice reconstruction
     slc_sel = None
 
-    # Insert protocol header
-    insert_hdr(prot_file, metadata)
+    # Insert metadata header
+    insert_hdr(meta_file, hdr)
     
     logging.info("Config: \n%s", config)
 
@@ -44,29 +44,23 @@ def process_spiral(connection, config, metadata, prot_file):
     else:
         gpu = False
 
-    # Metadata should be MRD formatted header, but may be a string
-    # if it failed conversion earlier
-
     try:
-        # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
-        # logging.info("Metadata: \n%s", metadata.serialize())
-
-        logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
+        logging.info("Incoming dataset contains %d encodings", len(hdr.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
-            metadata.encoding[0].trajectory.value, 
-            metadata.encoding[0].encodedSpace.matrixSize.x, 
-            metadata.encoding[0].encodedSpace.matrixSize.y, 
-            metadata.encoding[0].encodedSpace.matrixSize.z, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.x, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.y, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.z)
+            hdr.encoding[0].trajectory.value, 
+            hdr.encoding[0].encodedSpace.matrixSize.x, 
+            hdr.encoding[0].encodedSpace.matrixSize.y, 
+            hdr.encoding[0].encodedSpace.matrixSize.z, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.x, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.y, 
+            hdr.encoding[0].encodedSpace.fieldOfView_mm.z)
 
     except:
-        logging.info("Improperly formatted metadata: \n%s", metadata)
+        logging.info("Improperly formatted header: \n%s", hdr)
 
     # # Initialize lists for datasets
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_slc = hdr.encoding[0].encodingLimits.slice.maximum + 1
+    n_contr = hdr.encoding[0].encodingLimits.contrast.maximum + 1
 
     acqGroup = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     noiseGroup = []
@@ -80,15 +74,15 @@ def process_spiral(connection, config, metadata, prot_file):
     process_raw.imascale = [None] * 256
 
     # parameters for reapplying FOV shift
-    nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-    matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
-    res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
+    nsegments = hdr.encoding[0].encodingLimits.segment.maximum + 1
+    matr_sz = np.array([hdr.encoding[0].encodedSpace.matrixSize.x, hdr.encoding[0].encodedSpace.matrixSize.y])
+    res = np.array([hdr.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], hdr.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     base_trj = None
 
-    # read protocol acquisitions - faster than doing it one by one
-    logging.debug("Reading in protocol acquisitions.")
-    acqs = read_acqs(prot_file)
+    # read acquisitions - faster than doing it one by one
+    logging.debug("Reading in metadata acquisitions.")
+    acqs = read_acqs(meta_file)
 
     try:
         for item in connection:
@@ -98,9 +92,9 @@ def process_spiral(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                # insert acquisition protocol
+                # insert metadata in acquisitions
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(acqs[0], item, metadata)
+                base_traj = insert_acq(acqs[0], item, hdr)
                 acqs.pop(0)
                 if base_traj is not None:
                     base_trj = base_traj
@@ -132,7 +126,7 @@ def process_spiral(connection, config, metadata, prot_file):
                     acsGroup[item.idx.slice].append(item)
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], hdr, dmtx, gpu)
                         acsGroup[item.idx.slice].clear()
                     continue
 
@@ -157,7 +151,7 @@ def process_spiral(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], hdr, dmtx, sensmaps[item.idx.slice], gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
@@ -199,8 +193,8 @@ def process_spiral(connection, config, metadata, prot_file):
                 logging.info("Processing a group of k-space data (untriggered)")
                 if sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) 
-                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
+                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], hdr, dmtx) 
+                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], hdr, dmtx, sensmaps[item.idx.slice])
                 logging.debug("Sending image to client:\n%s", image)
                 connection.send_image(image)
                 acqGroup = []
@@ -213,17 +207,17 @@ def process_spiral(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
 
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = hdr.encoding[0].encodedSpace.matrixSize.x
+    ny = hdr.encoding[0].encodedSpace.matrixSize.y
+    nz = hdr.encoding[0].encodedSpace.matrixSize.z
     
-    rNx = metadata.encoding[0].reconSpace.matrixSize.x
-    rNy = metadata.encoding[0].reconSpace.matrixSize.y
-    rNz = metadata.encoding[0].reconSpace.matrixSize.z
+    rNx = hdr.encoding[0].reconSpace.matrixSize.x
+    rNy = hdr.encoding[0].reconSpace.matrixSize.y
+    rNz = hdr.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, metadata, dmtx)
+    data, trj = sort_spiral_data(group, hdr, dmtx)
     
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
@@ -289,8 +283,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     
     images = []
     n_par = data.shape[-1]
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_slc = hdr.encoding[0].encodingLimits.slice.maximum + 1
+    n_contr = hdr.encoding[0].encodingLimits.contrast.maximum + 1
 
     # Format as ISMRMRD image data
     if n_par > 1:
@@ -300,9 +294,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
             image.image_series_index = 1 + group[0].idx.repetition
             image.slice = 0
             image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.z))
             images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
@@ -310,16 +304,16 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
         image.image_series_index = 1 + group[0].idx.repetition
         image.slice = 0
         image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     return images
 
-def process_acs(group, metadata, dmtx=None, gpu=False):
+def process_acs(group, hdr, dmtx=None, gpu=False):
     if len(group)>0:
-        data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+        data = sort_into_kspace(group, hdr, dmtx, zf_around_center=True)
 
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration, WIP: use smaller radius -r ?
@@ -340,11 +334,11 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, metadata, dmtx=None):
+def sort_spiral_data(group, hdr, dmtx=None):
     
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+    nx = hdr.encoding[0].encodedSpace.matrixSize.x
+    nz = hdr.encoding[0].encodedSpace.matrixSize.z
+    res = hdr.encoding[0].reconSpace.fieldOfView_mm.x / hdr.encoding[0].encodedSpace.matrixSize.x
     rot_mat = calc_rotmat(group[0])
 
     sig = list()
@@ -383,7 +377,7 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
     return sig, trj
 
-def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
+def sort_into_kspace(group, hdr, dmtx=None, zf_around_center=False):
     # initialize k-space
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
@@ -404,10 +398,10 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
         acq.data[:] = data
 
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nc = hdr.acquisitionSystemInformation.receiverChannels
+    nx = hdr.encoding[0].encodedSpace.matrixSize.x
+    ny = hdr.encoding[0].encodedSpace.matrixSize.y
+    nz = hdr.encoding[0].encodedSpace.matrixSize.z
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)

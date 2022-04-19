@@ -144,7 +144,7 @@ def check_signature(metadata, prot_hdr):
             try:
                 prot_signature = prot_hdr.userParameters.userParameterString[0].value
                 if prot_signature in hdr_signature:
-                    logging.debug(f"Signature check passed with signature {prot_signature}.")
+                    logging.debug(f"Signature check passed with signature {hdr_signature}.")
                 else:
                     logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
             except:
@@ -171,9 +171,9 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
-        prot_file:    ISMRMRD protocol file
+        prot_acq:     ISMRMRD protocol acquisition
         dset_acq:     Dataset acquisition
-        acq_ctr:      ISMRMRD acquisition number
+        metadata:     ISMRMRD header
         noncartesian: For noncartesian acquisitions a trajectory or readout gradients has to be provided
                       If readout gradients are provided, the GIRF is applied, but additional parameters have to be provided.
                       The unit for gradients is [T/m]

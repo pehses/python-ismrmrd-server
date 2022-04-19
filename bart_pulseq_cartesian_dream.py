@@ -13,7 +13,7 @@ import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os # , fov_shift, calc_rotmat, pcs_to_gcs
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from DreamMap import global_filter, calc_fa
 
 from skimage import filters

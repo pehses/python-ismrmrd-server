@@ -8,7 +8,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from reco_helper import calculate_prewhitening, apply_prewhitening
-from pulseq_prot import insert_hdr, insert_acq, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, read_acqs
 
 """ Reconstruction of simulation data from Jemris
     and of scanner data acquired with JEMRIS sequences

@@ -28,13 +28,13 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    prot_folder = os.path.join(dependencyFolder, "pulseq_protocols")
+    prot_folder = os.path.join(dependencyFolder, "metadata")
     prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree
     prot_file = prot_folder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
     if not os.path.isfile(prot_file):
-        prot_folder_local = "/tmp/local/pulseq_protocols" # optional local protocol mountpoint (via -v option)
+        prot_folder_local = "/tmp/local/metadata" # optional local protocol mountpoint (via -v option)
         date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
         prot_folder_loc = os.path.join(prot_folder_local, date)
         prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"

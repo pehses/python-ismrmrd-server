@@ -9,14 +9,14 @@ import ctypes
 
 from bart import bart
 from cfft import cfftn, cifftn
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 from reco_helper import filt_ksp
 from DreamMap import calc_fa, DREAM_filter_fid
 
 from skimage import filters
-from scipy.ndimage import morphology as morph
+from scipy.ndimage import binary_fill_holes, binary_dilation
 
 """ Spiral subscript to reconstruct dream B1 map
 """
@@ -98,11 +98,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
-    acqs = []
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    for n in range(prot.number_of_acquisitions()):
-        acqs.append(prot.read_acquisition(n))
-    prot.close()
+    acqs = read_acqs(prot_file)
 
     try:
         for item in connection:
@@ -178,7 +174,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
                     images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu, prot_arrays)
-                    logging.debug("Sending images to client:\n%s", images)
+                    logging.debug("Sending images to client.")
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
 
@@ -314,8 +310,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         for nz in range(fid.shape[-1]):
             val = filters.threshold_otsu(fid[:,:,nz])
             otsu = fid[:,:,nz] > val
-            imfill = morph.binary_fill_holes(otsu) * 1
-            mask[:,:,nz] = morph.binary_dilation(imfill)
+            imfill = binary_fill_holes(otsu) * 1
+            mask[:,:,nz] = binary_dilation(imfill)
                 
         # FA map and RefVoltage map
         fa_map = calc_fa(abs(ste), abs(fid))
@@ -383,86 +379,46 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     xml3 = meta3.serialize()
     
     images = []
-    n_par = data.shape[-1]
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data
-    if n_par > 1:
-        for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par
-            image.image_series_index = 1
-            image.slice = 0
-            image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
-        
-        if fa_map is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 2
-                image.slice = 0
-                image.attribute_string = xml2
-                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                images.append(image)
-        
-        if ref_volt is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 3
-                image.slice = 0
-                image.attribute_string = xml3
-                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                images.append(image)
-        
-    else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+    # Format as ISMRMRD image data - send as 3D data (WIP: orientation not correct at scanner)
+    image = ismrmrd.Image.from_array(np.moveaxis(data,-1,0), acquisition=group[0])
+    image.image_index = group[0].idx.contrast
+    image.image_series_index = 1
+    image.slice = 0
+    image.attribute_string = xml
+    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+    images.append(image)
+
+    if fa_map is not None:
+        image = ismrmrd.Image.from_array(np.moveaxis(fa_map,-1,0), acquisition=group[0])
+        image.image_index = 1
+        image.image_series_index = 2
         image.slice = 0
-        image.attribute_string = xml
+        image.attribute_string = xml2
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
-        
-        if fa_map is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 2
-            image.slice = 0
-            image.attribute_string = xml2
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
-        
-        if ref_volt is not None:
-            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 3
-            image.slice = 0
-            image.attribute_string = xml3
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
+
+    if ref_volt is not None:
+        image = ismrmrd.Image.from_array(np.moveaxis(ref_volt,-1,0), acquisition=group[0])
+        image.image_index = 1
+        image.image_series_index = 3
+        image.slice = 0
+        image.attribute_string = xml3
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        images.append(image)
 
     return images
 
 def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = remove_os(data)
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
@@ -490,11 +446,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 
 def sort_spiral_data(group, metadata, dmtx=None):
     
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-    rot_mat = calc_rotmat(group[0])
-
     sig = list()
     trj = list()
     enc = list()   
@@ -502,7 +453,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
-        kz = enc2 - nz//2
         enc.append([enc1, enc2])
         
         # append data after optional prewhitening
@@ -542,8 +492,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
     for acq in group:
@@ -558,8 +506,14 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if enc2 > enc2_max:
             enc2_max = enc2
 
-    nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.x
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
+
+    nc = metadata.acquisitionSystemInformation.receiverChannels
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)

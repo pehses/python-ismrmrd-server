@@ -4,6 +4,7 @@ Includes trajectory prediction with the GIRF
 """
 
 import ismrmrd
+import h5py
 import numpy as np
 import os
 import logging
@@ -94,17 +95,14 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
         dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
         dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
-    else:
-        # compatibility with older datasets, where the segment encoding limit parameter was not used
-        try:
-            dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
-        except:
-            pass
+    elif len(prot_hdr.userParameters.userParameterDouble) > 3:
+        # compatibility with older datasets, where a user parameter was used
+        dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
 
     # acceleration
     if prot_e1.parallelImaging is not None:
         dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_1
-        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # used for SMS factor
+        dset_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 = prot_e1.parallelImaging.accelerationFactor.kspace_encoding_step_2 # also used for SMS factor
 
     prot.close()
 
@@ -146,7 +144,7 @@ def check_signature(metadata, prot_hdr):
             try:
                 prot_signature = prot_hdr.userParameters.userParameterString[0].value
                 if prot_signature in hdr_signature:
-                    logging.debug(f"Signature check passed with signature {prot_signature}.")
+                    logging.debug(f"Signature check passed with signature {hdr_signature}.")
                 else:
                     logging.debug("WARNING: Signature check failed. ISMRMRD metadata file has different MD5 Hash than sequence.")
             except:
@@ -156,13 +154,26 @@ def check_signature(metadata, prot_hdr):
     except:
         logging.debug("Sequence signature not available.")
 
+def read_acqs(filename):
+    """ Reads all acquisitions of an ISMRMRD file and returns them as list.
+        This is faster than reading them one by one with file.read_acquisition().
+    """
+    file = h5py.File(filename, mode='r', driver='core')
+    acq_data = [item for item in file['dataset']['data']]
+    file.close()
+    acqs = [ismrmrd.Acquisition(acq['head']) for acq in acq_data]
+    for n in range(len(acqs)):
+        acqs[n].traj[:] = acq_data[n]['traj'].reshape((acqs[n].number_of_samples,acqs[n].trajectory_dimensions))[:]
+        acqs[n].data[:] = acq_data[n]['data'].view(np.complex64).reshape((acqs[n].active_channels, acqs[n].number_of_samples))[:]
+    return acqs
+
 def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
-        prot_file:    ISMRMRD protocol file
+        prot_acq:     ISMRMRD protocol acquisition
         dset_acq:     Dataset acquisition
-        acq_ctr:      ISMRMRD acquisition number
+        metadata:     ISMRMRD header
         noncartesian: For noncartesian acquisitions a trajectory or readout gradients has to be provided
                       If readout gradients are provided, the GIRF is applied, but additional parameters have to be provided.
                       The unit for gradients is [T/m]
@@ -218,13 +229,13 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     base_trj = None
     if noncartesian and dset_acq.idx.segment == 0:
         
+        use_girf = False
+        if metadata.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+            use_girf = True
+
         # calculate full number of samples - for segmented ADCs
         nsamples = dset_acq.number_of_samples
-        try:
-            # user parameter is kept for compatibility (see insert_hdr)
-            nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-        except:
-            nsegments = metadata.userParameters.userParameterDouble[2].value
+        nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
         nsamples_full = int(nsamples*nsegments+0.5)
         if dset_acq.traj[:].size > 0:
             nsamples_full = dset_acq.traj.shape[0] # samples should already be reshaped if trajectory was added to the rawdata
@@ -240,7 +251,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
         dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
 
-        # trajectory already inserted in data - e.g. from Skope system
+        # trajectory already inserted from Skope system
+        # kz should be set to zero, if trajectory is 2-dimensional
         if traj_tmp.size > 0:
             dset_acq.traj[:,:3] = traj_tmp[:,:3]
             rotmat = calc_rotmat(dset_acq)
@@ -259,11 +271,23 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # gradients from protocol file - calculate trajectory with girf
         else:
             rotmat = calc_rotmat(dset_acq)
-            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat) # [samples, dims]
+            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
-    
+
+        # remove first ADCs as they can be corrupted
+        delay = metadata.userParameters.userParameterDouble[1].value
+        if delay > 0: # only do this if trajectory was sufficiently delayed
+            dwelltime = 1e-6 * metadata.userParameters.userParameterDouble[0].value
+            rm_ix = int(delay/dwelltime)
+            data_tmp = dset_acq.data[:,rm_ix:]
+            traj_tmp = dset_acq.traj[rm_ix:]
+            dset_acq.resize(trajectory_dimensions=dset_acq.trajectory_dimensions, number_of_samples=dset_acq.number_of_samples-rm_ix, active_channels=dset_acq.active_channels)
+            dset_acq.data[:] = data_tmp
+            dset_acq.traj[:] = traj_tmp
+            base_trj = base_trj[rm_ix:]
+
     if return_basetrj:
         return base_trj
  
@@ -325,40 +349,33 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         pred_grad = pred_grad[1:]
 
         # rotate back to logical system
-        pred_grad = dcs_to_gcs(pred_grad, rotmat)
+        pred_grad = dcs_to_gcs(pred_grad, rotmat).real
 
         # calculate global phase term k0 [rad]
         k0 = np.cumsum(k0.real) * dt_grad * gammabar * 2*np.pi
-
-        # calculate trajectory [1/m]
-        pred_trj = np.cumsum(pred_grad.real, axis=1) * dt_grad * gammabar
-
-        # scale with FOV for BART & PowerGrid recon
-        pred_trj *= 1e-3 * fov[:,np.newaxis]
-
-        # set z-axis for 3D imaging if trajectory is two-dimensional 
-        # this only works for Cartesian sampling in kz (works also with CAIPI)
-        if dims == 2:
-            nz = hdr.encoding[0].encodedSpace.matrixSize.z
-            partition = acq.idx.kspace_encode_step_2
-            kz = partition - nz//2
-            pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
-
-        # align trajectory to scanner ADC
-        pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1)
         k0 = intp_axis(adctime, gradtime, k0, axis=0)
-
-        # switch array order to [samples, dims]
-        pred_trj = np.swapaxes(pred_trj,0,1)
     else:
-        pred_trj = None
+        pred_grad = grad.copy()
         k0 = None
 
-    # calculate base trajectory for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
-    # interpolate to ADC and shift base_trj by 10us 
+    pred_trj = np.cumsum(pred_grad, axis=1) * dt_grad * gammabar # calculate trajectory [1/m]
+    pred_trj *= 1e-3 * fov[:,np.newaxis] # scale with FOV for BART & PowerGrid recon
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
     base_trj *= 1e-3 * fov[:,np.newaxis]
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1)
+
+    # set z-axis for 3D imaging if trajectory is two-dimensional 
+    # this only works for Cartesian sampling in kz (works also with CAIPI)
+    if dims == 2:
+        Rz = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2 if hdr.encoding[0].parallelImaging is not None else 1
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z // Rz
+        partition = acq.idx.kspace_encode_step_2
+        kz = partition - nz//2
+        pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        
+        base_trj[2] =  kz * np.ones(base_trj.shape[1])
+
+    pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1) # align trajectory to scanner ADC
+    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]   
+    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
     base_trj = np.swapaxes(base_trj,0,1)
 
     return base_trj, pred_trj, k0

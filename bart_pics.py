@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import numpy.fft as fft
 import base64
+import ctypes
 
 from bart import bart
 
@@ -288,6 +289,9 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     data = np.around(data)
     data = data.astype(np.int16)
 
+    # Flip matrix in RO/PE/3D to be consistent with ICE
+    data = np.flip(data, (0, 1, 2))
+
     # Remove readout oversampling
     nRO = np.size(data,0)
     data = data[int(nRO/4):int(nRO*3/4),:]
@@ -297,12 +301,17 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     # Format as ISMRMRD image data
     image = ismrmrd.Image.from_array(data, acquisition=group[0])
     image.image_index = 1
+    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                          ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                          ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    1})
     xml = meta.serialize()
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has %d elements", image.data.size)

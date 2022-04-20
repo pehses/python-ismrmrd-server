@@ -13,7 +13,7 @@ import ctypes
 
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
@@ -79,11 +79,7 @@ def process_cartesian(connection, config, metadata, prot_file):
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
-    acqs = []
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    for n in range(prot.number_of_acquisitions()):
-        acqs.append(prot.read_acquisition(n))
-    prot.close()
+    acqs = read_acqs(prot_file)
 
     try:
         for item in connection:
@@ -181,9 +177,6 @@ def process_cartesian(connection, config, metadata, prot_file):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = group[0].number_of_samples
-
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
     for acq in group:
@@ -198,7 +191,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if enc2 > enc2_max:
             enc2_max = enc2
 
-    nx = 2*metadata.encoding[0].encodedSpace.matrixSize.x
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
+
+    nc = metadata.acquisitionSystemInformation.receiverChannels
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
@@ -246,7 +245,6 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = remove_os(data)
 
         #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
         #--- However leave this code to fall back to reco shifts, if problems occur ---#
@@ -272,7 +270,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     data = sort_into_kspace(group, metadata, dmtx)
-    data = remove_os(data)
 
     #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
     #--- However leave this code to fall back to reco shifts, if problems occur ---#

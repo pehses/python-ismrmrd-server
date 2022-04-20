@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS mrd_converter
+FROM nvidia/cuda:11.6.0-devel-ubuntu20.04 AS mrd_converter
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -29,8 +29,7 @@ RUN  cd /opt/code \
 
 # install spiraltraj for trajectory calculation
 RUN  cd /opt/code \
-     && git clone https://github.com/mrphysics-bonn/spiral-pypulseq-example \
-     && mv spiral-pypulseq-example/spiraltraj . \
+     && git clone https://github.com/mrphysics-bonn/spiraltraj.git \
      && cd spiraltraj \
      && pip3 wheel .
      
@@ -72,31 +71,32 @@ RUN  cd /opt/code \
 ### Dependencies for PowerGrid ###
 
 # Download and install NVIDIA HPC SDK
-RUN  wget https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-20-11_20.11_amd64.deb \
-     https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-2020_20.11_amd64.deb \
-     && apt-get install --yes ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
+RUN  wget https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-22-1_22.1_amd64.deb \
+     https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-2022_22.1_amd64.deb \
+     && apt-get install --yes ./nvhpc-22-1_22.1_amd64.deb ./nvhpc-2022_22.1_amd64.deb
 
-# Handle NVIDIA HPC SDK specific stuff
+# Load NVIDIA HPC SDK modules
 ENV NVARCH=Linux_x86_64
-ENV NVCOMPILERS=/opt/nvidia/hpc_sdk
-ENV NVSDKVER=20.11
-ENV CUDA_PATH="${NVCOMPILERS}/${NVARCH}/${NVSDKVER}/cuda"
-ENV MANPATH="${MANPATH}:${NVCOMPILERS}/${NVARCH}/20.11/compilers/man"
+ENV NVHPC=/opt/nvidia/hpc_sdk
+ENV HPCSDK_VERSION=22.1
+ENV HPCSDK_RELEASE=2022
+ENV CUDA_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/cuda"
+ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/man"
 ENV LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/compilers/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/compilers/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/math_libs/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/math_libs/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
-ENV OPAL_PREFIX="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/"
-ENV PATH="${NVCOMPILERS}/${NVARCH}/20.11/compilers/bin:${PATH}"
-ENV PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/bin:${PATH}"
-ENV MANPATH="${MANPATH}:${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/man"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/compilers/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/math_libs/lib64:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/math_libs/lib64:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
+ENV OPAL_PREFIX="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/"
+ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/bin:${PATH}"
+ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/bin:${PATH}"
+ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/man"
 
 # Install custom compile of boost - only necessary runtime components
 RUN wget -O ~/boost_1_75_0.tar.bz2 -c 'https://sourceforge.net/projects/boost/files/boost/1.75.0/boost_1_75_0.tar.bz2/download' --max-redirect=100 \
@@ -139,7 +139,7 @@ RUN cd opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mavel101/PowerGrid \
      && cd PowerGrid \
-     && git checkout python_cnpy \
+     && git checkout python_cnpy_dev \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \
@@ -152,7 +152,7 @@ RUN  cd /opt/code \
      
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM nvidia/cuda:11.4.2-runtime-ubuntu20.04
+FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -187,19 +187,20 @@ RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so  \
   ldconfig && \
   echo "MKL_THREADING_LAYER=GNU" >> /etc/environment
 
-# create pythonpath for single file packages (without requiring setup.py or __init__.py)
-RUN mkdir -p /opt/code/pythonpath
-ENV PYTHONPATH "${PYTHONPATH}:/opt/code/pythonpath"
+# Set Pythonpath for BART
+ENV TOOLBOX_PATH="/opt/code/bart"
+ENV PYTHONPATH="${PYTHONPATH}:${TOOLBOX_PATH}/python"
 
 # copy bart python interface to pythonpath
-COPY --from=mrd_converter /opt/code/bart/python/* /opt/code/pythonpath/
+COPY --from=mrd_converter ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd \
+     && pip3 install git+https://github.com/mrirecon/bartpy
 
 RUN  mkdir -p /opt/code
 

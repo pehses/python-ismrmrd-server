@@ -27,8 +27,14 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # Main Function
 ########################
 
-def process_spiral_dream(connection, config, metadata, prot_file):
+def process(connection, config, metadata):
     
+    prot_folder = os.path.join(dependencyFolder, "metadata")
+    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree
+    prot_file = prot_folder + "/" + prot_filename + ".h5"
+    if not os.path.isfile(prot_file):
+        raise ValueError("No protocol file available.")
+
     logging.debug("Spiral DREAM reconstruction")
     
     # Insert protocol header

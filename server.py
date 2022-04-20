@@ -77,10 +77,10 @@ class Server:
                 logging.info("Starting simplefft processing based on config")
                 simplefft.process(connection, config, metadata)
             elif (config == "bart_pulseq"):
-                import bart_pulseq
-                importlib.reload(bart_pulseq)
-                logging.info("Starting bart_pulseq processing based on config")
-                bart_pulseq.process(connection, config, metadata)
+                import bart_pulseq_spiral_dream
+                importlib.reload(bart_pulseq_spiral_dream)
+                logging.info("Starting bart_pulseq_spiral_dream processing based on config")
+                bart_pulseq_spiral_dream.process(connection, config, metadata)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:

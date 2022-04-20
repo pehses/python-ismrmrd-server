@@ -24,7 +24,7 @@ RUN /tmp/mkl.sh
 RUN  mkdir -p /opt/code
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
 # install spiraltraj for trajectory calculation
 RUN  cd /opt/code \
@@ -211,7 +211,7 @@ RUN  cd /opt/code \
      && python3 setup.py install
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip

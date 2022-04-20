@@ -25,7 +25,7 @@ RUN /tmp/mkl.sh
 RUN  mkdir -p /opt/code
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
 # install spiraltraj for trajectory calculation
 RUN  cd /opt/code \

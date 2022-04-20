@@ -1,12 +1,10 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
 import numpy as np
 import numpy.fft as fft
 import ctypes
-import mrdhelper
 from datetime import datetime
 
 # Folder for debug output files

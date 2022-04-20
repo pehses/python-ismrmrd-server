@@ -194,7 +194,7 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
 
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
                of the scanner is lagging behind be one gradient raster time (10 us).
-               For GIRF predicted Pulseq trajectories this is done in pulseq_prot.py
+               For GIRF predicted Pulseq trajectories this is done in pulseq_helper.py
 
     sig: signal data (dimensions as in ISMRMRD [coils, samples]) 
     pred_traj: predicted trajectory (dimensions as in ISMRMRD [samples, dims]) 

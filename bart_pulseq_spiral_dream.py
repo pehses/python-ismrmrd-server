@@ -1,22 +1,19 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
 import numpy as np
-import base64
 import ctypes
 
 from bart import bart
-from cfft import cfftn, cifftn
-from pulseq_prot import insert_hdr, insert_acq, get_ismrmrd_arrays
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os
-from reco_helper import fov_shift_spiral, fov_shift #, fov_shift_spiral_reapply 
+from reco_helper import fov_shift, fov_shift_spiral
 from reco_helper import filt_ksp
 from DreamMap import calc_fa, DREAM_filter_fid
 
 from skimage import filters
-from scipy.ndimage import morphology as morph
+from scipy.ndimage import binary_fill_holes, binary_dilation
 
 """ Spiral subscript to reconstruct dream B1 map
 """
@@ -34,8 +31,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     
     logging.debug("Spiral DREAM reconstruction")
     
-    slc_sel = None
-
     # Insert protocol header
     insert_hdr(prot_file, metadata)
     
@@ -97,8 +92,13 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     base_trj = None
+
+    # read protocol acquisitions - faster than doing it one by one
+    logging.debug("Reading in protocol acquisitions.")
+    acqs = read_acqs(prot_file)
+
     try:
-        for acq_ctr, item in enumerate(connection):
+        for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
@@ -107,7 +107,8 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(prot_file, item, acq_ctr, metadata)
+                base_traj = insert_acq(acqs[0], item, metadata)
+                acqs.pop(0)
                 if base_traj is not None:
                     base_trj = base_traj
 
@@ -124,11 +125,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     dmtx = calculate_prewhitening(noise_data)
                     del(noise_data)
                     noiseGroup.clear()
-                    
-                # skip slices in single slice reconstruction
-                if slc_sel is not None and item.idx.slice != slc_sel:
-                    continue
-                
+                                   
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue
@@ -164,17 +161,13 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     idx_lower = item.idx.segment * item.number_of_samples
                     idx_upper = (item.idx.segment+1) * item.number_of_samples
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:,idx_lower:idx_upper] = item.data[:]
-                # if item.idx.segment == nsegments - 1:
-                    # Reapply FOV Shift with predicted trajectory
-                    # sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
-                    # acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
                     images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu, prot_arrays)
-                    logging.debug("Sending images to client:\n%s", images)
+                    logging.debug("Sending images to client.")
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
 
@@ -240,97 +233,78 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
     data, trj = sort_spiral_data(group, metadata, dmtx)
-    
-    if gpu:
+    process_raw.rawdata[group[0].idx.contrast] = data.copy() # save rawdata of the two contrasts for FID filter calculation
+
+    if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         pics_config = 'pics -g -S -e -R T:7:0:.001 -i 50 -t'
     else:
         nufft_config = 'nufft -i -m 20 -l 0.005 -c -t -d %d:%d:%d'%(nx, nx, nz)
         pics_config = 'pics -S -e -R T:7:0:.001 -i 50 -t'
 
-    # B1 Map calculation (Dream approach)
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
     dream = prot_arrays['dream']
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
-    process_raw.rawdata[group[0].idx.contrast] = data.copy() # complex rawdata of the two contrasts
+    ste_ix = int(dream[0])
+    fid_ix = n_contr-1-ste_ix
+    if ste_ix != 0:
+        raise ValueError(f"This reconstruction currently supports only STE first, but STE has index {ste_ix} and FID has index {fid_ix}.")
+
+    # FID filter
+    filt_fid = True 
+    if group[0].idx.contrast == fid_ix and dream.size > 2 and filt_fid:
+        logging.info("Global FID filter activated.")
+        # Blurring compensation parameters
+        alpha = dream[1]     # preparation FA
+        tr = dream[2]        # [s]
+        beta = dream[3]      # readout FA
+        dummies = dream[4]   # number of dummy scans before readout echo train starts
+        # T1 estimate:
+        t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
     
-    if (group[0].idx.contrast == int(n_contr-1-dream[0])) and (dream.size > 2): # if not Ste and global filter is activated -> no reconstruction of unfiltered fid
-        logging.info("fid filter activated")
+        ste_data = np.asarray(process_raw.rawdata[ste_ix])
+        fid_data = np.asarray(process_raw.rawdata[fid_ix])
+        mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
+
+        mean_beta = mean_alpha / alpha * beta
+        for i,acq in enumerate(group):
+            ti = tr * (dummies + i) # TI estimate (time from STEAM prep to readout) [s]
+            # Global filter:
+            filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
+            # apply filter:
+            data[:,:,i,:] *= filt
+
+    if sensmaps is None:                
+        data = bart(1, nufft_config, trj, data)
+        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
-        if sensmaps is None:                
-            # bart nufft
-            data = bart(1, nufft_config, trj, data)
-            # Sum of squares coil combination
-            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
-        else:
-            data = bart(1, pics_config , trj, data, sensmaps)
-            data = np.abs(data)
-            # make sure that data is at least 3d:
-        while np.ndim(data) < 3:
-            data = data[..., np.newaxis]
-        if nz > rNz:
-            # remove oversampling in slice direction
-            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+        data = bart(1, pics_config , trj, data, sensmaps)
+        data = np.abs(data)
+    while np.ndim(data) < 3:
+        data = data[..., np.newaxis]
+    if nz > rNz:
+        # remove oversampling in slice direction
+        data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+
+    logging.debug("Image reconstructed with size %s" % (data.shape,))
     
-        logging.debug("Image data is size %s" % (data.shape,))
-    
+    # Check if both contrasts were reconstructed for calculation of FA map
     process_raw.imagesets[group[0].idx.contrast] = data.copy()
     full_set_check = all(elem is not None for elem in process_raw.imagesets)
     if full_set_check:
-        logging.info("B1 map calculation using Dream")
-        ste = np.asarray(process_raw.imagesets[int(dream[0])])
-        
-        if dream.size > 2 : # without filter: dream = ([ste_contr,flip_angle_ste])
-            logging.info("Global filter approach")
-            # Blurring compensation parameters
-            alpha = dream[1]     # preparation FA
-            tr = dream[2]        # [s]
-            beta = dream[3]      # readout FA
-            dummies = dream[4]   # number of dummy scans before readout echo train starts
-            # T1 estimate:
-            t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
-            # TI estimate (the time after DREAM preparation after which each k-space line is acquired):
-            ti = 0
-            ste_data = np.asarray(process_raw.rawdata[int(dream[0])])
-            fid_data = np.asarray(process_raw.rawdata[int(n_contr-1-dream[0])])
-            mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
+        logging.info("Calculation of B1 map.")
+        ste = np.asarray(process_raw.imagesets[ste_ix])
+        fid = np.asarray(process_raw.imagesets[fid_ix])
 
-            mean_beta = mean_alpha / alpha * beta
-            for i,acq in enumerate(group):
-                ti = tr * (dummies + i) # [s]
-                # Global filter:
-                filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
-                # apply filter:
-                fid_data[:,:,i,:] *= filt
-            # reco of fid:
-            if sensmaps is None:
-                fid = bart(1, nufft_config, trj, fid_data)
-                fid = np.sqrt(np.sum(np.abs(fid)**2, axis=-1))
-            else:
-                fid = bart(1, pics_config , trj, fid_data, sensmaps)
-                fid = np.abs(fid)
-            while np.ndim(fid) < 3:
-                    fid = fid[..., np.newaxis]         
-            if nz > rNz:
-                fid = fid[:,:,(nz - rNz)//2:-(nz - rNz)//2]
-            # fa map:
-            fa_map = calc_fa(abs(ste), abs(fid))
-            data = fid.copy()
-        else:
-            fid = np.asarray(process_raw.imagesets[int(n_contr-1-dream[0])]) # fid unchanged
-       
         # image mask for fa-map (use of filtered or unfiltered fid) - not used atm
         mask = np.zeros(fid.shape)
         for nz in range(fid.shape[-1]):
-            # otsu
             val = filters.threshold_otsu(fid[:,:,nz])
             otsu = fid[:,:,nz] > val
-            # fill holes
-            imfill = morph.binary_fill_holes(otsu) * 1
-            # dilation
-            mask[:,:,nz] = morph.binary_dilation(imfill)
+            imfill = binary_fill_holes(otsu) * 1
+            mask[:,:,nz] = binary_dilation(imfill)
                 
-        # fa map:
+        # FA map and RefVoltage map
         fa_map = calc_fa(abs(ste), abs(fid))
         # fa_map *= mask
         current_refvolt = metadata.userParameters.userParameterDouble[5].value
@@ -396,97 +370,55 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     xml3 = meta3.serialize()
     
     images = []
-    n_par = data.shape[-1]
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data
-    if n_par > 1:
-        for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par
-            image.image_series_index = 1
-            image.slice = 0
-            image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
-        
-        if fa_map is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 2
-                image.slice = 0
-                image.attribute_string = xml2
-                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                images.append(image)
-        
-        if ref_volt is not None:
-            for par in range(n_par):
-                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
-                image.image_index = 1 + par
-                image.image_series_index = 3
-                image.slice = 0
-                image.attribute_string = xml3
-                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-                images.append(image)
-        
-    else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
+    # Format as ISMRMRD image data - send as 3D data (WIP: orientation not correct at scanner)
+    image = ismrmrd.Image.from_array(np.moveaxis(data,-1,0), acquisition=group[0])
+    image.image_index = group[0].idx.contrast
+    image.image_series_index = 1
+    image.slice = 0
+    image.attribute_string = xml
+    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+    images.append(image)
+
+    if fa_map is not None:
+        image = ismrmrd.Image.from_array(np.moveaxis(fa_map,-1,0), acquisition=group[0])
+        image.image_index = 1
+        image.image_series_index = 2
         image.slice = 0
-        image.attribute_string = xml
+        image.attribute_string = xml2
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
-        
-        if fa_map is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 2
-            image.slice = 0
-            image.attribute_string = xml2
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
-        
-        if ref_volt is not None:
-            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-            image.image_series_index = 3
-            image.slice = 0
-            image.attribute_string = xml3
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
+
+    if ref_volt is not None:
+        image = ismrmrd.Image.from_array(np.moveaxis(ref_volt,-1,0), acquisition=group[0])
+        image.image_index = 1
+        image.image_series_index = 3
+        image.slice = 0
+        image.attribute_string = xml3
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        images.append(image)
 
     return images
 
 def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-        data = remove_os(data)
 
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
+        # FOV shift
         rotmat = calc_rotmat(group[0])
         if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
         res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
         shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
         data = fov_shift(data, shift)
 
-        if gpu:
+        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
@@ -504,7 +436,6 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 def sort_spiral_data(group, metadata, dmtx=None):
     
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
     res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
     rot_mat = calc_rotmat(group[0])
 
@@ -515,7 +446,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
-        kz = enc2 - nz//2
         enc.append([enc1, enc2])
         
         # append data after optional prewhitening
@@ -527,13 +457,11 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj)
-        
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
+
+        # FOV shift
         shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
         sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
-        
+
     np.save(debugFolder + "/" + "enc.npy", enc)
     
     # convert lists to numpy arrays
@@ -555,8 +483,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    nc = metadata.acquisitionSystemInformation.receiverChannels
-
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
     for acq in group:
@@ -571,8 +497,14 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if enc2 > enc2_max:
             enc2_max = enc2
 
-    nx = 2 * metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.x
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
+
+    nc = metadata.acquisitionSystemInformation.receiverChannels
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)

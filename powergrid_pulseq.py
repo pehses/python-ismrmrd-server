@@ -90,7 +90,7 @@ def process(connection, config, metadata):
         if os.path.isfile(prot_file_loc):
             prot_file = prot_file_loc
         else:
-            raise ValueError("No protocol file available.")
+            raise ValueError(f"Metadata file {prot_file} not available.")
 
     # check signature
     prot = ismrmrd.Dataset(prot_file, create_if_needed=False)

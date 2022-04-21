@@ -32,7 +32,7 @@ def process(connection, config, hdr):
     meta_filename = os.path.splitext(hdr.userParameters.userParameterString[0].value)[0] # metadata filename (Siemens: raw data parameter tFree)
     meta_file = meta_folder + "/" + meta_filename + ".h5"
     if not os.path.isfile(meta_file):
-        raise ValueError("No metadata file available.")
+        raise ValueError(f"Metadata file {meta_file} not available.")
 
     meta = ismrmrd.Dataset(meta_file, create_if_needed=False)
     meta_hdr = ismrmrd.xsd.CreateFromDocument(meta.read_xml_header())

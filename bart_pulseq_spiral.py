@@ -336,11 +336,6 @@ def process_acs(group, hdr, dmtx=None, gpu=False):
 
 def sort_spiral_data(group, hdr, dmtx=None):
     
-    nx = hdr.encoding[0].encodedSpace.matrixSize.x
-    nz = hdr.encoding[0].encodedSpace.matrixSize.z
-    res = hdr.encoding[0].reconSpace.fieldOfView_mm.x / hdr.encoding[0].encodedSpace.matrixSize.x
-    rot_mat = calc_rotmat(group[0])
-
     sig = list()
     trj = list()
     enc = list()
@@ -348,7 +343,6 @@ def sort_spiral_data(group, hdr, dmtx=None):
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
-        kz = enc2 - nz//2
         enc.append([enc1, enc2])
         
         # append data after optional prewhitening

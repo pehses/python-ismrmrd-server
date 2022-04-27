@@ -834,6 +834,11 @@
                     <value>0</value>
                 </userParameterDouble>
 
+                <userParameterDouble>
+                    <name>os_factor</name>
+                    <value>1</value>
+                </userParameterDouble>
+
                 <xsl:if test="siemens/MEAS/sTXSPEC/asNucleusInfo/flReferenceAmplitude">
                 <userParameterDouble>
                     <name>RefVoltage</name>

@@ -90,10 +90,12 @@ def apply_cc(item, cc_matrix):
 
 ## Oversampling removal
 
-def remove_os(data, axis=0):
+def remove_os(data, axis=0, os_factor=2):
     '''Remove oversampling (assumes os factor 2)
     '''
-    cut = slice(data.shape[axis]//4, (data.shape[axis]*3)//4)
+    lower = data.shape[axis]//2 - int(data.shape[axis]/(2*os_factor))
+    upper = data.shape[axis]//2 - int(data.shape[axis]/(2*os_factor))
+    cut = slice(lower, upper)
     data = np.fft.ifft(data, axis=axis)
     data = np.delete(data, cut, axis=axis)
     data = np.fft.fft(data, axis=axis)

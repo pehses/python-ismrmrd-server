@@ -101,6 +101,9 @@ def process(connection, config, metadata):
     # Insert protocol header
     insert_hdr(prot_file, metadata)
 
+    # Read user parameters
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+
     # Check SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
     if sms_factor > 1 and process_raw.slc_sel is not None:
@@ -115,9 +118,9 @@ def process(connection, config, metadata):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     # parameters for B0 correction
-    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value # [s]
-    t_min = metadata.userParameters.userParameterDouble[3].value # [s]
-    spiral_delay = metadata.userParameters.userParameterDouble[1].value # [s]
+    dwelltime = 1e-6*up_double["dwellTime_us"] # [s]
+    t_min = up_double["t_min"] # [s]
+    spiral_delay =  up_double["traj_delay"] # [s]
     t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
 
     logging.info("Config: \n%s", config)
@@ -139,8 +142,8 @@ def process(connection, config, metadata):
 
     # Log some measurement parameters
     freq = metadata.experimentalConditions.H1resonanceFrequency_Hz
-    shim_currents = [k.value for k in metadata.userParameters.userParameterDouble[6:15]]
-    ref_volt = metadata.userParameters.userParameterDouble[5].value
+    shim_currents = [v for k,v in up_double.items() if "ShimCurrent" in k]
+    ref_volt = up_double["RefVoltage"]
     logging.info(f"Measurement Frequency: {freq}")
     logging.info(f"Shim Currents: {shim_currents}")
     logging.info(f"Reference Voltage: {ref_volt}")
@@ -311,6 +314,10 @@ def process(connection, config, metadata):
                         # filter signal to avoid Gibbs Ringing
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
                         last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
+
+                        # remove oversampling
+                        os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                        last_item.data[:] = rh.remove_os(last_item.data[:], axis=-1, os_factor=os_factor)
 
                         # Correct the global phase
                         if skope:
@@ -776,7 +783,8 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
 
     # calculate low resolution sensmaps for shot images
     if sens_shots:
-        os_region = metadata.userParameters.userParameterDouble[4].value
+        up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        os_region = up_double["os_region"]
         if np.allclose(os_region,0):
             os_region = 0.25 # use default if no region provided
         nx = metadata.encoding[0].encodedSpace.matrixSize.x

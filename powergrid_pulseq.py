@@ -318,6 +318,28 @@ def process(connection, config, metadata):
                         # remove oversampling
                         os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                         last_item.data[:] = rh.remove_os(last_item.data[:], axis=-1, os_factor=os_factor)
+                        
+                        # Off-center phase correction for SMS data (calculations in GCS)
+                        # WIP: FOV shift reapply also for blips??
+                        # if sms_factor > 1:
+                        #     # calculate kz in [1/mm]
+                        #     fov_z = metadata.encoding[0].reconSpace.fieldOfView_mm.z
+                        #     kz = last_item.traj[:,2] / (1e-3*fov_z)
+                        #     np.save(debugFolder+"/kz_blips.npy", kz)
+
+                        #     # calculate distance of slice group to gradient isocenter [mm]
+                        #     # for even sms-factor the center of the slice group is between the center slices
+                        #     # for odd sms-factor the center of the slice group is the position of the center slice
+                        #     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+                        #     n_slc_eff = n_slc // sms_factor
+                        #     mid_slc = last_item.idx.slice + (sms_factor//2)*n_slc_eff # index of center slice of slice group
+                        #     slc_offset = slc_res*(mid_slc-(n_slc-1)/2)
+                        #     if sms_factor%2 == 0:
+                        #         mid_slc2 = last_item.idx.slice + (sms_factor//2-1)*n_slc_eff
+                        #         slc_offset = (slc_offset + slc_res*(mid_slc2-(n_slc-1)/2)) / 2
+                        #     z_offset = shift[2] + slc_offset # [mm], shift[2] is the global slice shift
+                        #     logging.debug([z_offset, last_item.idx.slice])
+                        #     last_item.data[:] *= np.exp(-1j*2*np.pi*kz*z_offset)
 
                         # Correct the global phase
                         if skope:

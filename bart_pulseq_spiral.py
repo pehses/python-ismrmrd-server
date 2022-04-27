@@ -235,7 +235,7 @@ def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
     if sensmaps is None:
-        logging.debug("no pics necessary, just do standard recon")
+        logging.debug("no pics necessary, do nufft recon")
             
         # bart nufft
         data = bart(1, nufft_config, trj, data) # nufft
@@ -292,7 +292,7 @@ def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par
             image.image_series_index = 1 + group[0].idx.repetition
-            image.slice = 0
+            image.slice = group[0].idx.slice
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -302,7 +302,7 @@ def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
         image.image_series_index = 1 + group[0].idx.repetition
-        image.slice = 0
+        image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(hdr.encoding[0].reconSpace.fieldOfView_mm.y), 

@@ -223,7 +223,7 @@ def insert_acq(meta_acq, dset_acq, hdr, noncartesian=True, return_basetrj=True):
         
         # calculate full number of samples
         nsamples = dset_acq.number_of_samples
-        nsegments = hdr.encoding[0].encodingLimits.segment.maximum + 1
+        nsegments = hdr.encoding[0].encodingLimits.segment.maximum + 1 # number of ADC segments in the Pulseq sequence
         nsamples_full = int(nsamples*nsegments+0.5)
         nsamples_max = 65535
         if nsamples_full > nsamples_max:
@@ -231,15 +231,20 @@ def insert_acq(meta_acq, dset_acq, hdr, noncartesian=True, return_basetrj=True):
        
         # save data as it gets corrupted by the resizing, dims are [nc, samples]
         data_tmp = dset_acq.data[:]
+        traj_tmp = dset_acq.traj[:]
 
         # resize data - traj_dims: [kx,ky,kz]
         dset_acq.resize(trajectory_dimensions=3, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
-        # calculate trajectory with GIRF or take trajectory (aligned to ADC) from metadata
-        # check should be a pretty robust
-        if meta_acq.traj.shape[0] == dset_acq.data.shape[1] and meta_acq.traj[:,:3].max() > 1:
+        # trajectory already inserted in raw data file?
+        if traj_tmp.size > 0:
+            reco_trj = traj_tmp[:,:3]
+            base_trj = reco_trj.copy()
+        # trajectory in metadata file? check should be pretty robust
+        elif meta_acq.traj.shape[0] == dset_acq.data.shape[1] and meta_acq.traj[:,:3].max() > 1:
             reco_trj = meta_acq.traj[:,:3]
             base_trj = reco_trj.copy()
+        # gradients in metadata file? 
         else:
             use_girf = False
             if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':

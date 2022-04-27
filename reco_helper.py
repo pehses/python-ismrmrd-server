@@ -94,7 +94,7 @@ def remove_os(data, axis=0, os_factor=2):
     '''Remove oversampling (assumes os factor 2)
     '''
     lower = data.shape[axis]//2 - int(data.shape[axis]/(2*os_factor))
-    upper = data.shape[axis]//2 - int(data.shape[axis]/(2*os_factor))
+    upper = data.shape[axis]//2 + int(data.shape[axis]/(2*os_factor))
     cut = slice(lower, upper)
     data = np.fft.ifft(data, axis=axis)
     data = np.delete(data, cut, axis=axis)

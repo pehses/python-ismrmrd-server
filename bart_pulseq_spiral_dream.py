@@ -80,7 +80,6 @@ def process(connection, config, metadata):
     sensmaps = [None] * n_slc
     old_grid = []
     dmtx = None
-    refscans = [None] * n_slc
 
     # read protocol arrays
     prot_arrays = get_ismrmrd_arrays(prot_file)
@@ -93,11 +92,9 @@ def process(connection, config, metadata):
     process_raw.imascale = [None] * n_contr
     
     # parameters for reapplying FOV shift
-    nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
     matr_sz = np.array([metadata.encoding[0].encodedSpace.matrixSize.x, metadata.encoding[0].encodedSpace.matrixSize.y])
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
-    base_trj = None
 
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
@@ -113,10 +110,8 @@ def process(connection, config, metadata):
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
-                base_traj = insert_acq(acqs[0], item, metadata)
+                insert_acq(acqs[0], item, metadata, return_basetrj=False)
                 acqs.pop(0)
-                if base_traj is not None:
-                    base_trj = base_traj
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -157,11 +152,6 @@ def process(connection, config, metadata):
                     
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)
-
-                    # for reapplying FOV shift (see below)
-                    pred_trj = item.traj[:]
-                    rotmat = calc_rotmat(item)
-                    shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
                 else:
                     # append data to first segment of ADC group
                     idx_lower = item.idx.segment * item.number_of_samples

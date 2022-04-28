@@ -140,7 +140,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                         acsGroup[item.idx.slice].clear()
                     continue
                 
-                # Copy sensitivity maps if less slices were acquired
+                # Copy sensitivity maps if less slices were acquired (in 2D sequence)
                 n_sensmaps = len([x for x in sensmaps if x is not None])
                 if (n_sensmaps != len(sensmaps) and n_sensmaps != 0):                    
                     if (n_slc % 2 == 0):
@@ -370,8 +370,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
 
     meta3 = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                         'WindowCenter':           '4096',
-                         'WindowWidth':            '8192',
+                         'WindowCenter':           '512',
+                         'WindowWidth':            '1024',
                          'Keep_image_geometry':    '1'})
     xml3 = meta3.serialize()
     

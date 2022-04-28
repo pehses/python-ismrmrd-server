@@ -292,7 +292,7 @@ class Connection:
                 images = [images]
 
             logging.info("--> Sending MRD_MESSAGE_ISMRMRD_IMAGE (1022) (%d images)", len(images))
-            for image in images[::-1]:
+            for image in images:
                 self.sentImages += 1
                 self.socket.send(constants.MrdMessageIdentifier.pack(constants.MRD_MESSAGE_ISMRMRD_IMAGE))
                 image.serialize_into(self.socket.send)

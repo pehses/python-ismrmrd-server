@@ -315,9 +315,10 @@ def process(connection, config, metadata):
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
                         last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
 
-                        # remove oversampling
+                        # remove ADC oversampling
                         os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
-                        last_item.data[:] = rh.remove_os(last_item.data[:], axis=-1, os_factor=os_factor)
+                        if os_factor == 2:
+                            rh.remove_os_spiral(last_item)
                         
                         # Off-center phase correction for SMS data (calculations in GCS)
                         # WIP: FOV shift reapply also for blips??

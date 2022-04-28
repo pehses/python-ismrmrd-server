@@ -366,8 +366,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     # set z-axis for 3D imaging if trajectory is two-dimensional 
     # this only works for Cartesian sampling in kz (works also with CAIPI)
     if dims == 2:
-        Rz = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2 if hdr.encoding[0].parallelImaging is not None else 1
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z // Rz
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
         pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        

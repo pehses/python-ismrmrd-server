@@ -324,7 +324,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         fa_map = fa_map.astype(np.int16)
         logging.debug("fa map is size %s" % (fa_map.shape,))
         
-        ref_volt *= 10
         ref_volt = np.around(ref_volt)
         ref_volt = ref_volt.astype(np.int16)
         logging.debug("ref_volt map is size %s" % (ref_volt.shape,))
@@ -377,40 +376,81 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     xml3 = meta3.serialize()
     
     images = []
+    n_par = data.shape[-1]
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     
-    # Format as ISMRMRD image data - send as 3D data (WIP: orientation not correct at scanner)
-    image = ismrmrd.Image.from_array(np.moveaxis(data,-1,0), acquisition=group[0])
-    image.image_index = group[0].idx.contrast
-    image.image_series_index = 1
-    image.slice = 0
-    image.attribute_string = xml
-    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-    images.append(image)
-
-    if fa_map is not None:
-        image = ismrmrd.Image.from_array(np.moveaxis(fa_map,-1,0), acquisition=group[0])
-        image.image_index = 1
-        image.image_series_index = 2
+    # Format as ISMRMRD image data
+    if n_par > 1:
+        for par in range(n_par):
+            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_par + par
+            image.image_series_index = 1
+            image.slice = 0
+            image.contrast = group[0].idx.contrast
+            image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
+        
+        if fa_map is not None:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
+                image.image_index = 1 + par
+                image.image_series_index = 2
+                image.slice = 0
+                image.attribute_string = xml2
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
+        
+        if ref_volt is not None:
+            for par in range(n_par):
+                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
+                image.image_index = 1 + par
+                image.image_series_index = 3
+                image.slice = 0
+                image.attribute_string = xml3
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
+        
+    else:
+        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+        image.image_series_index = 1
         image.slice = 0
-        image.attribute_string = xml2
+        image.contrast = group[0].idx.contrast
+        image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
-
-    if ref_volt is not None:
-        image = ismrmrd.Image.from_array(np.moveaxis(ref_volt,-1,0), acquisition=group[0])
-        image.image_index = 1
-        image.image_series_index = 3
-        image.slice = 0
-        image.attribute_string = xml3
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
+        
+        if fa_map is not None:
+            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 2
+            image.slice = 0
+            image.attribute_string = xml2
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
+        
+        if ref_volt is not None:
+            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
+            image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
+            image.image_series_index = 3
+            image.slice = 0
+            image.attribute_string = xml3
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
 
     return images
 

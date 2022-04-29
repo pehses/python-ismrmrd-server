@@ -75,7 +75,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
     sensmaps = [None] * n_slc
     old_grid = []
     dmtx = None
-    refscans = [None] * n_slc
 
     # read protocol arrays
     prot_arrays = get_ismrmrd_arrays(prot_file)

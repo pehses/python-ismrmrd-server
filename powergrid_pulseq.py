@@ -315,6 +315,11 @@ def process(connection, config, metadata):
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
                         last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
 
+                        # Correct the global phase
+                        if skope:
+                            k0 = last_item.traj[:,4]
+                            last_item.data[:] *= np.exp(-1j*k0)
+
                         # remove ADC oversampling
                         os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                         if os_factor == 2:
@@ -341,11 +346,6 @@ def process(connection, config, metadata):
                         #     z_offset = shift[2] + slc_offset # [mm], shift[2] is the global slice shift
                         #     logging.debug([z_offset, last_item.idx.slice])
                         #     last_item.data[:] *= np.exp(-1j*2*np.pi*kz*z_offset)
-
-                        # Correct the global phase
-                        if skope:
-                            k0 = last_item.traj[:,4]
-                            last_item.data[:] *= np.exp(-1j*k0)
 
                     if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
@@ -502,9 +502,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        mask = fmap_mask.copy()
-        if sms_factor > 1:
-            mask = reshape_fmap_sms(mask, sms_factor)
+        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # always need [slice,nz,ny,nx] in calc_phasemaps
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 

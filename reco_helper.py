@@ -89,7 +89,6 @@ def apply_cc(item, cc_matrix):
     item.data[:] = data
 
 ## Oversampling removal
-
 def remove_os(data, axis=0):
     '''Remove oversampling (assumes os factor 2)
     '''
@@ -98,6 +97,25 @@ def remove_os(data, axis=0):
     data = np.delete(data, cut, axis=axis)
     data = np.fft.fft(data, axis=axis)
     return data
+
+def remove_os_spiral(acq):
+    '''Remove oversampling for spiral data (assumes os factor 2)
+    '''
+
+    # cut data
+    data = acq.data[:]
+    cut = slice(data.shape[1]//4, (data.shape[1]*3)//4)
+    data = np.fft.ifft(data, axis=1)
+    data = np.delete(data, cut, axis=1)
+    data = np.fft.fft(data, axis=1)
+
+    # delete every 2nd point in trajectory
+    traj = acq.traj[:]
+    traj = traj[::2]
+
+    acq.resize(number_of_samples=data.shape[1], trajectory_dimensions=acq.trajectory_dimensions, active_channels=acq.active_channels)
+    acq.data[:] = data
+    acq.traj[:] = traj
 
 ## Rotations
 

@@ -276,11 +276,13 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
 
-        # remove first ADCs as they can be corrupted
+        # remove first ADCs of spirals as they can be corrupted
         delay = metadata.userParameters.userParameterDouble[1].value
-        if delay > 0: # only do this if trajectory was sufficiently delayed
+        trajtype = metadata.encoding[0].trajectory.value
+        if delay > 0 and trajtype=='spiral': # only do this if trajectory was sufficiently delayed
             dwelltime = 1e-6 * metadata.userParameters.userParameterDouble[0].value
             rm_ix = int(delay/dwelltime)
+            if rm_ix%2: rm_ix -= 1 # stay at even number of samples
             data_tmp = dset_acq.data[:,rm_ix:]
             traj_tmp = dset_acq.traj[rm_ix:]
             dset_acq.resize(trajectory_dimensions=dset_acq.trajectory_dimensions, number_of_samples=dset_acq.number_of_samples-rm_ix, active_channels=dset_acq.active_channels)
@@ -366,8 +368,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     # set z-axis for 3D imaging if trajectory is two-dimensional 
     # this only works for Cartesian sampling in kz (works also with CAIPI)
     if dims == 2:
-        Rz = hdr.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2 if hdr.encoding[0].parallelImaging is not None else 1
-        nz = hdr.encoding[0].encodedSpace.matrixSize.z // Rz
+        nz = hdr.encoding[0].encodedSpace.matrixSize.z
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2
         pred_trj[2] =  kz * np.ones(pred_trj.shape[1])        

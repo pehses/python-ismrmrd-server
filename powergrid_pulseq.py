@@ -90,7 +90,7 @@ def process(connection, config, metadata):
         if os.path.isfile(prot_file_loc):
             prot_file = prot_file_loc
         else:
-            raise ValueError("No protocol file available.")
+            raise ValueError(f"Metadata file {prot_file} not available.")
 
     # check signature
     prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
@@ -100,6 +100,9 @@ def process(connection, config, metadata):
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)
+
+    # Read user parameters
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
     # Check SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
@@ -115,9 +118,9 @@ def process(connection, config, metadata):
     res = np.array([metadata.encoding[0].encodedSpace.fieldOfView_mm.x / matr_sz[0], metadata.encoding[0].encodedSpace.fieldOfView_mm.y / matr_sz[1], 1])
 
     # parameters for B0 correction
-    dwelltime = 1e-6*metadata.userParameters.userParameterDouble[0].value # [s]
-    t_min = metadata.userParameters.userParameterDouble[3].value # [s]
-    spiral_delay = metadata.userParameters.userParameterDouble[1].value # [s]
+    dwelltime = 1e-6*up_double["dwellTime_us"] # [s]
+    t_min = up_double["t_min"] # [s]
+    spiral_delay =  up_double["traj_delay"] # [s]
     t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
 
     logging.info("Config: \n%s", config)
@@ -139,8 +142,8 @@ def process(connection, config, metadata):
 
     # Log some measurement parameters
     freq = metadata.experimentalConditions.H1resonanceFrequency_Hz
-    shim_currents = [k.value for k in metadata.userParameters.userParameterDouble[6:15]]
-    ref_volt = metadata.userParameters.userParameterDouble[5].value
+    shim_currents = [v for k,v in up_double.items() if "ShimCurrent" in k]
+    ref_volt = up_double["RefVoltage"]
     logging.info(f"Measurement Frequency: {freq}")
     logging.info(f"Shim Currents: {shim_currents}")
     logging.info(f"Reference Voltage: {ref_volt}")
@@ -317,6 +320,33 @@ def process(connection, config, metadata):
                             k0 = last_item.traj[:,4]
                             last_item.data[:] *= np.exp(-1j*k0)
 
+                        # remove ADC oversampling
+                        os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                        if os_factor == 2:
+                            rh.remove_os_spiral(last_item)
+                        
+                        # Off-center phase correction for SMS data (calculations in GCS)
+                        # WIP: FOV shift reapply also for blips??
+                        # if sms_factor > 1:
+                        #     # calculate kz in [1/mm]
+                        #     fov_z = metadata.encoding[0].reconSpace.fieldOfView_mm.z
+                        #     kz = last_item.traj[:,2] / (1e-3*fov_z)
+                        #     np.save(debugFolder+"/kz_blips.npy", kz)
+
+                        #     # calculate distance of slice group to gradient isocenter [mm]
+                        #     # for even sms-factor the center of the slice group is between the center slices
+                        #     # for odd sms-factor the center of the slice group is the position of the center slice
+                        #     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+                        #     n_slc_eff = n_slc // sms_factor
+                        #     mid_slc = last_item.idx.slice + (sms_factor//2)*n_slc_eff # index of center slice of slice group
+                        #     slc_offset = slc_res*(mid_slc-(n_slc-1)/2)
+                        #     if sms_factor%2 == 0:
+                        #         mid_slc2 = last_item.idx.slice + (sms_factor//2-1)*n_slc_eff
+                        #         slc_offset = (slc_offset + slc_res*(mid_slc2-(n_slc-1)/2)) / 2
+                        #     z_offset = shift[2] + slc_offset # [mm], shift[2] is the global slice shift
+                        #     logging.debug([z_offset, last_item.idx.slice])
+                        #     last_item.data[:] *= np.exp(-1j*2*np.pi*kz*z_offset)
+
                     if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
                         # WIP: Repetitions or Averages not possible atm
@@ -472,9 +502,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        mask = fmap_mask.copy()
-        if sms_factor > 1:
-            mask = reshape_fmap_sms(mask, sms_factor)
+        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # always need [slice,nz,ny,nx] in calc_phasemaps
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -776,7 +804,8 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
 
     # calculate low resolution sensmaps for shot images
     if sens_shots:
-        os_region = metadata.userParameters.userParameterDouble[4].value
+        up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        os_region = up_double["os_region"]
         if np.allclose(os_region,0):
             os_region = 0.25 # use default if no region provided
         nx = metadata.encoding[0].encodedSpace.matrixSize.x

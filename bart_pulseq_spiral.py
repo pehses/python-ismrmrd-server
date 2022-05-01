@@ -228,7 +228,7 @@ def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
-    force_pics = False
+    force_pics = True
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space

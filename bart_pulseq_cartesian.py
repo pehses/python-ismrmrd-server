@@ -14,6 +14,8 @@ import ctypes
 from bart import bart
 from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
+from scipy.ndimage import gaussian_filter, median_filter
+from skimage.restoration import unwrap_phase
 
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
@@ -46,8 +48,6 @@ def process_cartesian(connection, config, metadata, prot_file):
     # if it failed conversion earlier
 
     try:
-        # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
-        # logging.info("Metadata: \n%s", metadata.serialize())
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
@@ -62,9 +62,14 @@ def process_cartesian(connection, config, metadata, prot_file):
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
 
-    # Continuously parse incoming data parsed from MRD messages
+    # Slice and contrast information
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+
+    # for B0 mapping
+    ismrmrd_arr = get_ismrmrd_arrays(prot_file)
+    if 'echo_times' in ismrmrd_arr:
+        process_raw.phs_imgs = [None] * n_contr
 
     acqGroup = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     noiseGroup = []
@@ -123,7 +128,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, ismrmrd_arr, dmtx, sensmaps[item.idx.slice], gpu)
                     logging.debug("Sending image to client:\n%s", image)
                     connection.send_image(image)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
@@ -166,7 +171,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                 if sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx)
-                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
+                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, ismrmrd_arr, dmtx, sensmaps[item.idx.slice])
                 logging.debug("Sending image to client:\n%s", image)
                 connection.send_image(image)
                 acqGroup = []
@@ -267,7 +272,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
         return None
 
 
-def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=False):
 
     data = sort_into_kspace(group, metadata, dmtx)
 
@@ -283,12 +288,48 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
+    # for B0 mapping
+    if 'echo_times' in ismrmrd_arr:
+        echo_times = ismrmrd_arr['echo_times']
+        te_diff = echo_times[1] - echo_times[0] # [s]
+    else:
+        te_diff = None
+
+    fmap = None
     if sensmaps is None:
-        logging.debug("no pics necessary, just do standard fft")
-        data = cifftn(data, axes=(0, 1, 2))
-        
-        # Sum of squares coil combination
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
+        logging.debug("no pics necessary, just do standard FFT")
+        data_uncmb = cifftn(data, axes=(0, 1, 2))
+        data = np.sqrt(np.sum(np.abs(data_uncmb)**2, axis=-1)) # Sum of squares coil combination
+
+        # B0 mapping example - atm only dual echo
+        # use own code for masking & regularizing, though FSL would also be possible (if installed in docker)
+        if te_diff is not None:
+            contr = group[0].idx.contrast
+            n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+            process_raw.phs_imgs[contr] = data_uncmb.copy()
+            if contr == n_contr-1:
+                img1 = process_raw.phs_imgs[0][:,:,0] # remove 3rd dim - only 2D
+                img2 = process_raw.phs_imgs[1][:,:,0]
+                phasediff = img1 * np.conj(img2) # phase difference
+                phasediff = np.sum(phasediff, axis=-1) # coil combination
+                phasediff = unwrap_phase(np.angle(phasediff))
+                fmap = phasediff/(2*np.pi*te_diff)
+
+                # simple threshold mask
+                mask = data[:,:,0]/np.max(data) 
+                mask[mask<0.06] = 0
+                mask[mask>=0.06] = 1
+
+                # apply masking and some regularization
+                fmap *= mask
+                fmap = gaussian_filter(fmap, sigma=0.5)
+                fmap = median_filter(fmap, size=2)
+                fmap = np.around(fmap)
+                fmap = fmap.astype(np.int16)[...,np.newaxis]
+
+                # correct orientation at scanner (consistent with ICE)
+                fmap = np.swapaxes(fmap, 0, 1)
+                fmap = np.flip(fmap, (0,1,2))
     else:
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
@@ -331,8 +372,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
-            image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
-            image.slice = 0
+            image.image_series_index = 1
+            image.slice = group[0].idx.slice
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -342,13 +383,25 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
-        image.image_series_index = 1 + group[0].idx.repetition # contains image series index, e.g. different contrasts
-        image.slice = 0
+        image.image_series_index = 1
+        image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
+
+    if fmap is not None:
+        for par in range(n_par):
+            image = ismrmrd.Image.from_array(fmap[...,par], acquisition=group[0])
+            image.image_index = group[0].idx.slice
+            image.image_series_index = 2
+            image.slice = 0
+            image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))

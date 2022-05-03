@@ -10,10 +10,10 @@ import os
 import logging
 from reco_helper import calc_rotmat, gcs_to_dcs, dcs_to_gcs, intp_axis
 
-def insert_hdr(metadata_file, hdr): 
+def insert_hdr(meta_file, hdr): 
     """
         Inserts the header from an ISMRMRD metadata file
-        metadata: ISMRMRD metadata file
+        meta_file: ISMRMRD metadata file
         hdr:      Dataset header
     """
 

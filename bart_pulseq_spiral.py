@@ -217,7 +217,7 @@ def process_raw(group, hdr, dmtx=None, sensmaps=None, gpu=False):
     rNy = hdr.encoding[0].reconSpace.matrixSize.y
     rNz = hdr.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, hdr, dmtx)
+    data, trj = sort_spiral_data(group, dmtx)
     
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
@@ -334,7 +334,7 @@ def process_acs(group, hdr, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, hdr, dmtx=None):
+def sort_spiral_data(group, dmtx=None):
     
     sig = list()
     trj = list()

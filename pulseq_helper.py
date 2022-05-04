@@ -21,14 +21,14 @@ def insert_hdr(meta_file, hdr):
     # Read metadata
     #---------------------------
 
-    if (os.path.splitext(metadata_file)[1] == ''):
-        metadata_file += '.h5'
+    if (os.path.splitext(meta_file)[1] == ''):
+        meta_file += '.h5'
     try:
-        metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
+        metadata = ismrmrd.Dataset(meta_file, create_if_needed=False)
     except:
-        metadata_file = os.path.splitext(metadata_file)[0] + '.hdf5'
+        meta_file = os.path.splitext(meta_file)[0] + '.hdf5'
         try:
-            metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
+            metadata = ismrmrd.Dataset(meta_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq metadata file not found.')
 
@@ -99,20 +99,20 @@ def insert_hdr(meta_file, hdr):
 
     metadata.close()
 
-def get_ismrmrd_arrays(metadata_file):
+def get_ismrmrd_arrays(meta_file):
     """ Returns all arrays appended to the metadata file and their
         respective keys as a tuple
 
     """
 
-    if (os.path.splitext(metadata_file)[1] == ''):
-        metadata_file += '.h5'
+    if (os.path.splitext(meta_file)[1] == ''):
+        meta_file += '.h5'
     try:
-        metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
+        metadata = ismrmrd.Dataset(meta_file, create_if_needed=False)
     except:
-        metadata_file = os.path.splitext(metadata_file)[0] + '.hdf5'
+        meta_file = os.path.splitext(meta_file)[0] + '.hdf5'
         try:
-            metadata = ismrmrd.Dataset(metadata_file, create_if_needed=False)
+            metadata = ismrmrd.Dataset(meta_file, create_if_needed=False)
         except:
             raise ValueError('Pulseq metadata file not found.')
 

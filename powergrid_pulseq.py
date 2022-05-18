@@ -72,6 +72,9 @@ def process(connection, config, metadata):
     # ----------------------------- #
 
     # Create folder, if necessary
+    seq_signature = metadata.userParameters.userParameterString[1].value
+    global debugFolder 
+    debugFolder += f"/{seq_signature}"
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
@@ -347,7 +350,7 @@ def process(connection, config, metadata):
                         #     logging.debug([z_offset, last_item.idx.slice])
                         #     last_item.data[:] *= np.exp(-1j*2*np.pi*kz*z_offset)
 
-                    if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and shotimgs is not None:
+                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
                         # WIP: Repetitions or Averages not possible atm
                         sensmaps_shots_stack = []

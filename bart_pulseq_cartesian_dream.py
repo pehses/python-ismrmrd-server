@@ -356,7 +356,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                 fa_map = calc_fa(abs(ste), abs(fid))
             
             fa_map *= dil
-            current_refvolt = metadata.userParameters.userParameterDouble[5].value
+            up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+            current_refvolt = up_double["RefVoltage"]
             nom_fa = dream[1]
             logging.info("current_refvolt = %sV und nom_fa = %s°^" % (current_refvolt, nom_fa))
             ref_volt = current_refvolt * (nom_fa/fa_map)

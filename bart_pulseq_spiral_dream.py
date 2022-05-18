@@ -313,7 +313,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         # FA map and RefVoltage map
         fa_map = calc_fa(abs(ste), abs(fid))
         # fa_map *= mask
-        current_refvolt = metadata.userParameters.userParameterDouble[5].value
+        up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        current_refvolt = up_double["RefVoltage"]
         nom_fa = dream[1]
         logging.info("current_refvolt = %sV and nom_fa = %s°^" % (current_refvolt, nom_fa))
         ref_volt = current_refvolt * (nom_fa/fa_map)
@@ -472,7 +473,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, metadata, dmtx=None):
+def sort_spiral_data(group, dmtx=None):
     
     sig = list()
     trj = list()

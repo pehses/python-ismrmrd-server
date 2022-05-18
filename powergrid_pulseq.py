@@ -35,9 +35,6 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
-# debug parameter - read already calculated calib data from file
-read_data = False
-
 ########################
 # Main Function
 ########################
@@ -81,8 +78,6 @@ def process(connection, config, metadata):
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
-        global read_data
-        read_data = False
 
     # ISMRMRD protocol file
     prot_folder = os.path.join(dependencyFolder, "metadata")
@@ -180,7 +175,7 @@ def process(connection, config, metadata):
     process_acs.cc_mat = [None] * n_slc # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
 
-    if "b_values" in prot_arrays and n_intl > 1 and not read_data:
+    if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
         # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
         # WIP: This does not work with multiple repetitions or averages atm (needs more list dimensions)
@@ -188,7 +183,7 @@ def process(connection, config, metadata):
         sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
-    if 'echo_times' in prot_arrays and not read_data:
+    if 'echo_times' in prot_arrays:
         process_acs.fmap = {'fmap': [None] * n_slc, 'mask': [None] * n_slc, 'name': 'Field Map from reference scan'}
         echo_times = prot_arrays['echo_times']
         te_diff = echo_times[1] - echo_times[0] # [s]
@@ -262,7 +257,7 @@ def process(connection, config, metadata):
                     for k in range(sms_factor):
                         slc_ix = item.idx.slice + n_slc//sms_factor*k
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        if sensmaps[slc_ix] is None and not read_data:
+                        if sensmaps[slc_ix] is None:
                             sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
                             acsGroup[slc_ix].clear()
                             # copy data
@@ -356,7 +351,7 @@ def process(connection, config, metadata):
                         #     logging.debug([z_offset, last_item.idx.slice])
                         #     last_item.data[:] *= np.exp(-1j*2*np.pi*kz*z_offset)
 
-                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and shotimgs is not None and not read_data:
+                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and shotimgs is not None:
                         # Reconstruct shot images for phase maps in multishot diffusion imaging
                         # WIP: Repetitions or Averages not possible atm
                         sensmaps_shots_stack = []
@@ -450,9 +445,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     dset_tmp.write_xml_header(metadata.toXML())
 
     # Insert Sensitivity Maps
-    if read_data:
-        sens = np.load(debugFolder + "/sensmaps.npy")
-    elif process_raw.slc_sel is not None:
+    if process_raw.slc_sel is not None:
         sens = np.transpose(sensmaps[process_raw.slc_sel][np.newaxis], [0,4,3,2,1])
     else:
         sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
@@ -462,9 +455,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
-    if read_data:
-        fmap = {'fmap': np.load(debugFolder+"/fmap_data.npy"), 'mask': np.load(debugFolder+"/fmap_mask.npy"), 'name': "Field map from reference scan."}
-    elif process_acs.fmap is not None:
+    # process_acs.fmap = None # just for debugging
+    if process_acs.fmap is not None:
         fmap = process_acs.fmap
         if process_raw.slc_sel is not None:
             fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1.5)
@@ -478,13 +470,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     fmap_data = fmap['fmap']
     fmap_mask = fmap['mask']
     fmap_name = fmap['name']
-    np.save(debugFolder+"/fmap_data.npy", fmap_data)
-    np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     if process_raw.slc_sel is not None:
         fmap_data = fmap_data[process_raw.slc_sel]
         fmap_mask = fmap_mask[process_raw.slc_sel]
     fmap_data = np.asarray(fmap_data)
     fmap_mask = np.asarray(fmap_mask)
+    np.save(debugFolder+"/fmap_data.npy", fmap_data)
+    np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     # remove slice dimension, if field map was 3D
     if len(fmap_data) == 1: fmap_data = fmap_data[0]
     if len(fmap_mask) == 1: fmap_mask = fmap_mask[0]
@@ -503,12 +495,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # always need [slice,nz,ny,nx] in calc_phasemaps
+        if sms_factor > 1:
+            mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # to [slice,nz,ny,nx]
+        else:
+            mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
-        dset_tmp.append_array("PhaseMaps", phasemaps)
-    elif read_data and os.path.exists(debugFolder + "/phsmaps.npy"):
-        pcSENSE = True
-        phasemaps = np.load(debugFolder + "/phsmaps.npy")
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
     # Average acquisition data before reco
@@ -690,8 +681,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         n_b0 = 0
 
     # Append reference image
-    if read_data:
-        process_acs.refimg = np.load(debugFolder + "/refimg.npy")
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)
     if process_raw.slc_sel is not None:
         dsets.append(process_acs.refimg[process_raw.slc_sel][np.newaxis])
@@ -724,7 +713,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
-    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) # rotmat is always the same
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -764,7 +753,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             # atm only ADC maps
             series_ix += 1
             for slc, img in enumerate(data):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                if process_raw.slc_sel is None:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                else:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc + 1

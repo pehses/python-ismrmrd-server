@@ -470,7 +470,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # always need [slice,nz,ny,nx] in calc_phasemaps
+        if sms_factor > 1:
+            mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # to [slice,nz,ny,nx]
+        else:
+            mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -653,6 +656,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         n_b0 = 0
 
     # Append reference image
+    np.save(debugFolder + "/refimg.npy", process_acs.refimg)
     if process_raw.slc_sel is not None:
         dsets.append(process_acs.refimg[process_raw.slc_sel][np.newaxis])
     else:
@@ -684,7 +688,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
-    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) # rotmat is always the same
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -724,7 +728,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             # atm only ADC maps
             series_ix += 1
             for slc, img in enumerate(data):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                if process_raw.slc_sel is None:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                else:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc + 1
@@ -785,7 +792,6 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     else:
         sensmaps_shots = None
 
-    np.save(debugFolder + "/" + "refimg.npy", refimg)
     np.save(debugFolder + "/" + "acs.npy", data)
 
     return sensmaps, sensmaps_shots
@@ -918,7 +924,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
     phasemaps = np.swapaxes(phasemaps, 1, 2) # back to [contrast, slice, shot, nz, ny, nx]
 
-    np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
+    np.save(debugFolder + "/phsmaps.npy", phasemaps)
     
     return phasemaps
 

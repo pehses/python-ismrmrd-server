@@ -107,7 +107,8 @@ def process(connection, config, metadata):
     # Check SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
     if sms_factor > 1 and process_raw.slc_sel is not None:
-            raise ValueError("SMS reconstruction is not possible for single slices.")
+        process_raw.slc_sel = None
+        logging.debug("SMS reconstruction is not possible for single slices. Reconstruct whole volume.")
 
     # Get additional arrays from protocol file for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
@@ -420,13 +421,12 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # Insert Sensitivity Maps
     if process_raw.slc_sel is not None:
-        sens = np.transpose(sensmaps[process_raw.slc_sel], [3,2,1,0])
-        fmap_shape = [len(sensmaps)*sens.shape[1], sens.shape[2], sens.shape[3]]
+        sens = np.transpose(sensmaps[process_raw.slc_sel][np.newaxis], [0,4,3,2,1])
     else:
         sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
-        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
         if sms_factor > 1:
             sens = reshape_sens_sms(sens, sms_factor)
+    np.save(debugFolder + "/sensmaps.npy", sens)
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
@@ -439,18 +439,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1.5) # 3D filtering, list will be converted to ndarray
     else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
-        if not os.path.exists(fmap_path):
-            fmap = {'fmap': np.zeros(fmap_shape), 'mask': np.ones(fmap_shape), 'name': 'No Field Map'}
-            logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
-        else:
-            fmap = np.load(fmap_path, allow_pickle=True)
-            if 'name' not in fmap:
-                fmap['name'] = 'No name.'
-        if fmap_shape != list(fmap['fmap'].shape):
-            logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {fmap_shape}. Dont use field map in recon.")
-            fmap['fmap'] = np.zeros(fmap_shape)
-        if 'params' in fmap:
-            logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
+        fmap = load_external_fmap(fmap_path, fmap_shape)
 
     fmap_data = fmap['fmap']
     fmap_mask = fmap['mask']
@@ -480,7 +470,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # always need [slice,nz,ny,nx] in calc_phasemaps
+        if sms_factor > 1:
+            mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # to [slice,nz,ny,nx]
+        else:
+            mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
 
@@ -663,6 +656,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         n_b0 = 0
 
     # Append reference image
+    np.save(debugFolder + "/refimg.npy", process_acs.refimg)
     if process_raw.slc_sel is not None:
         dsets.append(process_acs.refimg[process_raw.slc_sel][np.newaxis])
     else:
@@ -694,7 +688,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
-    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) # rotmat is always the same
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -734,7 +728,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             # atm only ADC maps
             series_ix += 1
             for slc, img in enumerate(data):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                if process_raw.slc_sel is None:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                else:
+                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc + 1
@@ -795,9 +792,7 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     else:
         sensmaps_shots = None
 
-    np.save(debugFolder + "/" + "refimg.npy", refimg)
     np.save(debugFolder + "/" + "acs.npy", data)
-    np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
 
     return sensmaps, sensmaps_shots
 
@@ -929,7 +924,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
     phasemaps = np.swapaxes(phasemaps, 1, 2) # back to [contrast, slice, shot, nz, ny, nx]
 
-    np.save(debugFolder + "/" + "phsmaps.npy", phasemaps)
+    np.save(debugFolder + "/phsmaps.npy", phasemaps)
     
     return phasemaps
 
@@ -1099,4 +1094,21 @@ def reshape_fmap_sms(fmap, sms_factor):
     fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype) # [slices, ny, nx] to [slices, nz, ny, nx]
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
+    return fmap
+
+def load_external_fmap(path, shape):
+    # Load an external field map (has to be a .npz file)
+    if not os.path.exists(path):
+        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+    else:
+        fmap = np.load(path, allow_pickle=True)
+        if 'name' not in fmap:
+            fmap['name'] = 'No name.'
+    if shape != list(fmap['fmap'].shape):
+        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Dont use field map in recon.")
+        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+    if 'params' in fmap:
+        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+
     return fmap

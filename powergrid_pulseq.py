@@ -456,15 +456,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     fmap_mask = fmap['mask']
     fmap_name = fmap['name']
     if process_raw.slc_sel is not None:
-        fmap_data = fmap_data[process_raw.slc_sel]
-        fmap_mask = fmap_mask[process_raw.slc_sel]
+        fmap_data = fmap_data[process_raw.slc_sel][np.newaxis]
+        fmap_mask = fmap_mask[process_raw.slc_sel][np.newaxis]
+    if fmap_data.ndim == 4: # remove slice dimension, if 3D dataset 
+        fmap_data = fmap_data[0]
+        fmap_mask = fmap_mask[0]
     fmap_data = np.asarray(fmap_data)
     fmap_mask = np.asarray(fmap_mask)
     np.save(debugFolder+"/fmap_data.npy", fmap_data)
     np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
-    # remove slice dimension, if field map was 3D
-    if len(fmap_data) == 1: fmap_data = fmap_data[0]
-    if len(fmap_mask) == 1: fmap_mask = fmap_mask[0]
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
@@ -1094,9 +1094,9 @@ def reshape_sens_sms(sens, sms_factor):
 
 def reshape_fmap_sms(fmap, sms_factor):
     # reshape field map array for sms imaging
-    fmap_cpy = fmap.copy() # [slices, ny, nx] to [slices, nz, ny, nx]
+    fmap_cpy = fmap.copy()
     slices_eff = fmap_cpy.shape[0]//sms_factor
-    fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype)
+    fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype) # [slices, ny, nx] to [slices, nz, ny, nx]
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
     return fmap

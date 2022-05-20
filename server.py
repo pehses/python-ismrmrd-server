@@ -80,6 +80,11 @@ class Server:
                 importlib.reload(bart_pulseq)
                 logging.info("Starting bart_pulseq processing based on config")
                 bart_pulseq.process(connection, config, hdr)
+            elif (config == "powergrid_pulseq"):
+                import powergrid_pulseq
+                importlib.reload(powergrid_pulseq)
+                logging.info("Starting powergrid_pulseq processing based on config")
+                powergrid_pulseq.process(connection, config, hdr)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:
@@ -103,7 +108,9 @@ class Server:
                     logging.info("Starting config %s", config)
                     module.process(connection, config, hdr)
                 except ImportError:
+                    import bart_pulseq
                     logging.info("Unknown config '%s'.  Falling back to 'bart_pulseq'", config)
+                    importlib.reload(bart_pulseq)
                     bart_pulseq.process(connection, config, hdr)
 
         except Exception as e:

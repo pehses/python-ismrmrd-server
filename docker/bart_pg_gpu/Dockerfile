@@ -185,7 +185,7 @@ RUN  cd /opt/code \
      && python3 setup.py install
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b mrm_paper https://github.com/pehses/python-ismrmrd-server.git
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip

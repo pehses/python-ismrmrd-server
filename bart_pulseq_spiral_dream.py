@@ -242,7 +242,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     rNy = metadata.encoding[0].reconSpace.matrixSize.y
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, metadata, dmtx)
+    data, trj = sort_spiral_data(group, dmtx)
     process_raw.rawdata[group[0].idx.contrast] = data.copy() # save rawdata of the two contrasts for FID filter calculation
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU

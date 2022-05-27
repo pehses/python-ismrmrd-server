@@ -8,7 +8,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, remove_os_spiral
 from reco_helper import fov_shift_spiral_reapply
 from reco_helper import filt_ksp
 from DreamMap import calc_fa, DREAM_filter_fid
@@ -78,6 +78,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
     # read protocol arrays
     prot_arrays = get_ismrmrd_arrays(prot_file)
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
     # for B1 Dream map
     process_raw.imagesets = [None] * n_contr
@@ -165,6 +166,11 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     # Reapply FOV Shift with predicted trajectory
                     sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
+                    # remove ADC oversampling
+                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                    if os_factor == 2:
+                        remove_os_spiral(acqGroup[item.idx.contrast][item.idx.slice][-1])
+
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.

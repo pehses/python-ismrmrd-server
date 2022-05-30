@@ -810,6 +810,7 @@ def calc_fmap(imgs, te_diff, metadata):
     """
     
     mc_fmaps = True # calculate multi-coil field maps to remove outliers
+    filtering = False # apply Gaussian and median filtering
 
     phasediff = imgs[...,1] * np.conj(imgs[...,0]) # phase difference
     if phasediff.shape[2] == 1:
@@ -857,7 +858,9 @@ def calc_fmap(imgs, te_diff, metadata):
 
     # apply masking and some regularization
     fmap *= mask
-    fmap = median_filter(fmap, size=2)
+    if filtering:
+        fmap = gaussian_filter(fmap, sigma=0.5)
+        fmap = median_filter(fmap, size=2)
 
     # interpolate if necessary
     nx = metadata.encoding[0].encodedSpace.matrixSize.x

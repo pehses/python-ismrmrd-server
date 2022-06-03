@@ -570,7 +570,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
 
     if pcSENSE: # Multishot
         if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug

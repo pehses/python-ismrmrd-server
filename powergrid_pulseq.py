@@ -646,9 +646,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         dsets.append(diffw_imgs.copy())
 
         # Calculate ADC maps
-        scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
-        b0 *= scale
-        diffw_imgs *= scale
         mask = fmap_mask.copy()
         b0 = np.expand_dims(b0.mean(1), 1) # averages over b=0 repetitions
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
@@ -959,30 +956,19 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     """ Calculate ADC maps from diffusion images
     """
 
-    def geom_mean(arr, axis):
-        return (np.prod(arr, axis=axis))**(1.0/arr.shape[axis])
+    from scipy.stats.mstats import gmean
 
     b_val = prot_arrays['b_values']
     n_bval = np.count_nonzero(b_val)
     n_b0 = len(b_val) - n_bval
-    directions = prot_arrays['Directions']
-    n_directions = directions.shape[0]
 
     # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
     b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
     imgshape = [s for s in b0.shape]
     diff = np.transpose(diffw_imgs[:,:,:,:,0].mean(0), [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
 
-    #  WIP & not used: Fit ADC for each direction by linear least squares
-    diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0
-    diff_log  = -np.log(diff_norm, out=np.zeros_like(diff_norm), where=diff_norm!=0)
-    if n_bval<4:
-        d_dir = (diff_log / b_val[n_b0:]).mean(-1)
-    else:
-        d_dir = np.polynomial.polynomial.polyfit(b_val[n_b0:], diff_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape+[n_directions])
-
     # calculate trace images (geometric mean)
-    trace = geom_mean(diff, axis=-2)
+    trace = gmean(diff, axis=-2)
 
     # calculate trace ADC map with LLS
     trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T

@@ -8,7 +8,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
        wget ca-certificates libhdf5-serial-dev build-essential libxml2-dev libxslt1-dev\
-       libfftw3-dev git liblapacke-dev libopenblas-dev curl openmpi-bin
+       libfftw3-dev git liblapacke-dev libopenblas-dev curl openmpi-bin apt-utils
 
 # Install Latest CMake
 RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
@@ -35,33 +35,34 @@ RUN cd /opt/code \
 ### Dependencies for PowerGrid ###
 
 # Download and install NVIDIA HPC SDK
-RUN  wget https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-20-11_20.11_amd64.deb \
-     https://developer.download.nvidia.com/hpc-sdk/20.11/nvhpc-2020_20.11_amd64.deb \
-     && apt-get install --yes ./nvhpc-20-11_20.11_amd64.deb ./nvhpc-2020_20.11_amd64.deb
+RUN  wget https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-22-1_22.1_amd64.deb \
+     https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-2022_22.1_amd64.deb \
+     && apt-get install --yes ./nvhpc-22-1_22.1_amd64.deb ./nvhpc-2022_22.1_amd64.deb
 
 RUN rm nvhpc-*
 
-# Handle NVIDIA HPC SDK specific stuff
+# Load NVIDIA HPC SDK modules
 ENV NVARCH=Linux_x86_64
-ENV NVCOMPILERS=/opt/nvidia/hpc_sdk
-ENV NVSDKVER=20.11
-ENV CUDA_PATH="${NVCOMPILERS}/${NVARCH}/${NVSDKVER}/cuda"
-ENV MANPATH="${MANPATH}:${NVCOMPILERS}/${NVARCH}/20.11/compilers/man"
+ENV NVHPC=/opt/nvidia/hpc_sdk
+ENV HPCSDK_VERSION=22.1
+ENV HPCSDK_RELEASE=2022
+ENV CUDA_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/cuda"
+ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/man"
 ENV LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/compilers/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/compilers/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/math_libs/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/math_libs/lib64:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
-ENV LD_LIBRARY_PATH="${NVCOMPILERS}/${NVARCH}/2020/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
-ENV OPAL_PREFIX="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/"
-ENV PATH="${NVCOMPILERS}/${NVARCH}/20.11/compilers/bin:${PATH}"
-ENV PATH="${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/bin:${PATH}"
-ENV MANPATH="${MANPATH}:${NVCOMPILERS}/${NVARCH}/20.11/comm_libs/mpi/man"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/compilers/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/math_libs/lib64:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/math_libs/lib64:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/mpi/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/nccl/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/nvshmem/lib:${LD_LIBRARY_PATH}"
+ENV OPAL_PREFIX="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/"
+ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/bin:${PATH}"
+ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/bin:${PATH}"
+ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/man"
 
 # Install custom compile of boost - only necessary runtime components
 RUN wget -O ~/boost_1_75_0.tar.bz2 -c 'https://sourceforge.net/projects/boost/files/boost/1.75.0/boost_1_75_0.tar.bz2/download' --max-redirect=100 \
@@ -99,15 +100,15 @@ RUN cd opt/code \
     && make install \
     && ldconfig
 
-# Install PowerGrid
+# Install PowerGrid - cnpy version writing numpy arrays
 RUN  cd /opt/code \
      && git clone https://github.com/mavel101/PowerGrid \
      && cd PowerGrid \
-     && git checkout python_cnpy \
+     && git checkout python_cnpy_dev \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ \
-     && make -j4 && make install
+     && make -j $(nproc) && make install
 
 RUN ldconfig
 

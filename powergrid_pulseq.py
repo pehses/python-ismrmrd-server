@@ -326,6 +326,10 @@ def process(connection, config, metadata):
                             k0 = last_item.traj[:,4]
                             last_item.data[:] *= np.exp(-1j*k0)
 
+                        # T2* filter
+                        t2_star = 40e-3
+                        last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
+
                         # remove ADC oversampling
                         os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                         if os_factor == 2:

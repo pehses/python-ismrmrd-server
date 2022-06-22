@@ -40,11 +40,13 @@ def insert_hdr(prot_file, metadata):
 
     # user parameters
     if prot_hdr.userParameters is not None:
-        dset_udbl = metadata.userParameters.userParameterDouble
-        prot_udbl = prot_hdr.userParameters.userParameterDouble
-        for ix, param in enumerate(prot_udbl):
-            dset_udbl[ix].name = param.name
-            dset_udbl[ix].value = param.value
+        dset_udbl_dict = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        prot_udbl_dict = {item.name: item.value for item in prot_hdr.userParameters.userParameterDouble}
+        merged_dict = {**dset_udbl_dict, **prot_udbl_dict} # by merging the dicts, dummy user parameters in the parameter_map are not necessary anymore
+        metadata.userParameters.userParameterDouble.clear()
+        for key in merged_dict:
+            up = ismrmrd.xsd.userParameterDoubleType(name=key, value=merged_dict[key])
+            metadata.userParameters.userParameterDouble.append(up)
 
     # encoding
     dset_e1 = metadata.encoding[0]

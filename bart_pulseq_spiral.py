@@ -71,9 +71,6 @@ def process_spiral(connection, config, metadata, prot_file):
     # if it failed conversion earlier
 
     try:
-        # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
-        # logging.info("Metadata: \n%s", metadata.serialize())
-
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
             metadata.encoding[0].trajectory.value, 
@@ -257,22 +254,22 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-        nufft_config = 'nufft -g -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
         pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
     else:
-        nufft_config = 'nufft -i -m 10 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
+        nufft_config = 'nufft -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
-    force_pics = False
+    force_pics = True
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
     if sensmaps is None:
-        logging.debug("no pics necessary, just do standard recon")
+        logging.debug("no pics necessary, do nufft recon")
             
         # bart nufft
         data = bart(1, nufft_config, trj, data) # nufft
@@ -323,15 +320,13 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
-    # Format as ISMRMRD image data 
-    # WIP: images are not displayed in correct order at the scanner 
-    # WIP: some header info is missing (read out image header from ICE reconstructed images processed with FIRE)
+    # Format as ISMRMRD image data
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_par + par
             image.image_series_index = 1 + group[0].idx.repetition
-            image.slice = 0
+            image.slice = group[0].idx.slice
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -341,7 +336,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
         image.image_series_index = 1 + group[0].idx.repetition
-        image.slice = 0
+        image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 

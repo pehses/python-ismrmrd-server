@@ -8,7 +8,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, pcs_to_gcs, remove_os, remove_os_spiral
 from reco_helper import fov_shift_spiral_reapply
 from reco_helper import filt_ksp
 from DreamMap import calc_fa, DREAM_filter_fid
@@ -78,6 +78,7 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
     # read protocol arrays
     prot_arrays = get_ismrmrd_arrays(prot_file)
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
     # for B1 Dream map
     process_raw.imagesets = [None] * n_contr
@@ -165,6 +166,11 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     # Reapply FOV Shift with predicted trajectory
                     sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
+                    # remove ADC oversampling
+                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                    if os_factor == 2:
+                        remove_os_spiral(acqGroup[item.idx.contrast][item.idx.slice][-1])
+
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -236,7 +242,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     rNy = metadata.encoding[0].reconSpace.matrixSize.y
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, metadata, dmtx)
+    data, trj = sort_spiral_data(group, dmtx)
     process_raw.rawdata[group[0].idx.contrast] = data.copy() # save rawdata of the two contrasts for FID filter calculation
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
@@ -313,7 +319,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         # FA map and RefVoltage map
         fa_map = calc_fa(abs(ste), abs(fid))
         # fa_map *= mask
-        current_refvolt = metadata.userParameters.userParameterDouble[5].value
+        up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        current_refvolt = up_double["RefVoltage"]
         nom_fa = dream[1]
         logging.info("current_refvolt = %sV and nom_fa = %s°^" % (current_refvolt, nom_fa))
         ref_volt = current_refvolt * (nom_fa/fa_map)
@@ -472,7 +479,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, metadata, dmtx=None):
+def sort_spiral_data(group, dmtx=None):
     
     sig = list()
     trj = list()

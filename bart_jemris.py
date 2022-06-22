@@ -49,8 +49,6 @@ def process(connection, config, metadata, prot_file=None):
     else:
         gpu = False
 
-    # Metadata should be MRD formatted header, but may be a string
-    # if it failed conversion earlier
     try:
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("Trajectory type '%s', matrix size (%s x %s x %s), field of view (%s x %s x %s)mm^3", 
@@ -73,7 +71,6 @@ def process(connection, config, metadata, prot_file=None):
 
     acqGroup = [[[[[] for _ in range(n_slc)] for _ in range(n_contr)] for _ in range(n_sets)] for _ in range(n_avgs)]
     noiseGroup = []
-    waveformGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
@@ -214,7 +211,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         if sensmaps is None:
             if nc != 1:
                 data_mag = np.sqrt(np.sum(np.abs(data)**2, axis=-1)) # Sum of squares coil combination
-                data_phs = np.zeros_like(data_mag)
+                data_phs = np.sum(data_ch_phs, axis=-1)
             else: # this is the default as for nc>1, we should have JEMRIS sensitivity maps
                 data_mag = data_ch_mag.copy()
                 data_phs = data_ch_phs.copy()

@@ -35,6 +35,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
+read_ecalib = False
+
 ########################
 # Main Function
 ########################
@@ -72,6 +74,9 @@ def process(connection, config, metadata):
     # ----------------------------- #
 
     # Create folder, if necessary
+    seq_signature = metadata.userParameters.userParameterString[1].value
+    global debugFolder 
+    debugFolder += f"/{seq_signature}"
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
@@ -764,12 +769,15 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     gpu = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
         gpu = True
-    if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
-        logging.debug("Run Espirit on GPU.")
-        sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+    if read_ecalib:
+        sensmaps = None
     else:
-        logging.debug("Run Espirit on CPU.")
-        sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
+        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+            logging.debug("Run Espirit on GPU.")
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+        else:
+            logging.debug("Run Espirit on CPU.")
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
 
     # Field Map calculation - if acquired
     refimg = cifftn(data, [0,1,2])

@@ -155,7 +155,7 @@ def process(connection, config, metadata):
     logging.info(f"Reference Voltage: {ref_volt}")
 
     # Initialize lists for datasets
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # effective slices acquired (slices/sms_factor)
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
     n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
@@ -860,6 +860,7 @@ def calc_fmap(imgs, te_diff, metadata):
     # apply masking and some regularization
     fmap *= mask
     if filtering:
+        # WIP: standard deviation denoising - s. Paper Robinson 2009
         fmap = gaussian_filter(fmap, sigma=0.5)
         fmap = median_filter(fmap, size=2)
 

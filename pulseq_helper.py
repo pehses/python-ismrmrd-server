@@ -97,9 +97,6 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
         dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
         dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
-    elif len(prot_hdr.userParameters.userParameterDouble) > 3:
-        # compatibility with older datasets, where a user parameter was used
-        dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
 
     # acceleration
     if prot_e1.parallelImaging is not None:
@@ -302,6 +299,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         acq: acquisition from hdf5 protocol file
         hdr: protocol header
         ncol: number of samples
+        rotmat: rotation matrix
     """
     
     dt_grad = 10e-6 # [s]

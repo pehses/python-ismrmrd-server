@@ -349,7 +349,7 @@ def img_coord(metadata, acq):
     ix = iy = np.linspace(-nx/2*res,(nx/2-1)*res, nx) # spirals have quadratic FOV
     iz = np.linspace(0, slc_sep*(nz-1), nz)
 
-    # WIP: slice group offset, global offset
+    # WIP: slice (group) offset and global offset (is in PCS --> pcs to dcs)
 
     # calculate grid
     grid = np.asarray(np.meshgrid(*[ix,iy,iz]))

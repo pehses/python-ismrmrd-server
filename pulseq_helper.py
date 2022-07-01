@@ -202,6 +202,10 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     dset_acq.idx.set = prot_acq.idx.set
     dset_acq.idx.segment = prot_acq.idx.segment
 
+    # user parameters
+    dset_acq.user_int[:] = prot_acq.user_int[:]
+    dset_acq.user_float[:] = prot_acq.user_float[:]
+
     # flags
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)

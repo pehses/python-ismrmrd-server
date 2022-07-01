@@ -496,6 +496,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # Insert acquisitions
     avg_ix = 0
+    bvals = []
+    dirs = []
+    contr_ctr = -1
     for slc in acqGroup:
         for contr in slc:
             for acq in contr:
@@ -512,13 +515,20 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                     else:
                         acq.idx.slice = 0
                 if process_raw.first_contrast and acq.idx.repetition > 0:
-                    continue                
+                    continue
+                if acq.idx.contrast > contr_ctr:
+                    contr_ctr += 1
+                    bvals.append(acq.user_int[0])
+                    dirs.append(acq.user_float[:3])
 
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
                 save_trj = acq.traj[:,:4].copy()
                 acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
+
+    bvals = np.asarray(bvals)
+    dirs = np.asarray(dirs)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
@@ -637,21 +647,21 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
-    n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
-    n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-    if n_bval > 0 and "b_values" in prot_arrays and not process_raw.first_contrast:
-        # Reshape Arrays and append
+    if "b_values" in prot_arrays and not process_raw.first_contrast:
+        # Append data
+        dsets.append(data)
+
+        # Reshape Arrays
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        b0 = data[:,:n_b0]
-        b0_save = b0.copy().reshape([-1, 1]+[s for s in b0.shape[2:]]) # merge repetitions of b0 scans in first dimension
-        diffw_imgs = data[:,n_b0:].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
-        dsets.append(b0_save)
-        dsets.append(diffw_imgs.copy())
+        n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
+        n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
+        b0 = data[:,np.nonzero(bvals==0)[0]]
+        diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
 
         # Calculate ADC maps
         mask = fmap_mask.copy()
-        b0 = np.expand_dims(b0.mean(1), 1) # averages over b=0 repetitions
+        b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
@@ -694,10 +704,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
+        series_ix += 1
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
             for contr in range(data.shape[1]):
-                series_ix += 1
                 for phs in range(data.shape[2]):
                     for rep in range(data.shape[0]): # save one repetition after another
                         for slc in range(data.shape[3]):
@@ -718,9 +728,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.phase = phs
                                 image.contrast = contr
                                 if 'b_values' in prot_arrays:
-                                    image.user_int[0] = 0 if data_ix==0 else int(prot_arrays['b_values'][n_b0+contr])
+                                    image.user_int[0] = bvals[contr]
                                 if 'Directions' in prot_arrays and data_ix>0:
-                                    image.user_float[:3] = prot_arrays['Directions'][phs]
+                                    image.user_float[:3] = dirs[contr]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -738,7 +748,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                     image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
-                image.slice = slc + 1
+                image.slice = slc
                 image.attribute_string = meta.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -965,7 +975,7 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
 
     b_val = prot_arrays['b_values']
     n_bval = np.count_nonzero(b_val)
-    n_b0 = len(b_val) - n_bval
+    bval = b_val[np.nonzero(b_val)[0]]
 
     # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
     b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
@@ -981,9 +991,9 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
 
     # calculate trace diffusion coefficient - WIP: Is the fitting function working correctly?
     if n_bval<3:
-        adc_map = (trace_log / b_val[n_b0:]).mean(-1)
+        adc_map = (trace_log / bval).mean(-1)
     else:
-        adc_map = np.polynomial.polynomial.polyfit(b_val[n_b0:], trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
+        adc_map = np.polynomial.polynomial.polyfit(bval, trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
 
     adc_map *= mask
 

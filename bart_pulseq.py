@@ -61,7 +61,7 @@ def process(connection, config, metadata):
     elif trajtype == 'radial':
         importlib.reload(bart_pulseq_radial)
         logging.info("Starting radial reconstruction.")
-        bart_pulseq_cartesian.process_radial(connection, config, metadata, prot_file)
+        bart_pulseq_radial.process_radial(connection, config, metadata, prot_file)
     elif trajtype == 'other':
         importlib.reload(bart_jemris)
         logging.info("Starting JEMRIS reconstruction.")

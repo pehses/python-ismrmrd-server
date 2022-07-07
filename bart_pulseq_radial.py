@@ -32,15 +32,6 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process_radial(connection, config, metadata, prot_file):
   
-    # Check protocol arrays to process with possible subscript
-    prot_arrays = get_ismrmrd_arrays(prot_file)
-    if "dream" in prot_arrays:
-        import bart_pulseq_spiral_dream
-        import importlib
-        importlib.reload(bart_pulseq_spiral_dream)
-        bart_pulseq_spiral_dream.process_spiral_dream(connection, config, metadata, prot_file)
-        return
-
     # -- Some manual parameters --- #
     
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
@@ -249,7 +240,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     rNy = metadata.encoding[0].reconSpace.matrixSize.y
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, metadata, dmtx)
+    data, trj = sort_radial_data(group, metadata, dmtx)
     
     if process_raw.cc_mat is not None:
         logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
@@ -351,15 +342,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
 
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # rotmat = calc_rotmat(group[0])
-        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
-        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        # data = fov_shift(data, shift)
-
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
@@ -369,7 +351,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
         # ESPIRiT calibration
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
-            # sensmaps = bart(1, 'caldir 64', data)
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
 
@@ -387,7 +368,7 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, metadata, dmtx=None):
+def sort_radial_data(group, metadata, dmtx=None):
     
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -413,12 +394,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj)
-
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
-        # sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
 
     np.save(debugFolder + "/" + "enc.npy", enc)
     

@@ -6,6 +6,7 @@ import importlib
 
 import bart_pulseq_spiral 
 import bart_pulseq_cartesian
+import bart_pulseq_radial
 import bart_jemris
 from pulseq_helper import check_signature
 
@@ -57,6 +58,10 @@ def process(connection, config, metadata):
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
         bart_pulseq_cartesian.process_cartesian(connection, config, metadata, prot_file)
+    elif trajtype == 'radial':
+        importlib.reload(bart_pulseq_radial)
+        logging.info("Starting radial reconstruction.")
+        bart_pulseq_cartesian.process_radial(connection, config, metadata, prot_file)
     elif trajtype == 'other':
         importlib.reload(bart_jemris)
         logging.info("Starting JEMRIS reconstruction.")

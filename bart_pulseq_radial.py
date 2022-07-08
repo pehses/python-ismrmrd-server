@@ -10,7 +10,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os
+from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os, remove_os_spiral
 from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
@@ -42,8 +42,9 @@ def process_radial(connection, config, metadata, prot_file):
             slc_sel = int(online_slc)
 
     # Coil Compression: Compress number of coils to cc_cha
+    n_compr = 0
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    cc_cha = n_cha - 0
+    cc_cha = n_cha - n_compr
     if n_cha > cc_cha:
         logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
 
@@ -77,6 +78,9 @@ def process_radial(connection, config, metadata, prot_file):
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
 
+    # user parameters
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
@@ -93,7 +97,7 @@ def process_radial(connection, config, metadata, prot_file):
     process_raw.imascale = [None] * 256
 
     # compression matrix
-    process_raw.cc_mat = None
+    process_raw.cc_mat = [None] * n_slc
 
     # parameters for reapplying FOV shift
     nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
@@ -167,8 +171,13 @@ def process_radial(connection, config, metadata, prot_file):
                     acqGroup[item.idx.contrast][item.idx.slice][-1].data[:,idx_lower:idx_upper] = item.data[:]
                 if item.idx.segment == nsegments - 1:
                     # Reapply FOV Shift with predicted trajectory
-                    sig = acqGroup[item.idx.contrast][item.idx.slice][-1].data[:]
-                    acqGroup[item.idx.contrast][item.idx.slice][-1].data[:] = fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz)
+                    last_item = acqGroup[item.idx.contrast][item.idx.slice][-1]
+                    last_item.data[:] = fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
+
+                    # remove oversampling
+                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                    if os_factor == 2:
+                        remove_os_spiral(last_item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -242,9 +251,15 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
     data, trj = sort_radial_data(group, metadata, dmtx)
     
-    if process_raw.cc_mat is not None:
+    n_cha = metadata.acquisitionSystemInformation.receiverChannels
+    slc = group[0].idx.slice
+    if cc_cha < n_cha and process_raw.cc_mat[slc] is None:
+        logging.debug(f'Calculate coil compression matrix.')
+        process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
+
+    if process_raw.cc_mat[slc] is not None:
         logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
-        data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
+        data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc])
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
@@ -343,10 +358,11 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
 
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
+        slc = group[0].idx.slice
         if cc_cha < n_cha:
             logging.debug(f'Calculate coil compression matrix.')
-            process_raw.cc_mat = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
-            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat) # SVD based Coil compression
+            process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
+            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc]) # SVD based Coil compression
 
         # ESPIRiT calibration
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU

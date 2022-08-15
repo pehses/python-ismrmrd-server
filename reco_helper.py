@@ -360,10 +360,6 @@ def img_coord(metadata, acq):
 
     return grid_rot
 
-## WIP: calculate phase factor for specific set of Skope data
-def calc_phase_factor(acq, img_coords):
-    pass
-
 ## Old
 
 # These are copied from ismrmrdtools.coils, which depends on scipy

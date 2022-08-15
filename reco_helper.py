@@ -331,6 +331,35 @@ def add_naxes(arr, n):
         arr = arr[...,np.newaxis]
     return arr
 
+## WIP: Calculate image space coordinates in physical coordinate system
+# Can be used for higher order recon or phase correction
+def img_coord(metadata, acq):
+    "Calculate voxel coordinates in physical coordinate system"
+
+    # matric size
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    nz = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) # sms factor
+
+    # scaling
+    res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / nx
+    slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    slc_sep = n_slc // nz * slc_res
+
+    ix = iy = np.linspace(-nx/2*res,(nx/2-1)*res, nx) # spirals have quadratic FOV
+    iz = np.linspace(0, slc_sep*(nz-1), nz)
+
+    # WIP: slice (group) offset and global offset (is in PCS --> pcs to dcs)
+
+    # calculate grid
+    grid = np.asarray(np.meshgrid(*[ix,iy,iz]))
+
+    # rotate grid
+    rotmat =  calc_rotmat(acq)
+    grid_rot = gcs_to_dcs(grid, rotmat)
+
+    return grid_rot
+
 ## Old
 
 # These are copied from ismrmrdtools.coils, which depends on scipy

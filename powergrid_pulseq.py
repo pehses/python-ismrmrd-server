@@ -74,12 +74,13 @@ def process(connection, config, metadata):
     # ----------------------------- #
 
     # Create folder, if necessary
-    seq_signature = metadata.userParameters.userParameterString[1].value
-    global debugFolder 
-    debugFolder += f"/{seq_signature}"
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
+    if len(metadata.userParameters.userParameterString) > 1:
+        seq_signature = metadata.userParameters.userParameterString[1].value
+        global debugFolder 
+        debugFolder += f"/{seq_signature}"
+        if not os.path.exists(debugFolder):
+            os.makedirs(debugFolder)
+            logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # ISMRMRD protocol file
     prot_folder = os.path.join(dependencyFolder, "metadata")
@@ -155,7 +156,7 @@ def process(connection, config, metadata):
     logging.info(f"Reference Voltage: {ref_volt}")
 
     # Initialize lists for datasets
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # effective slices acquired (slices/sms_factor)
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
     n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
@@ -326,6 +327,10 @@ def process(connection, config, metadata):
                             k0 = last_item.traj[:,4]
                             last_item.data[:] *= np.exp(-1j*k0)
 
+                        # T2* filter
+                        t2_star = 40e-3
+                        last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
+
                         # remove ADC oversampling
                         os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                         if os_factor == 2:
@@ -438,10 +443,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # process_acs.fmap = None # just for debugging
     if process_acs.fmap is not None:
         fmap = process_acs.fmap
-        if process_raw.slc_sel is not None:
-            fmap['fmap'][process_raw.slc_sel] = gaussian_filter(fmap['fmap'][process_raw.slc_sel], sigma=1.5)
-        else:
-            fmap['fmap'] = gaussian_filter(fmap['fmap'], sigma=1.5) # 3D filtering, list will be converted to ndarray
     else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
         fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
@@ -453,11 +454,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     if process_raw.slc_sel is not None:
         fmap_data = fmap_data[process_raw.slc_sel][np.newaxis]
         fmap_mask = fmap_mask[process_raw.slc_sel][np.newaxis]
+    fmap_data = np.asarray(fmap_data)
+    fmap_mask = np.asarray(fmap_mask)
     if fmap_data.ndim == 4: # remove slice dimension, if 3D dataset 
         fmap_data = fmap_data[0]
         fmap_mask = fmap_mask[0]
-    fmap_data = np.asarray(fmap_data)
-    fmap_mask = np.asarray(fmap_mask)
     np.save(debugFolder+"/fmap_data.npy", fmap_data)
     np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     if sms_factor > 1:
@@ -494,6 +495,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # Insert acquisitions
     avg_ix = 0
+    bvals = []
+    dirs = []
+    contr_ctr = -1
     for slc in acqGroup:
         for contr in slc:
             for acq in contr:
@@ -510,13 +514,20 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                     else:
                         acq.idx.slice = 0
                 if process_raw.first_contrast and acq.idx.repetition > 0:
-                    continue                
+                    continue
+                if acq.idx.contrast > contr_ctr:
+                    contr_ctr += 1
+                    bvals.append(acq.user_int[0])
+                    dirs.append(acq.user_float[:3])
 
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
                 save_trj = acq.traj[:,:4].copy()
                 acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
                 acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
+
+    bvals = np.asarray(bvals)
+    dirs = np.asarray(dirs)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
@@ -572,7 +583,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 1000 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
 
     if pcSENSE: # Multishot
         if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
@@ -635,24 +646,21 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
-    n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
-    n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-    if n_bval > 0 and "b_values" in prot_arrays and not process_raw.first_contrast:
-        # Reshape Arrays and append
+    if "b_values" in prot_arrays and not process_raw.first_contrast:
+        # Append data
+        dsets.append(data)
+
+        # Reshape Arrays
         shp = data.shape
         n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        b0 = data[:,:n_b0]
-        b0_save = b0.copy().reshape([-1, 1]+[s for s in b0.shape[2:]]) # merge repetitions of b0 scans in first dimension
-        diffw_imgs = data[:,n_b0:].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
-        dsets.append(b0_save)
-        dsets.append(diffw_imgs.copy())
+        n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
+        n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
+        b0 = data[:,np.nonzero(bvals==0)[0]]
+        diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
 
         # Calculate ADC maps
-        scale = 1/np.max(diffw_imgs) # scale data to not run into problems with small numbers
-        b0 *= scale
-        diffw_imgs *= scale
         mask = fmap_mask.copy()
-        b0 = np.expand_dims(b0.mean(1), 1) # averages over b=0 repetitions
+        b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
         adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
         adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
         dsets.append(adc_maps)
@@ -695,10 +703,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
     for data_ix,data in enumerate(dsets):
+        series_ix += 1
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
             for contr in range(data.shape[1]):
-                series_ix += 1
                 for phs in range(data.shape[2]):
                     for rep in range(data.shape[0]): # save one repetition after another
                         for slc in range(data.shape[3]):
@@ -719,9 +727,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.phase = phs
                                 image.contrast = contr
                                 if 'b_values' in prot_arrays:
-                                    image.user_int[0] = 0 if data_ix==0 else int(prot_arrays['b_values'][n_b0+contr])
+                                    image.user_int[0] = bvals[contr]
                                 if 'Directions' in prot_arrays and data_ix>0:
-                                    image.user_float[:3] = prot_arrays['Directions'][phs]
+                                    image.user_float[:3] = dirs[contr]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -730,7 +738,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
-            # atm only ADC maps
+            # ADC maps and Refimg
             series_ix += 1
             for slc, img in enumerate(data):
                 if process_raw.slc_sel is None:
@@ -739,7 +747,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                     image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
-                image.slice = slc + 1
+                image.slice = slc
                 image.attribute_string = meta.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -770,7 +778,7 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
         gpu = True
     if read_ecalib:
-        sensmaps = None
+        sensmaps = np.zeros(1)
     else:
         if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
@@ -811,13 +819,33 @@ def calc_fmap(imgs, te_diff, metadata):
         te_diff: TE difference [s]
     """
     
-    phasediff = imgs[...,0] * np.conj(imgs[...,1]) # phase difference
-    phasediff = np.sum(phasediff, axis=-1) # coil combination
+    mc_fmaps = True # calculate multi-coil field maps to remove outliers
+    filtering = False # apply Gaussian and median filtering
+
+    phasediff = imgs[...,1] * np.conj(imgs[...,0]) # phase difference
     if phasediff.shape[2] == 1:
         phasediff = phasediff[:,:,0]
-    phasediff = unwrap_phase(np.angle(phasediff))
-    phasediff = np.atleast_3d(phasediff)
-    fmap = phasediff/te_diff
+
+    if mc_fmaps:
+        fmap_shape = imgs.shape[:3]
+        phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
+        for k in range(phasediff.shape[-1]):
+            phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k]))
+        nc = phasediff_uw.shape[-1]
+        phasediff_uw = phasediff_uw.reshape([-1,nc])
+        img_mag = abs(imgs[...,0]).reshape([-1,nc])
+        fmap = np.zeros([phasediff_uw.shape[0]])
+        for i in range(phasediff_uw.shape[0]):
+            ix = np.argsort(phasediff_uw[i])[nc//4:-nc//4] # remove lowest & highest quartile
+            weights = img_mag[i,ix] / np.sum(img_mag[i,ix])
+            fmap[i] = np.sum(weights * phasediff_uw[i,ix])
+        fmap = fmap.reshape(fmap_shape)
+    else:
+        fmap = np.sum(phasediff, axis=-1) # coil combination
+        fmap = unwrap_phase(np.angle(fmap))
+        
+    fmap = np.atleast_3d(fmap)
+    fmap = -1 * fmap/te_diff # for some reason the sign in Powergrid is different
 
     # mask image with median otsu from dipy
     img = rh.rss(imgs[...,0], axis=-1)
@@ -840,8 +868,10 @@ def calc_fmap(imgs, te_diff, metadata):
 
     # apply masking and some regularization
     fmap *= mask
-    fmap = gaussian_filter(fmap, sigma=0.5)
-    fmap = median_filter(fmap, size=2)
+    if filtering:
+        # WIP: standard deviation denoising - s. Paper Robinson 2009
+        fmap = gaussian_filter(fmap, sigma=0.5)
+        fmap = median_filter(fmap, size=2)
 
     # interpolate if necessary
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
@@ -940,30 +970,19 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
     """ Calculate ADC maps from diffusion images
     """
 
-    def geom_mean(arr, axis):
-        return (np.prod(arr, axis=axis))**(1.0/arr.shape[axis])
+    from scipy.stats.mstats import gmean
 
     b_val = prot_arrays['b_values']
     n_bval = np.count_nonzero(b_val)
-    n_b0 = len(b_val) - n_bval
-    directions = prot_arrays['Directions']
-    n_directions = directions.shape[0]
+    bval = b_val[np.nonzero(b_val)[0]]
 
     # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
     b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
     imgshape = [s for s in b0.shape]
     diff = np.transpose(diffw_imgs[:,:,:,:,0].mean(0), [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
 
-    #  WIP & not used: Fit ADC for each direction by linear least squares
-    diff_norm = np.divide(diff.T, b0.T, out=np.zeros_like(diff.T), where=b0.T!=0).T # Nan is converted to 0
-    diff_log  = -np.log(diff_norm, out=np.zeros_like(diff_norm), where=diff_norm!=0)
-    if n_bval<4:
-        d_dir = (diff_log / b_val[n_b0:]).mean(-1)
-    else:
-        d_dir = np.polynomial.polynomial.polyfit(b_val[n_b0:], diff_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape+[n_directions])
-
     # calculate trace images (geometric mean)
-    trace = geom_mean(diff, axis=-2)
+    trace = gmean(diff, axis=-2)
 
     # calculate trace ADC map with LLS
     trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
@@ -971,9 +990,9 @@ def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
 
     # calculate trace diffusion coefficient - WIP: Is the fitting function working correctly?
     if n_bval<3:
-        adc_map = (trace_log / b_val[n_b0:]).mean(-1)
+        adc_map = (trace_log / bval).mean(-1)
     else:
-        adc_map = np.polynomial.polynomial.polyfit(b_val[n_b0:], trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
+        adc_map = np.polynomial.polynomial.polyfit(bval, trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
 
     adc_map *= mask
 

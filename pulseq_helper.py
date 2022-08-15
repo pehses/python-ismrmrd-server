@@ -40,11 +40,13 @@ def insert_hdr(prot_file, metadata):
 
     # user parameters
     if prot_hdr.userParameters is not None:
-        dset_udbl = metadata.userParameters.userParameterDouble
-        prot_udbl = prot_hdr.userParameters.userParameterDouble
-        for ix, param in enumerate(prot_udbl):
-            dset_udbl[ix].name = param.name
-            dset_udbl[ix].value = param.value
+        dset_udbl_dict = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        prot_udbl_dict = {item.name: item.value for item in prot_hdr.userParameters.userParameterDouble}
+        merged_dict = {**dset_udbl_dict, **prot_udbl_dict} # by merging the dicts, dummy user parameters in the parameter_map are not necessary anymore
+        metadata.userParameters.userParameterDouble.clear()
+        for key in merged_dict:
+            up = ismrmrd.xsd.userParameterDoubleType(name=key, value=merged_dict[key])
+            metadata.userParameters.userParameterDouble.append(up)
 
     # encoding
     dset_e1 = metadata.encoding[0]
@@ -95,9 +97,6 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.segment.minimum = prot_e1.encodingLimits.segment.minimum
         dset_e1.encodingLimits.segment.maximum = prot_e1.encodingLimits.segment.maximum
         dset_e1.encodingLimits.segment.center = prot_e1.encodingLimits.segment.center
-    elif len(prot_hdr.userParameters.userParameterDouble) > 3:
-        # compatibility with older datasets, where a user parameter was used
-        dset_e1.encodingLimits.segment.maximum = prot_hdr.userParameters.userParameterDouble[2].value - 1
 
     # acceleration
     if prot_e1.parallelImaging is not None:
@@ -203,6 +202,10 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     dset_acq.idx.set = prot_acq.idx.set
     dset_acq.idx.segment = prot_acq.idx.segment
 
+    # user parameters
+    dset_acq.user_int[:] = prot_acq.user_int[:]
+    dset_acq.user_float[:] = prot_acq.user_float[:]
+
     # flags
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
@@ -300,6 +303,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         acq: acquisition from hdf5 protocol file
         hdr: protocol header
         ncol: number of samples
+        rotmat: rotation matrix
     """
     
     dt_grad = 10e-6 # [s]

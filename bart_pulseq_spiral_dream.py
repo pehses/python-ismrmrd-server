@@ -73,7 +73,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
 
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
-    old_grid = []
     dmtx = None
 
     # read protocol arrays
@@ -136,7 +135,6 @@ def process_spiral_dream(connection, config, metadata, prot_file):
                     acsGroup[item.idx.slice].append(item)
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                         sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
-                        old_grid.append(item.idx.slice)
                         acsGroup[item.idx.slice].clear()
                     continue
                 
@@ -463,7 +461,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
 def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-
+        data = data[...,0] # currently only first contrast used
+    
         if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
@@ -523,9 +522,11 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
+    contr_max = 0
     for acq in group:
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
+        contr = acq.idx.contrast
         if enc1 < enc1_min:
             enc1_min = enc1
         if enc1 > enc1_max:
@@ -534,6 +535,8 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2_min = enc2
         if enc2 > enc2_max:
             enc2_max = enc2
+        if contr > contr_max:
+            contr_max = contr
 
         # Oversampling removal - WIP: assumes 2x oversampling at the moment
         data = remove_os(acq.data[:], axis=-1)
@@ -544,8 +547,9 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    n_contr = contr_max + 1
 
-    kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
+    kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
     logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
@@ -553,6 +557,7 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     for acq in group:
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
+        contr = acq.idx.contrast
 
         # in case dim sizes smaller than expected, sort data into k-space center (e.g. for reference scans)
         ncol = acq.data.shape[-1]
@@ -572,15 +577,16 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2 += cz - cenc2
         
         if dmtx is None:
-            kspace[enc1, enc2, :, col] += acq.data
+            kspace[enc1, enc2, :, col, contr] += acq.data
         else:
-            kspace[enc1, enc2, :, col] += apply_prewhitening(acq.data, dmtx)
-        counter[enc1, enc2] += 1
+            kspace[enc1, enc2, :, col, contr] += apply_prewhitening(acq.data, dmtx)
+        if contr==0:
+            counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
-    kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis])
+    kspace /= np.maximum(1, counter[:,:,np.newaxis,np.newaxis,np.newaxis])
 
-    # rearrange kspace for bart - target size: (nx, ny, nz, nc)
-    kspace = np.transpose(kspace, [3, 0, 1, 2])
+    # rearrange kspace for bart - target size: (nx, ny, nz, nc, ncontr)
+    kspace = np.transpose(kspace, [3, 0, 1, 2, 4])
 
     return kspace

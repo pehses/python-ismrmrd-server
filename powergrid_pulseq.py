@@ -110,8 +110,8 @@ def process(connection, config, metadata):
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
-    # Check SMS
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor > 1 and process_raw.slc_sel is not None:
         process_raw.slc_sel = None
         logging.debug("SMS reconstruction is not possible for single slices. Reconstruct whole volume.")
@@ -415,7 +415,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Write header
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor > 1:
         metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
         metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
@@ -901,7 +901,7 @@ def process_shots(group, metadata, sensmaps_shots):
     # stack SMS dimension
     sensmaps_shots = np.stack(sensmaps_shots)
 
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor > 1:
         sms = True
         sms_dim = 13

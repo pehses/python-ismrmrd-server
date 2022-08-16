@@ -77,6 +77,10 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.kspace_encoding_step_1.minimum = prot_e1.encodingLimits.kspace_encoding_step_1.minimum
         dset_e1.encodingLimits.kspace_encoding_step_1.maximum = prot_e1.encodingLimits.kspace_encoding_step_1.maximum
         dset_e1.encodingLimits.kspace_encoding_step_1.center = prot_e1.encodingLimits.kspace_encoding_step_1.center
+    if prot_e1.encodingLimits.kspace_encoding_step_2 is not None:
+        dset_e1.encodingLimits.kspace_encoding_step_2.minimum = prot_e1.encodingLimits.kspace_encoding_step_2.minimum
+        dset_e1.encodingLimits.kspace_encoding_step_2.maximum = prot_e1.encodingLimits.kspace_encoding_step_2.maximum
+        dset_e1.encodingLimits.kspace_encoding_step_2.center = prot_e1.encodingLimits.kspace_encoding_step_2.center
     if prot_e1.encodingLimits.average is not None:
         dset_e1.encodingLimits.average.minimum = prot_e1.encodingLimits.average.minimum
         dset_e1.encodingLimits.average.maximum = prot_e1.encodingLimits.average.maximum

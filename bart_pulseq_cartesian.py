@@ -12,7 +12,7 @@ import base64
 import ctypes
 
 from bart import bart
-from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os #, fov_shift, calc_rotmat, pcs_to_gcs
+from reco_helper import calculate_prewhitening, apply_prewhitening, remove_os, gcs_to_pcs, calc_rotmat #, fov_shift, pcs_to_gcs
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from scipy.ndimage import gaussian_filter, median_filter
 from skimage.restoration import unwrap_phase
@@ -367,41 +367,46 @@ def process_raw(group, metadata, ismrmrd_arr, dmtx=None, sensmaps=None, gpu=Fals
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_par = data.shape[-1]
+    slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    rotmat = calc_rotmat(group[0])
+    offset = [0, 0, -1*slc_res*(group[0].idx.slice-(n_slc-1)/2)] # slice offset in GCS
+    pos_offset = gcs_to_pcs(offset, rotmat) # correct image position in PCS
+    
     images = []
     if n_par > 1:
-        for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par # contains image index (slices/partitions)
-            image.image_series_index = 1
-            image.slice = group[0].idx.slice
-            image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
+        image = ismrmrd.Image.from_array(data, acquisition=group[0])
+        image.image_index = 1 # contains image index
+        image.image_series_index = 1
+        image.slice = 1
+        image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        images.append(image)
 
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice # contains image index (slices/partitions)
+        image.image_index = (n_contr*n_slc) - (group[0].idx.contrast * n_slc + group[0].idx.slice) # contains image index (slices/partitions)
         image.image_series_index = 1
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        image.position[:] -= pos_offset
         images.append(image)
 
     if fmap is not None:
-        for par in range(n_par):
-            image = ismrmrd.Image.from_array(fmap[...,par], acquisition=group[0])
-            image.image_index = group[0].idx.slice
-            image.image_series_index = 2
-            image.slice = 0
-            image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
+        image = ismrmrd.Image.from_array(fmap[...,0], acquisition=group[0])
+        image.image_index = group[0].idx.slice
+        image.image_series_index = 2
+        image.slice = 0
+        image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        image.position[:] -= pos_offset
+        images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))

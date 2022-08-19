@@ -809,6 +809,7 @@
                     </userParameterLong>
                 </xsl:if>
 
+                <!-- Dummy parameters - not used anymore (see pulseq_helper.py -> insert_hdr) -->
                 <userParameterDouble>
                     <name>dwellTime_us</name>
                     <value>0</value>

@@ -78,9 +78,9 @@ def process(connection, config, metadata):
         seq_signature = metadata.userParameters.userParameterString[1].value
         global debugFolder 
         debugFolder += f"/{seq_signature}"
-        if not os.path.exists(debugFolder):
-            os.makedirs(debugFolder)
-            logging.debug("Created folder " + debugFolder + " for debug output files")
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # ISMRMRD protocol file
     prot_folder = os.path.join(dependencyFolder, "metadata")

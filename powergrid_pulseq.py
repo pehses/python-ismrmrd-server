@@ -41,7 +41,7 @@ read_ecalib = False
 # Main Function
 ########################
 
-def process(connection, config, metadata):
+def process(connection, config, metadata, prot_file):
     
     # -- Some manual parameters --- #
 
@@ -82,27 +82,10 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    # ISMRMRD protocol file
-    prot_folder = os.path.join(dependencyFolder, "metadata")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
-    prot_file = prot_folder + "/" + prot_filename + ".h5"
-
-    # Check if local protocol folder is available, if protocol is not in dependency protocol folder
-    if not os.path.isfile(prot_file):
-        prot_folder_local = "/tmp/local/metadata" # optional local protocol mountpoint (via -v option)
-        date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-        prot_folder_loc = os.path.join(prot_folder_local, date)
-        prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"
-        if os.path.isfile(prot_file_loc):
-            prot_file = prot_file_loc
-        else:
-            raise ValueError(f"Metadata file {prot_file} not available.")
-
-    # check signature
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
-    check_signature(metadata, prot_hdr) # check MD5 signature
-    prot.close()
+    # Check if ecalib maps calculated
+    global read_ecalib
+    if read_ecalib and not os.path.isfile(debugFolder + "/sensmaps.npy"):
+        read_ecalib = False
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)

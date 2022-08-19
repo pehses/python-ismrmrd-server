@@ -277,8 +277,15 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
 
         mean_beta = mean_alpha / alpha * beta
+        shot = group[0].idx.set
+        ctr = 0
         for i,acq in enumerate(group):
-            ti = tr * (dummies + i) # TI estimate (time from STEAM prep to readout) [s]
+            ctr += 1
+            if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
+                ctr = 0
+            shot = acq.idx.set
+
+            ti = tr * (dummies + ctr) # TI estimate (time from STEAM prep to readout) [s]
             # Global filter:
             filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
             # apply filter:

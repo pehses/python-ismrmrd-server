@@ -56,9 +56,8 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && git clone https://github.com/mrirecon/bart \
+     && git clone https://github.com/mavel101/bart.git \
      && cd bart \
-     && git checkout v0.7.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
@@ -195,7 +194,6 @@ RUN  apt-get update --quiet \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
      && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd \
-     && pip3 install git+https://github.com/mrirecon/bartpy
 
 RUN  mkdir -p /opt/code
 

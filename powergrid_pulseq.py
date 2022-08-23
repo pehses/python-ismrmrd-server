@@ -11,7 +11,6 @@ import psutil
 from time import perf_counter
 
 from bart import bart
-import bartpy.tools
 import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
@@ -893,7 +892,7 @@ def process_shots(group, metadata, sensmaps_shots):
         sensmaps_shots = rh.add_naxes(sensmaps_shots, sms_dim+1-sensmaps_shots.ndim)
         sensmaps_shots = np.moveaxis(sensmaps_shots,0,sms_dim)
     else:
-        sms = None
+        sms = False
         sensmaps_shots = sensmaps_shots[0]
 
     # undo the swap in process_acs as BART needs different orientation  
@@ -905,11 +904,12 @@ def process_shots(group, metadata, sensmaps_shots):
     for k in range(data.shape[2]):
         traj_shot = traj[:,:,k,np.newaxis]
         data_shot = data[:,:,k,np.newaxis]
-        pat = bartpy.tools.pattern(data_shot) if sms is not None else None # k-space pattern - needed for SMS recon
-        img = bartpy.tools.pics(data_shot, sensmaps, t=traj_shot, l='1', r=0.001, S=True, e=True, i=15, M=sms, p=pat)
+        pat = bart(1, 'pattern', data_shot) if sms else None # k-space pattern - needed for SMS recon
         if sms:
+            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 15 -M', data_shot, sensmaps, t=traj_shot, p=pat)
             img = np.moveaxis(img,-1,0)[...,0,0,0,0,0,0,0,0,0,0,0]
         else:
+            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 15', data_shot, sensmaps, t=traj_shot)
             img = img[np.newaxis]
         imgs.append(img) # shot images in list with [nz,ny,nx]
     

@@ -58,6 +58,7 @@ RUN cd /opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mrirecon/bart \
      && cd bart \
+     && git checkout v0.7.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
@@ -143,13 +144,7 @@ RUN  cd /opt/code \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \
-     && make -j4 && make install
-     # && cd /opt/code/PowerGrid \
-     # && git checkout python_pybind \
-     # && git submodule update --init --recursive \
-     # && cp PowerGrid/Python/setup_GPU.py setup.py \
-     # && pip3 wheel . \
-     
+     && make -j4 && make install    
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
 FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
@@ -203,11 +198,6 @@ RUN  apt-get update --quiet \
      && pip3 install git+https://github.com/mrirecon/bartpy
 
 RUN  mkdir -p /opt/code
-
-# Old PowerGrid pybind bindings
-# RUN  cd /opt/code \
-#      && pip3 install PowerGridPy* \
-#      && rm PowerGrid*
 
 RUN  cd /opt/code \
      && pip3 install SpiralTraj* \

@@ -58,6 +58,7 @@ RUN cd /opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mrirecon/bart \
      && cd bart \
+     && git checkout v0.7.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \

@@ -469,9 +469,9 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):
-        series_ix += 1
         # Format as 3D ISMRMRD image data
         if data.ndim > 3:
+            series_ix += 1
             for contr in range(data.shape[0]):
                 image = ismrmrd.Image.from_array(data[contr], acquisition=acqGroup[contr][0])
                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[contr][0].read_dir[0]), "{:.18f}".format(acqGroup[contr][0].read_dir[1]), "{:.18f}".format(acqGroup[contr][0].read_dir[2])]

@@ -471,8 +471,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     for data_ix,data in enumerate(dsets):
         # Format as 3D ISMRMRD image data
         if data.ndim > 3:
-            series_ix += 1
             for contr in range(data.shape[0]):
+                series_ix += 1
                 image = ismrmrd.Image.from_array(data[contr], acquisition=acqGroup[contr][0])
                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[contr][0].read_dir[0]), "{:.18f}".format(acqGroup[contr][0].read_dir[1]), "{:.18f}".format(acqGroup[contr][0].read_dir[2])]
                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[contr][0].phase_dir[0]), "{:.18f}".format(acqGroup[contr][0].phase_dir[1]), "{:.18f}".format(acqGroup[contr][0].phase_dir[2])]
@@ -545,7 +545,7 @@ def calc_fmap(imgs, te_diff, metadata):
     """
     
     mc_fmaps = True # calculate multi-coil field maps to remove outliers
-    filtering = False # apply Gaussian and median filtering
+    filtering = True # apply Gaussian and median filtering
 
     phasediff = imgs[...,1] * np.conj(imgs[...,0]) # phase difference
     if phasediff.shape[2] == 1:

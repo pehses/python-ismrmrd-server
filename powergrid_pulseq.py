@@ -266,7 +266,7 @@ def process(connection, config, metadata, prot_file):
                     # trigger online first-contrast-recon early
                     if process_raw.first_contrast and item.idx.contrast > 0:
                         if len(acqGroup) > 0:
-                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
                         continue
 
                     # Process imaging scans - deal with ADC segments 
@@ -329,7 +329,7 @@ def process(connection, config, metadata, prot_file):
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -375,7 +375,7 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan):
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # Start data processing
     logging.info("Processing a group of k-space data")
     images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)

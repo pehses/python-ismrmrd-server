@@ -143,7 +143,7 @@ def pcs_to_dcs(grads, patient_position='HFS'):
 
 def dcs_to_pcs(grads, patient_position='HFS'):
     """ Convert from device coordinate system (DCS, physical) 
-        to patient coordinate system (DCS, physical)
+        to patient coordinate system (PCS, physical)
         this is valid for patient orientation head first/supine
     """
     return pcs_to_dcs(grads, patient_position) # same sign switch

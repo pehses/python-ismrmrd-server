@@ -152,6 +152,7 @@ def process(connection, config, metadata, prot_file):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
+    img_coord = [None] * n_slc
     dmtx = None
     shotimgs = None
     sens_shots = False
@@ -266,7 +267,7 @@ def process(connection, config, metadata, prot_file):
                     # trigger online first-contrast-recon early
                     if process_raw.first_contrast and item.idx.contrast > 0:
                         if len(acqGroup) > 0:
-                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
                         continue
 
                     # Process imaging scans - deal with ADC segments 
@@ -276,6 +277,8 @@ def process(connection, config, metadata, prot_file):
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
+
+                        img_coord[item.idx.slice] = img_coord(metadata, item).T # transpose to [nz,ny,ny] for PowerGrid
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -329,7 +332,7 @@ def process(connection, config, metadata, prot_file):
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -375,15 +378,15 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan):
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # average acquisitions before reco
     avg_before = True 
@@ -410,6 +413,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
     dset_tmp.write_xml_header(metadata.toXML())
+
+    # Insert Coordinates
+    img_coord = np.asarray(img_coord)
+    dset_tmp.append_array("ImgCoord", img_coord)
 
     # Insert Sensitivity Maps
     if read_ecalib:

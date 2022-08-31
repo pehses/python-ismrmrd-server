@@ -152,7 +152,7 @@ def process(connection, config, metadata, prot_file):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
-    img_coord = [None] * n_slc
+    img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     shotimgs = None
     sens_shots = False
@@ -278,7 +278,7 @@ def process(connection, config, metadata, prot_file):
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
 
-                        img_coord[item.idx.slice] = img_coord(metadata, item).T # transpose to [nz,ny,ny] for PowerGrid
+                        img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -415,7 +415,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     dset_tmp.write_xml_header(metadata.toXML())
 
     # Insert Coordinates
-    img_coord = np.asarray(img_coord)
+    img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
+    img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
     dset_tmp.append_array("ImgCoord", img_coord)
 
     # Insert Sensitivity Maps

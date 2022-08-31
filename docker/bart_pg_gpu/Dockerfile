@@ -139,7 +139,7 @@ RUN cd opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mavel101/PowerGrid \
      && cd PowerGrid \
-     && git checkout python_cnpy \
+     && git checkout python_cnpy_dev \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \

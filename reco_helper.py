@@ -333,7 +333,7 @@ def add_naxes(arr, n):
 
 ## WIP: Calculate image space coordinates in physical coordinate system
 # Can be used for higher order recon
-def img_coord(metadata, acq):
+def calc_img_coord(metadata, acq):
     "Calculate voxel coordinates in physical coordinate system"
 
     # matrix size & rotmat
@@ -361,6 +361,9 @@ def img_coord(metadata, acq):
 
     # Coordinates to DCS (physical)
     grid_rot = gcs_to_dcs(grid, rotmat) # [dims, coords]
+
+    # reshape back
+    grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])
 
     return grid_rot
 

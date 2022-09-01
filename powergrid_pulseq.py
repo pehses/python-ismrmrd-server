@@ -513,6 +513,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                     dirs.append(acq.user_float[:3])
 
                 # get rid of k0 in 5th dim, we dont need it in PowerGrid
+                # Trajectory is shaped as: kx,ky,kz,time // WIP: five 2nd order terms in the following dimensions
                 save_trj = acq.traj[:,:4].copy()
                 acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
                 acq.traj[:] = save_trj.copy()
@@ -575,30 +576,34 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-
-    if pcSENSE: # Multishot
-        if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
-            if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+    higher_order = True # WIP: use trajectory size to determine if possible
+    if higher_order:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
+        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
+    else:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+        if pcSENSE: # Multishot
+            if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSense ' + pg_opts
+            else: # nufft with time segmentation
+                pg_opts += f' -I {temp_intp} -t {ts}'
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
+        else: # Singleshot
+            pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
+            if sms_factor > 1:
+                pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
             else:
-                subproc = 'PowerGridPcSense ' + pg_opts
-        else: # nufft with time segmentation
-            pg_opts += f' -I {temp_intp} -t {ts}'
+                pg_opts += ' -F NUFFT' # nufft with time segmentation
             if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
             else:
-                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else: # Singleshot
-        pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
-        if sms_factor > 1:
-            pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
-        else:
-            pg_opts += ' -F NUFFT' # nufft with time segmentation
-        if mpi:
-            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
-        else:
-            subproc = 'PowerGridIsmrmrd ' + pg_opts
+                subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
     logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:

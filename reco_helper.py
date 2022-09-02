@@ -355,7 +355,7 @@ def calc_img_coord(metadata, acq):
 
     # Coordinates in GCS (logical)
     ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx) + global_offset[0]
-    iy = np.linspace(-ny/2*res,(nx/2-1)*res, ny) + global_offset[1]
+    iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny) + global_offset[1]
     iz = np.linspace(-0.5*slc_sep*(nz-1), 0.5*slc_sep*(nz-1), nz) + global_offset[2] + slice_offset
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 

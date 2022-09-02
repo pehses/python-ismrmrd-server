@@ -566,6 +566,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     mps_server = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
         # Start an MPS Server for faster MPI on GPU
+        # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
         # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
         # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
         mps_server = True

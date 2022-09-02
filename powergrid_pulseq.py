@@ -25,6 +25,21 @@ import reco_helper as rh
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
+
+    Normal field (B0) corrected recon is done in the logical coordinate system
+    Trajctories therefore have to be int the logical coordinate system and scaled with "FOV[m] / (2*pi)" to make them dimensionless and suitable for BART/PowerGrid.
+
+    A higher order reconstruction is done in the physical coordinate system.
+    The k-space coefficients from the Skope system (atm only 1st & 2nd order) have to stay in the physical coordinate system without rescaling,
+    when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
+
+    The MRD trajectory field should have the following trajectory dimensions
+    0: kx, 1: ky, 2: kz, 3: k0, 4: k2nd_1, 5: k2nd_2, 6: k2nd_3, 7: k2nd_4, 8: k2nd_5
+
+    The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
+    
+    WIP: Maybe change the order to how they are saved in the Skope file (needs then also changes in this script, in pulseq_helper.py and in PowerGrid) 
+    0: k0 , 1: kx, 2: ky, 3: kz, 4: k2nd_1, 5: k2nd_2, 6: k2nd_3, 7: k2nd_4, 8: k2nd_5
 """
 
 # Folder for sharing data/debugging
@@ -35,13 +50,6 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
 read_ecalib = False
-
-# A higher order reconstruction is done in the physical coordinate system.
-# The k-space coefficients from the Skope system (atm 1st & 2nd order) have to stay in the physical coordinate system without rescaling,
-# when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
-# If no higher order recon is used, the recon is done in the logical coordinate system.
-# The trajectories have to be rotated to the logical system and scaled with "FOV[m] / (2*pi)".
-higher_order = True # WIP: use trajectory size to determine if possible
 
 ########################
 # Main Function
@@ -165,6 +173,7 @@ def process(connection, config, metadata, prot_file):
     sens_shots = False
     base_trj = None
     skope = False
+    higher_order = False
     process_acs.cc_mat = [None] * n_slc # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
 
@@ -198,6 +207,8 @@ def process(connection, config, metadata, prot_file):
 
                 if item.traj.size > 0:
                     skope = True # Skope data inserted?
+                    if item.traj.shape[1] > 4:
+                        higher_order = True
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -284,8 +295,8 @@ def process(connection, config, metadata, prot_file):
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                         item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
-
-                        img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
+                        if higher_order:
+                            img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -309,12 +320,8 @@ def process(connection, config, metadata, prot_file):
                         shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
                         shift_px = shift / res # shift in pixel
                         if higher_order:
-                            # trajectory to logical coord system + rescaled (as base_trj) -> for re-applying the FOV shift both trajectories
-                            # have to be in the same coordinate system with same scaling
-                            fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
-                                            metadata.encoding[0].reconSpace.fieldOfView_mm.y,
-                                            metadata.encoding[0].reconSpace.fieldOfView_mm.z])
-                            traj = (rh.dcs_to_gcs(last_item.traj[:,:3].T, rotmat) * 1e-3 * fov[:,np.newaxis] / (2*np.pi)).T
+                            # for higher order recon, we just undo the shift -> shift is then done in recon with correct image coordinates
+                            traj = np.zeros_like(base_trj)
                         else:
                             traj = last_item.traj[:,:3]
                         last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], traj, base_trj, shift_px, matr_sz)
@@ -430,10 +437,13 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         metadata.encoding[0].encodingLimits.average.maximum = 0
     dset_tmp.write_xml_header(metadata.toXML())
 
-    # Insert Coordinates
-    img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
-    img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
-    dset_tmp.append_array("ImgCoord", img_coord)
+    # Insert Coordinates (if calculated)
+    higher_order = False
+    if not any(elem is None for elem in img_coord):
+        img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
+        img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
+        dset_tmp.append_array("ImgCoord", img_coord)
+        higher_order = True
 
     # Insert Sensitivity Maps
     if read_ecalib:
@@ -909,6 +919,7 @@ def process_shots(group, metadata, sensmaps_shots):
     # sort data
     data, traj = sort_spiral_data(group)
 
+    higher_order = (group[0].traj.shape[1] > 4)
     if higher_order: # trajectory to logical system never tested this, as I didnt really do multishot anymore
         rotmat = rh.calc_rotmat(group[0])
         fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,

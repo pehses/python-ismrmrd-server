@@ -36,6 +36,13 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 read_ecalib = False
 
+# A higher order reconstruction is done in the physical coordinate system.
+# The k-space coefficients from the Skope system (atm 1st & 2nd order) have to stay in the physical coordinate system without rescaling,
+# when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
+# If no higher order recon is used, the recon is done in the logical coordinate system.
+# The trajectories have to be rotated to the logical system and scaled with "FOV[m] / (2*pi)".
+higher_order = True # WIP: use trajectory size to determine if possible
+
 ########################
 # Main Function
 ########################
@@ -301,7 +308,16 @@ def process(connection, config, metadata, prot_file):
                         rotmat = rh.calc_rotmat(item)
                         shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
                         shift_px = shift / res # shift in pixel
-                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], last_item.traj[:], base_trj, shift_px, matr_sz)
+                        if higher_order:
+                            # trajectory to logical coord system + rescaled (as base_trj) -> for re-applying the FOV shift both trajectories
+                            # have to be in the same coordinate system with same scaling
+                            fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                                            metadata.encoding[0].reconSpace.fieldOfView_mm.y,
+                                            metadata.encoding[0].reconSpace.fieldOfView_mm.z])
+                            traj = (rh.dcs_to_gcs(last_item.traj[:,:3].T, rotmat) * 1e-3 * fov[:,np.newaxis] / (2*np.pi)).T
+                        else:
+                            traj = last_item.traj[:,:3]
+                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], traj, base_trj, shift_px, matr_sz)
 
                         # filter signal to avoid Gibbs Ringing
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
@@ -577,7 +593,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    higher_order = True # WIP: use trajectory size to determine if possible
     if higher_order:
         pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
@@ -893,6 +908,14 @@ def process_shots(group, metadata, sensmaps_shots):
 
     # sort data
     data, traj = sort_spiral_data(group)
+
+    if higher_order: # trajectory to logical system never tested this, as I didnt really do multishot anymore
+        rotmat = rh.calc_rotmat(group[0])
+        fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.y,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.z])
+        for k in range(traj.shape[2]):
+            traj[:,:,k] = rh.dcs_to_gcs(traj[:,:,k], rotmat) * 1e-3 * fov[:,np.newaxis] / (2*np.pi)
 
     # stack SMS dimension
     sensmaps_shots = np.stack(sensmaps_shots)

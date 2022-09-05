@@ -34,12 +34,12 @@ import reco_helper as rh
     when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
 
     The MRD trajectory field should have the following trajectory dimensions
-    0: kx, 1: ky, 2: kz, 3: k0, 4: k2nd_1, 5: k2nd_2, 6: k2nd_3, 7: k2nd_4, 8: k2nd_5
+    0: kx, 1: ky, 2: kz, 3: k0, 4-8: 2nd order, 9-15: 3rd order, 16-19: concomitant fields
+
+    If 2nd or 3rd order was not measured, the concomitant field terms move to lower dimensions (no zero-filling), to reduce the required space
 
     The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
     
-    WIP: Maybe change the order to how they are saved in the Skope file (needs then also changes in this script, in pulseq_helper.py and in PowerGrid) 
-    0: k0 , 1: kx, 2: ky, 3: kz, 4: k2nd_1, 5: k2nd_2, 6: k2nd_3, 7: k2nd_4, 8: k2nd_5
 """
 
 # Folder for sharing data/debugging
@@ -207,7 +207,8 @@ def process(connection, config, metadata, prot_file):
 
                 if item.traj.size > 0 and not skope:
                     skope = True # Skope data inserted?
-                    if item.traj.shape[1] > 4 and not higher_order:
+                    if item.traj.shape[1] > 4 and not higher_order:                
+                        # Trajectory is shaped as: kx,ky,kz,time (+2nd_order,3rd_order,coco if higher order)
                         logging.debug("Higher order reconstruction.")
                         higher_order = True
 
@@ -294,7 +295,6 @@ def process(connection, config, metadata, prot_file):
                     if item.idx.segment == 0:
                         nsamples = item.number_of_samples
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
-                        item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
                         if higher_order:
                             img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
@@ -333,8 +333,11 @@ def process(connection, config, metadata, prot_file):
 
                         # Correct the global phase
                         if skope:
-                            k0 = last_item.traj[:,4]
+                            k0 = last_item.traj[:,3]
                             last_item.data[:] *= np.exp(-1j*k0)
+
+                        # replace k0 with time vector
+                        last_item.traj[:,3] = t_vec.copy()
 
                         # T2* filter
                         t2_star = 40e-3
@@ -539,11 +542,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                     bvals.append(acq.user_int[0])
                     dirs.append(acq.user_float[:3])
 
-                # get rid of k0 in 5th dim, we dont need it in PowerGrid
-                # Trajectory is shaped as: kx,ky,kz,time // WIP: five 2nd order terms in the following dimensions
-                save_trj = acq.traj[:,:4].copy()
-                acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
-                acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
     bvals = np.asarray(bvals)
@@ -572,7 +570,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     if sms_factor > 1:
-        logging.debug(f'Readout is {1e3*readout_dur} ms. Use DFT for reconstruction as SMS was used.')
+        logging.debug(f'Readout is {1e3*readout_dur} ms. DFT reconstruction as this is a multiband acquisition.')
     else:
         logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
@@ -921,7 +919,7 @@ def process_shots(group, metadata, sensmaps_shots):
     data, traj = sort_spiral_data(group)
 
     higher_order = (group[0].traj.shape[1] > 4)
-    if higher_order: # trajectory to logical system never tested this, as I didnt really do multishot anymore
+    if higher_order: # trajectory to logical system - never tested this, as I didnt really do multishot anymore
         rotmat = rh.calc_rotmat(group[0])
         fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
                 metadata.encoding[0].reconSpace.fieldOfView_mm.y,

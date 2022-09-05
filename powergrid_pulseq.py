@@ -205,9 +205,10 @@ def process(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                if item.traj.size > 0:
+                if item.traj.size > 0 and not skope:
                     skope = True # Skope data inserted?
-                    if item.traj.shape[1] > 4:
+                    if item.traj.shape[1] > 4 and not higher_order:
+                        logging.debug("Higher order reconstruction.")
                         higher_order = True
 
                 # insert acquisition protocol

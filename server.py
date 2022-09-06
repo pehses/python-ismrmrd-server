@@ -90,6 +90,11 @@ class Server:
                 #with cProfile.Profile() as pr:
                 #    bart_cs.process(connection, config, metadata)
                 #pr.dump_stats("/tmp/share/debug/bart_cs.prof")
+            elif (config == "bart_radial"):
+                import bart_radial
+                importlib.reload(bart_radial)
+                logging.info("Starting bart_radial processing based on config")
+                bart_radial.process(connection, config, metadata)
             elif (config == "bart_spiral"):
                 import bart_spiral
                 importlib.reload(bart_spiral)

@@ -139,7 +139,7 @@ RUN cd opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mavel101/PowerGrid \
      && cd PowerGrid \
-     && git checkout python_cnpy \
+     && git checkout python_cnpy_dev \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \
@@ -207,7 +207,7 @@ RUN  cd /opt/code \
      && python3 setup.py install
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip

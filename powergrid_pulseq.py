@@ -25,6 +25,21 @@ import reco_helper as rh
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
+
+    Normal field (B0) corrected recon is done in the logical coordinate system
+    Trajctories therefore have to be int the logical coordinate system and scaled with "FOV[m] / (2*pi)" to make them dimensionless and suitable for BART/PowerGrid.
+
+    A higher order reconstruction is done in the physical coordinate system.
+    The k-space coefficients from the Skope system (atm only 1st & 2nd order) have to stay in the physical coordinate system without rescaling,
+    when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
+
+    The MRD trajectory field should have the following trajectory dimensions
+    0: kx, 1: ky, 2: kz, 3: k0, 4-8: 2nd order, 9-15: 3rd order, 16-19: concomitant fields
+
+    If 2nd or 3rd order was not measured, the concomitant field terms move to lower dimensions (no zero-filling), to reduce the required space
+
+    The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
+    
 """
 
 # Folder for sharing data/debugging
@@ -152,11 +167,13 @@ def process(connection, config, metadata, prot_file):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
+    img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     shotimgs = None
     sens_shots = False
     base_trj = None
     skope = False
+    higher_order = False
     process_acs.cc_mat = [None] * n_slc # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
 
@@ -188,8 +205,12 @@ def process(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                if item.traj.size > 0:
+                if item.traj.size > 0 and not skope:
                     skope = True # Skope data inserted?
+                    if item.traj.shape[1] > 4 and not higher_order:                
+                        # Trajectory is shaped as: kx,ky,kz,time (+2nd_order,3rd_order,coco if higher order)
+                        logging.debug("Higher order reconstruction.")
+                        higher_order = True
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -266,7 +287,7 @@ def process(connection, config, metadata, prot_file):
                     # trigger online first-contrast-recon early
                     if process_raw.first_contrast and item.idx.contrast > 0:
                         if len(acqGroup) > 0:
-                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
                         continue
 
                     # Process imaging scans - deal with ADC segments 
@@ -274,8 +295,9 @@ def process(connection, config, metadata, prot_file):
                     if item.idx.segment == 0:
                         nsamples = item.number_of_samples
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
-                        item.traj[:,3] = t_vec.copy()
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
+                        if higher_order:
+                            img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
                     else:
                         # append data to first segment of ADC group
                         idx_lower = item.idx.segment * item.number_of_samples
@@ -298,7 +320,12 @@ def process(connection, config, metadata, prot_file):
                         rotmat = rh.calc_rotmat(item)
                         shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
                         shift_px = shift / res # shift in pixel
-                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], last_item.traj[:], base_trj, shift_px, matr_sz)
+                        if higher_order:
+                            # for higher order recon, we just undo the shift -> shift is then done in recon with correct image coordinates
+                            traj = np.zeros_like(base_trj)
+                        else:
+                            traj = last_item.traj[:,:3]
+                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], traj, base_trj, shift_px, matr_sz)
 
                         # filter signal to avoid Gibbs Ringing
                         traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
@@ -306,8 +333,11 @@ def process(connection, config, metadata, prot_file):
 
                         # Correct the global phase
                         if skope:
-                            k0 = last_item.traj[:,4]
+                            k0 = last_item.traj[:,3]
                             last_item.data[:] *= np.exp(-1j*k0)
+
+                        # replace k0 with time vector
+                        last_item.traj[:,3] = t_vec.copy()
 
                         # T2* filter
                         t2_star = 40e-3
@@ -329,7 +359,7 @@ def process(connection, config, metadata, prot_file):
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -375,15 +405,15 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # average acquisitions before reco
     avg_before = True 
@@ -410,6 +440,14 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
     dset_tmp.write_xml_header(metadata.toXML())
+
+    # Insert Coordinates (if calculated)
+    higher_order = False
+    if not any(elem is None for elem in img_coord):
+        img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
+        img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
+        dset_tmp.append_array("ImgCoord", img_coord)
+        higher_order = True
 
     # Insert Sensitivity Maps
     if read_ecalib:
@@ -504,10 +542,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                     bvals.append(acq.user_int[0])
                     dirs.append(acq.user_float[:3])
 
-                # get rid of k0 in 5th dim, we dont need it in PowerGrid
-                save_trj = acq.traj[:,:4].copy()
-                acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
-                acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
     bvals = np.asarray(bvals)
@@ -536,7 +570,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     if sms_factor > 1:
-        logging.debug(f'Readout is {1e3*readout_dur} ms. Use DFT for reconstruction as SMS was used.')
+        logging.debug(f'Readout is {1e3*readout_dur} ms. DFT reconstruction as this is a multiband acquisition.')
     else:
         logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
@@ -557,6 +591,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     mps_server = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
         # Start an MPS Server for faster MPI on GPU
+        # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
         # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
         # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
         mps_server = True
@@ -567,30 +602,33 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-
-    if pcSENSE: # Multishot
-        if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
-            if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+    if higher_order:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
+        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
+    else:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+        if pcSENSE: # Multishot
+            if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSense ' + pg_opts
+            else: # nufft with time segmentation
+                pg_opts += f' -I {temp_intp} -t {ts}'
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
+        else: # Singleshot
+            pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
+            if sms_factor > 1:
+                pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
             else:
-                subproc = 'PowerGridPcSense ' + pg_opts
-        else: # nufft with time segmentation
-            pg_opts += f' -I {temp_intp} -t {ts}'
+                pg_opts += ' -F NUFFT' # nufft with time segmentation
             if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
             else:
-                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else: # Singleshot
-        pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
-        if sms_factor > 1:
-            pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
-        else:
-            pg_opts += ' -F NUFFT' # nufft with time segmentation
-        if mpi:
-            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
-        else:
-            subproc = 'PowerGridIsmrmrd ' + pg_opts
+                subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
     logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:
@@ -686,7 +724,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
-    for data_ix,data in enumerate(dsets):
+    for data in dsets:
         series_ix += 1
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -710,9 +748,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 image.repetition = rep
                                 image.phase = phs
                                 image.contrast = contr
+                                # b-values and directions should already be correct, as they are in the acquisition header
+                                # but we set them here explicitly again
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = bvals[contr]
-                                if 'Directions' in prot_arrays and data_ix>0:
+                                if 'Directions' in prot_arrays:
                                     image.user_float[:3] = dirs[contr]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -723,7 +763,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                                 images.append(image)
         else:
             # ADC maps and Refimg
-            series_ix += 1
             for slc, img in enumerate(data):
                 if process_raw.slc_sel is None:
                     image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
@@ -879,6 +918,15 @@ def process_shots(group, metadata, sensmaps_shots):
 
     # sort data
     data, traj = sort_spiral_data(group)
+
+    higher_order = (group[0].traj.shape[1] > 4)
+    if higher_order: # trajectory to logical system - never tested this, as I didnt really do multishot anymore
+        rotmat = rh.calc_rotmat(group[0])
+        fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.y,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.z])
+        for k in range(traj.shape[2]):
+            traj[:,:,k] = rh.dcs_to_gcs(traj[:,:,k], rotmat) * 1e-3 * fov[:,np.newaxis] / (2*np.pi)
 
     # stack SMS dimension
     sensmaps_shots = np.stack(sensmaps_shots)

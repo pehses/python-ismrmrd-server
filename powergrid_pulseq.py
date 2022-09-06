@@ -724,7 +724,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
-    for data_ix,data in enumerate(dsets):
+    for data in dsets:
         series_ix += 1
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
@@ -748,9 +748,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 image.repetition = rep
                                 image.phase = phs
                                 image.contrast = contr
+                                # b-values and directions should already be correct, as they are in the acquisition header
+                                # but we set them here explicitly again
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = bvals[contr]
-                                if 'Directions' in prot_arrays and data_ix>0:
+                                if 'Directions' in prot_arrays:
                                     image.user_float[:3] = dirs[contr]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -761,7 +763,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 images.append(image)
         else:
             # ADC maps and Refimg
-            series_ix += 1
             for slc, img in enumerate(data):
                 if process_raw.slc_sel is None:
                     image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])

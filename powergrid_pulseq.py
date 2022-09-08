@@ -669,26 +669,29 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
     if "b_values" in prot_arrays and not process_raw.first_contrast:
-        # Append data
-        dsets.append(data)
+        try:
+            # Append data
+            dsets.append(data)
 
-        # Reshape Arrays
-        shp = data.shape
-        n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
-        n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-        b0 = data[:,np.nonzero(bvals==0)[0]]
-        diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+            # Reshape Arrays
+            shp = data.shape
+            n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
+            n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
+            n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
+            b0 = data[:,np.nonzero(bvals==0)[0]]
+            diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
 
-        # Calculate ADC maps
-        mask = fmap_mask.copy()
-        b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
-        adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
-        adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
-        dsets.append(adc_maps)
+            # Calculate ADC maps
+            mask = fmap_mask.copy()
+            b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
+            adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
+            adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
+            dsets.append(adc_maps)
+        except:
+            logging.debug("ADC map calculation failed.")
+            dsets.append(data)
     else:
         dsets.append(data)
-        n_b0 = 0
 
     # Append reference image
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)
@@ -699,7 +702,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Correct orientation, normalize and convert to int16 for online recon
     int_max = np.iinfo(np.uint16).max
-    imascale = dsets[0].max() # use max of T2 weighted, should be also global max
+    imascale = dsets[0].max()
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
@@ -719,13 +722,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 
-    series_ix = 0
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
-    for data in dsets:
-        series_ix += 1
+    for series_ix, data in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
         if data.ndim > 4:
             for contr in range(data.shape[1]):

@@ -66,7 +66,6 @@ RUN  cd /opt/code \
      && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
      && make install
-     # && echo ENABLE_MEM_CFL=1 >> Makefile.local \
 
 ### Dependencies for PowerGrid ###
 
@@ -145,7 +144,7 @@ RUN  cd /opt/code \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \
      && make -j4 && make install    
 
-# ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
+# ----- Start another clean build without all of the build dependencies-----
 FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
@@ -158,7 +157,6 @@ COPY --from=mrd_converter /usr/local/. /usr/local/
 COPY --from=mrd_converter /opt/nvidia /opt/nvidia 
 COPY --from=mrd_converter /opt/code/PowerGrid /opt/code/PowerGrid
 COPY --from=mrd_converter /opt/code/spiraltraj/SpiralTraj* /opt/code/
-# COPY --from=mrd_converter /opt/code/PowerGrid/PowerGridPy* /opt/code/
 
 # Set variables for PowerGrid
 ENV LD_LIBRARY_PATH="/usr/local/PowerGrid/lib:${LD_LIBRARY_PATH}"

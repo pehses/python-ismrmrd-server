@@ -300,8 +300,9 @@ def process(connection, config, metadata, prot_file):
                             img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
                     else:
                         # append data to first segment of ADC group
-                        idx_lower = item.idx.segment * item.number_of_samples
-                        idx_upper = (item.idx.segment+1) * item.number_of_samples
+                        last_idx = acqGroup[item.idx.slice][item.idx.contrast][-1].number_of_samples - 1
+                        idx_lower = last_idx - (nsegments-item.idx.segment) * item.number_of_samples
+                        idx_upper = last_idx - (nsegments-item.idx.segment-1) * item.number_of_samples
                         acqGroup[item.idx.slice][item.idx.contrast][-1].data[:,idx_lower:idx_upper] = item.data[:]
 
                     if item.idx.segment == nsegments - 1:

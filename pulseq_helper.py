@@ -385,8 +385,16 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         base_trj[2] =  kz * np.ones(base_trj.shape[1])
 
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1) # align trajectory to scanner ADC
-    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]   
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]
+
+    # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+        extra_gradshift = -1 * 1e-5 # validated for 7T plus
+    elif hdr.acquisitionSystemInformation.systemModel == 'ConnectomA':
+        extra_gradshift = 1e-5 # for some reason this is different for the connectom
+    else:
+        extra_gradshift = -1 * 1e-5
+    base_trj = intp_axis(adctime, gradtime+extra_gradshift, base_trj, axis=1) 
     base_trj = np.swapaxes(base_trj,0,1)
 
     return base_trj, pred_trj, k0

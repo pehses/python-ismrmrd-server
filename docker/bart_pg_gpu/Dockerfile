@@ -45,8 +45,9 @@ RUN cd /opt/code \
 
 # siemens_to_ismrmrd converter
 RUN cd /opt/code \
-    && git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git \
+    && git clone https://github.com/mavel101/siemens_to_ismrmrd.git \
     && cd siemens_to_ismrmrd \
+    && git checkout skope_ecc \
     && cp /opt/code/python-ismrmrd-server/parameter_maps/* parameter_maps/ \
     && mkdir build \
     && cd build \

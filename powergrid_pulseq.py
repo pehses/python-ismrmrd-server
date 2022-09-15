@@ -341,7 +341,10 @@ def process(connection, config, metadata, prot_file):
                         last_item.traj[:,3] = t_vec.copy()
 
                         # T2* filter
-                        t2_star = 40e-3
+                        if freq < 2e8:
+                            t2_star = 70e-3 # 3T
+                        else:
+                            t2_star = 40e-3 # 7T
                         last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
 
                         # remove ADC oversampling

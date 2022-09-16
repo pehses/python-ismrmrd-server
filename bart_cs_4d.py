@@ -58,18 +58,18 @@ os_removal = True
 reduce_fov_x = False
 zf_to_orig_sz = True
 apply_prewhitening = True
-ncc = 16      # number of compressed coils
+ncc = 12      # number of compressed coils
 n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 nii_filename = 'img.nii.gz'
 cal_mode = 'espirit'
-#cal_mode = 'caldir'
+# cal_mode = 'caldir'
 
 # override defaults:
-# reduce_fov_x = True
-# zf_to_orig_sz = False
-ncc = 32  # we have time...
+reduce_fov_x = True
+zf_to_orig_sz = False
+# ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
@@ -384,7 +384,9 @@ def process(connection, config, metadata):
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                # if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
+                    print("LAST_IN_MEASUREMENT")
                     push_to_kspace(item, metadata, finalize=True)
                     # logging.info("Processing a group of k-space data")
                     # images = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice])
@@ -492,20 +494,25 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
             logging.debug(f'nx={nx}, ny={ny}, nz={nz}, is_acs_scan={acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)}')
             
-            push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
-            push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16)
+            push_to_kspace.kspace = np.zeros([ny, nz, nc, nx, 1], dtype=acq.data.dtype)
+            push_to_kspace.counter = np.zeros([ny, nz, 1], dtype=np.uint16)
             push_to_kspace.rawHead = None
             push_to_kspace.finalized = False
             logging.debug('push_to_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
+        
+        rep = acq.idx.repetition + acq.idx.set  # only works with either/or not with both repetition and sets!
+        if push_to_kspace.kspace.shape[-1]<rep+1:
+            # add additional element in time dim.
+            push_to_kspace.kspace = np.concatenate((push_to_kspace.kspace, np.zeros_like(push_to_kspace.kspace[...,:1])), axis=-1)
+            push_to_kspace.counter = np.concatenate((push_to_kspace.counter, np.zeros_like(push_to_kspace.counter[...,:1])), axis=-1)
 
         ## now sort acq into k-space ##
         offset_enc1 = push_to_kspace.cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
         offset_enc2 = push_to_kspace.cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
         enc1 += offset_enc1
         enc2 += offset_enc2
-
-        push_to_kspace.kspace[enc1, enc2] += acq.data
-        push_to_kspace.counter[enc1, enc2] += 1
+        push_to_kspace.kspace[enc1, enc2, :, :, rep] += acq.data
+        push_to_kspace.counter[enc1, enc2, rep] += 1
 
         ## save one header
         if (push_to_kspace.rawHead is None) or \
@@ -515,9 +522,9 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
 
     if finalize:
         # support averaging (with or without acquisition weighting)
-        push_to_kspace.kspace /= np.maximum(1, push_to_kspace.counter[:,:,np.newaxis,np.newaxis])
+        push_to_kspace.kspace /= np.maximum(1, push_to_kspace.counter[:,:,np.newaxis,np.newaxis,:])
 
-        # rearrange kspace for bart - target size: (nx, ny, nz, nc)
+        # rearrange kspace for bart - target size: (nx, ny, nz, nc, nrep)
         push_to_kspace.kspace = np.moveaxis(push_to_kspace.kspace, 3, 0)
         push_to_kspace.finalized = True
 
@@ -551,6 +558,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
     gpu_str = "-g" if use_gpu else ""
     acs = sort_into_kspace(group, metadata)
+    if acs.ndim>4:
+        acs = acs[:,:,:,:,0]
     nx, ny, nz, nc = acs.shape
 
     if chunk_sz is None:
@@ -616,8 +625,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
             logging.debug(bart.stderr)
             raise RuntimeError
 
-    np.save(os.path.join(debugFolder, "acs.npy"), acs)
-    np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
+    # np.save(os.path.join(debugFolder, "acs.npy"), acs)
+    # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
 
     return sensmaps
 
@@ -639,11 +648,18 @@ def pics_chunk(pics_str, chunk):
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
 def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
 # def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
-
+    # data = np.expand_dims(data, (4))  # frames in TE dim
+    data = np.expand_dims(data, list(range(4, 10)))  # frames in time dim 1
     logging.info(f"Raw data is size {data.shape}")
 
     if threads is not None and threads > 1:
         chunk_sz = max(1, 128 // threads)
+
+    if chunk_sz>0:
+        chunk_sz //= data.shape[-1]  # make sure that there's enough memory for all repetitions
+        chunk_sz = max(1, chunk_sz)
+        chunk_sz = 152 # test
+        chunk_overlap = 2
 
     if chunk_sz == 0 or chunk_sz >= data.shape[0]:
         threads = 1
@@ -653,10 +669,18 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         data = cifft(data, 0)
 
     gpu_str = "-g" if use_gpu else ""
-    pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
+    # pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
+
+    # total-variation in time domain
+    # pics_str = f'pics -R W:7:0:0.002 -R T:1024:0:0.01 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
+    pics_str = f'pics -R W:7:0:0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
     if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
         sensmaps = sensmaps.get()
+
+    from bart import cfl
+    cfl.writecfl(os.path.join(debugFolder, "sensmaps"), sensmaps)
+    cfl.writecfl(os.path.join(debugFolder, "data"), data)
 
     tic = perf_counter()
     if not process_in_chunks:
@@ -681,8 +705,9 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
             data = list(map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts)))
         
     data = np.concatenate(data, axis=0)
-    data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
-
+    print(f'data.shape={data.shape}')
+    data = data[(slice(None),) * 3 + (data.ndim-4) * (0,) + (slice(None),)]  # select first 3 dims and last dim
+    print(f'data.shape={data.shape}')
     logging.info(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
 
 

@@ -307,6 +307,7 @@ def filt_ksp(kspace, traj, filt_fac=0.95):
         filt[-filt_len:] = np.hamming(2*filt_len)[filt_len:]
 
     return kspace * filt
+<<<<<<< Updated upstream
     
 
 ## Array manipulation
@@ -368,3 +369,7 @@ def apply_prewhitening_old(data, dmtx):
 
     s = data.shape
     return np.matmul(dmtx, data.reshape(data.shape[0],data.size//data.shape[0])).reshape(s)
+
+def interpolate(sensmaps, target_sz):
+    import skimage.transform
+    return skimage.transform.resize(sensmaps.real, target_sz) + 1j * skimage.transform.resize(sensmaps.imag, target_sz)

@@ -796,8 +796,15 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     if len(group)==0:
         raise ValueError("Process ACS was triggered for empty acquisition group.")
 
-    data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+    data = sort_into_kspace(group, metadata, dmtx)
     data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
+
+    # cut matrix to correct size for sensitivity maps
+    # for field maps, we use the whole size, but interpolate in the end of calc_fmap
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    data_sens = data[nx//2:-nx//2, ny//2:-ny//2, nz//2:-nz//2]
 
     slc_ix = group[0].idx.slice
 
@@ -808,16 +815,16 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     if read_ecalib:
         sensmaps = np.zeros(1)
     else:
-        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data_sens[...,0])
 
     # Field Map calculation - if acquired
     refimg = cifftn(data, [0,1,2])
-    process_acs.refimg[slc_ix] = rh.rss(refimg[...,0], axis=-1).T
+    process_acs.refimg[slc_ix] = rh.rss(refimg[nx//2:-nx//2, ny//2:-ny//2, nz//2:-nz//2,...,0], axis=-1).T
     if te_diff is not None and data.shape[-1] > 1:
         process_acs.fmap['fmap'][slc_ix], process_acs.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
 
@@ -828,11 +835,11 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
         if np.allclose(os_region,0):
             os_region = 0.25 # use default if no region provided
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        data = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data)
-        if gpu and data.shape[2] > 1:
-            sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data[...,0])
+        data_sens = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data_sens)
+        if gpu and data_sens.shape[2] > 1:
+            sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data_sens[...,0])
         else:
-            sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data[...,0])
+            sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data_sens[...,0])
     else:
         sensmaps_shots = None
 
@@ -901,12 +908,14 @@ def calc_fmap(imgs, te_diff, metadata):
         fmap = gaussian_filter(fmap, sigma=0.5)
         fmap = median_filter(fmap, size=2)
 
-    # interpolate if necessary
+    # interpolate to correct matrix size
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     newshape = [nx,ny,nz]
     fmap = resize(fmap, newshape, anti_aliasing=True)
+    mask = resize(mask, newshape, anti_aliasing=True)
+    mask[mask>0] = 1 # fix interpolation artifacts in binray mask
 
     # if fmap is 2D, remove nz
     if nz == 1:
@@ -942,7 +951,7 @@ def process_shots(group, metadata, sensmaps_shots):
         sms_dim = 13
         data = rh.add_naxes(data, sms_dim+1-data.ndim)
         for s in range(sms_factor):
-            data = np.concatenate((data, np.zeros_like(data[...,0,np.newaxis])),axis=sms_dim) # WIP: this might not work for stacked spiral
+            data = np.concatenate((data, np.zeros_like(data[...,0,np.newaxis])),axis=sms_dim)
         sensmaps_shots = rh.add_naxes(sensmaps_shots, sms_dim+1-sensmaps_shots.ndim)
         sensmaps_shots = np.moveaxis(sensmaps_shots,0,sms_dim)
     else:
@@ -1064,7 +1073,7 @@ def sort_spiral_data(group):
    
     return sig, trj
 
-def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
+def sort_into_kspace(group, metadata, dmtx=None):
     # initialize k-space
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
@@ -1090,9 +1099,10 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         acq.data[:] = data
 
     nc = process_acs.cc_cha
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    # if reference scan has bigger matrix than spiral scan (e.g. because of higher resolution), use the bigger matrix
+    nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, acq.number_of_samples)
+    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1)
+    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2)
     n_contr = contr_max + 1
 
     kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)
@@ -1112,16 +1122,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         ccol = ncol // 2
         col = slice(cx - ccol, cx + ccol)
 
-        if zf_around_center:
-            cy = ny // 2
-            cz = nz // 2
-
-            cenc1 = (enc1_max+1) // 2
-            cenc2 = (enc2_max+1) // 2
-
-            # sort data into center k-space (assuming a symmetric acquisition)
-            enc1 += cy - cenc1
-            enc2 += cz - cenc2
+        # sort data into center k-space (assuming a symmetric acquisition)
+        cy = ny // 2
+        cz = nz // 2
+        cenc1 = (enc1_max+1) // 2
+        cenc2 = (enc2_max+1) // 2
+        enc1 += cy - cenc1
+        enc2 += cz - cenc2
         
         # Noise-whitening
         if dmtx is not None:

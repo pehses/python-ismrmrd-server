@@ -49,5 +49,5 @@ def process(connection, config, metadata):
         powergrid_pulseq_dream.process(connection, config, metadata, prot_file)
     else:
         importlib.reload(powergrid_pulseq)
-        logging.info("Starting cartesian reconstruction.")
+        logging.info("Starting PowerGrid spiral reconstruction.")
         powergrid_pulseq.process(connection, config, metadata, prot_file)

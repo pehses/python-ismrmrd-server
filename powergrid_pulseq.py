@@ -296,7 +296,7 @@ def process(connection, config, metadata, prot_file):
                         nsamples = item.number_of_samples
                         t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                         acqGroup[item.idx.slice][item.idx.contrast].append(item)
-                        if higher_order:
+                        if higher_order and img_coord[item.idx.slice] is None:
                             img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
                     else:
                         # append data to first segment of ADC group

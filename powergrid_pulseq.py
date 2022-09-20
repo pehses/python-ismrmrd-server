@@ -852,20 +852,27 @@ def calc_fmap(imgs, te_diff, metadata):
     fmap = -1 * fmap/te_diff # for some reason the sign in Powergrid is different
 
     # mask image with median otsu from dipy
-    img = rh.rss(imgs[...,0], axis=-1)
-    img_masked, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
+    # do it in 2D as it works better and hole filling is easier
+    img_mask = rh.rss(imgs[...,0], axis=-1) # [slices,nx,ny] or [nx,ny,nz]
+    if nz > 1:
+        img_mask = np.moveaxis(img_mask,-1,0) # move nz to the front
+    mask = np.zeros_like(img_mask)
+    for k,img in enumerate(img_mask):
+        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
 
-    # simple threshold mask
-    thresh = 0.13
-    mask_thresh = img/np.max(img)
-    mask_thresh[mask_thresh<thresh] = 0
-    mask_thresh[mask_thresh>=thresh] = 1
+        # simple threshold mask
+        thresh = 0.13
+        mask_thresh = img/np.max(img)
+        mask_thresh[mask_thresh<thresh] = 0
+        mask_thresh[mask_thresh>=thresh] = 1
 
-    # combine masks
-    mask = mask_thresh + mask_otsu
-    mask[mask>0] = 1
-    mask = binary_fill_holes(mask)
-    mask = binary_dilation(mask, iterations=2) # some extrapolation
+        # combine masks
+        mask[k] = mask_thresh + mask_otsu
+        mask[k][mask[k]>0] = 1
+        mask[k] = binary_fill_holes(mask[k])
+        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
+    if nz > 1:
+        mask = np.moveaxis(mask,0,-1) # move nz back
 
     # apply masking and filtering, if selected
     fmap *= mask

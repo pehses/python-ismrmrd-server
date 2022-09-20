@@ -1064,8 +1064,8 @@ def sort_into_kspace(group, metadata, dmtx=None):
     nc = process_acs.cc_cha
     # if reference scan has bigger matrix than spiral scan (e.g. because of higher resolution), use the bigger matrix
     nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, acq.number_of_samples)
-    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1)
-    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2)
+    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1+1)
+    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2+1)
     n_contr = contr_max + 1
 
     kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)

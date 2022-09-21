@@ -474,6 +474,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Calculate phase maps from shot images and append if necessary
     pcSENSE = False
     if shotimgs is not None:
+        if higher_order:
+            raise ValueError("Higher order reconstruction currently not implemented for multishot data.")
         pcSENSE = True
         shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
@@ -502,7 +504,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     for slc in acqGroup:
         for contr in slc:
             for acq in contr:
-                slc_ix = acq.idx.slice
                 if avg_before:
                     if acq.idx.average == 0:
                         acq.data[:] = avgData[avg_ix]
@@ -831,6 +832,7 @@ def calc_fmap(imgs, te_diff, metadata):
     phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
 
     # from here on either [slices,nx,ny,coils] or [nx,ny,nz,coils]
+    # Multi-coil field map calculation // WIP: standard deviation denoising - s. Paper Robinson 2011
     if mc_fmaps:
         fmap_shape = imgs.shape[:3]
         phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
@@ -875,9 +877,8 @@ def calc_fmap(imgs, te_diff, metadata):
         mask = np.moveaxis(mask,0,-1) # move nz back
 
     # apply masking and filtering, if selected
-    fmap *= mask
     if filtering:
-        # WIP: standard deviation denoising - s. Paper Robinson 2011
+        fmap *= mask # only need masking, if field map is filtered
         fmap = gaussian_filter(fmap, sigma=0.5)
         fmap = median_filter(fmap, size=2)
 

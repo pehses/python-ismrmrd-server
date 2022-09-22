@@ -116,7 +116,9 @@ def process(connection, config, metadata, prot_file):
     dwelltime = 1e-6*up_double["dwellTime_us"] # [s]
     t_min = up_double["t_min"] # [s]
     spiral_delay =  up_double["traj_delay"] # [s]
-    t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
+    trajtype = metadata.encoding[0].trajectory.value
+    if spiral_delay > 0 and trajtype=='spiral':
+        t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
 
     logging.info("Config: \n%s", config)
 
@@ -406,6 +408,9 @@ def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_ar
 
 def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
+    # Multiband factor
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
+
     # average acquisitions before reco
     avg_before = True 
     if metadata.encoding[0].encodingLimits.contrast.maximum > 0:
@@ -416,19 +421,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     if os.path.exists(tmp_file):
         os.remove(tmp_file)
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
-
-    # Write header
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
-    if sms_factor > 1:
-        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
-        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
-    if process_raw.reco_n_contr:
-        metadata.encoding[0].encodingLimits.contrast.maximum = process_raw.reco_n_contr - 1
-        metadata.encoding[0].encodingLimits.repetition.maximum = 0
-    if avg_before:
-        n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
-        metadata.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(metadata.toXML())
 
     # Insert Coordinates (if calculated)
     higher_order = False
@@ -485,6 +477,18 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
+
+    # Write header
+    if sms_factor > 1:
+        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
+        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
+    if process_raw.reco_n_contr:
+        metadata.encoding[0].encodingLimits.contrast.maximum = process_raw.reco_n_contr - 1
+        metadata.encoding[0].encodingLimits.repetition.maximum = 0
+    if avg_before:
+        n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
+        metadata.encoding[0].encodingLimits.average.maximum = 0
+    dset_tmp.write_xml_header(metadata.toXML())
 
     # Average acquisition data before reco
     # Assume that averages are acquired in the same order for every slice, contrast, ...
@@ -816,9 +820,9 @@ def calc_fmap(imgs, te_diff, metadata):
     mc_fmaps = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011)
     filtering = False # apply Gaussian and median filtering (not recommended)
 
-    nx = imgs.shape[1]
-    ny = imgs.shape[2]
-    nz = imgs.shape[3]
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
     n_slc = imgs.shape[0]
 
     if nz == 1:
@@ -1072,8 +1076,8 @@ def sort_into_kspace(group, metadata, dmtx=None):
     nc = process_acs.cc_cha
     # if reference scan has bigger matrix than spiral scan (e.g. because of higher resolution), use the bigger matrix
     nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, acq.number_of_samples)
-    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1+1)
-    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2+1)
+    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1_max+1)
+    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2_max+1)
     n_contr = contr_max + 1
 
     kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)

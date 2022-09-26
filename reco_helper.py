@@ -334,7 +334,10 @@ def add_naxes(arr, n):
 ## WIP: Calculate image space coordinates in physical coordinate system
 # Can be used for higher order recon
 def calc_img_coord(metadata, acq):
-    "Calculate voxel coordinates in physical coordinate system"
+    """
+    Calculate voxel coordinates in physical coordinate system for a given slice
+    Voxel coordinates only validated (in different test reconstructions) for Pulseq sequences.     
+    """
 
     # matrix size & rotmat
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
@@ -349,18 +352,21 @@ def calc_img_coord(metadata, acq):
     n_slc_red = n_slc // nz # number of reduced slices
     slc_sep = n_slc_red * slc_res
 
-    # global offset & slice offset
-    global_offset = 1e-3 * pcs_to_gcs(np.asarray(acq.position), rotmat)
-    slice_offset = slc_res*(acq.idx.slice-(n_slc_red-1)/2)
-
-    # Coordinates in GCS (logical) - WIP: "-" sign of global offset only validated for x and y, not for z (global_offset[2])
-    ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx) - global_offset[0]
-    iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny) - global_offset[1]
-    iz = np.linspace(-0.5*slc_sep*(nz-1), 0.5*slc_sep*(nz-1), nz) - global_offset[2] + slice_offset
+    # Make grid in GCS (logical)
+    ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx)
+    iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny)
+    slice_offset = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
+    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset # switch sign as we measure from head to feet
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
     # Coordinates to DCS (physical)
     grid_rot = gcs_to_dcs(grid, rotmat) # [dims, coords]
+
+    # Add global offset in DCS
+    global_offset = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [m] -> [mm]
+    grid_rot[0] -= global_offset[0]
+    grid_rot[1] -= global_offset[1]
+    grid_rot[2] += global_offset[2] # also switch sign here
 
     # reshape back
     grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])

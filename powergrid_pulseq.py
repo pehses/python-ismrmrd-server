@@ -50,6 +50,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
 read_ecalib = False
+save_cmplx = True # save images as complex data
 
 ########################
 # Main Function
@@ -66,6 +67,8 @@ def process(connection, config, metadata, prot_file):
         # however, it will still indicate, whether the recon is executed online
         logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
         process_raw.reco_n_contr = 1 # reconstruct only first contrast, if data is processed online
+        global save_cmplx
+        save_cmplx = False
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -626,7 +629,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Image data is saved as .npy
     data = np.load(pg_dir + "/images_pg.npy")
-    data = np.abs(data)
+    if not save_cmplx:
+        data = np.abs(data)
 
     """
     """
@@ -651,14 +655,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         try:
             # Append data
             dsets.append(data)
+            data_eval = abs(data)
 
             # Reshape Arrays
-            shp = data.shape
+            shp = data_eval.shape
             n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
             n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
             n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-            b0 = data[:,np.nonzero(bvals==0)[0]]
-            diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+            b0 = data_eval[:,np.nonzero(bvals==0)[0]]
+            diffw_imgs = data_eval[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
 
             # Calculate ADC maps
             mask = fmap_mask.copy()
@@ -678,16 +683,15 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Correct orientation, normalize and convert to int16 for online recon
     int_max = np.iinfo(np.uint16).max
-    imascale = dsets[0].max()
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
-        if dsets[k].ndim>4:
-            dsets[k] *= int_max / imascale # images from PowerGrid (T2 and diff images)
+        if k==0 and save_cmplx:
+            dsets[k] /= abs(dsets[k]).max()
         else:
-            dsets[k] *= int_max / dsets[k].max() # other images (ADC maps, Refimage)
-        dsets[k] = np.around(dsets[k])
-        dsets[k] = dsets[k].astype(np.uint16)
+            dsets[k] *= int_max / abs(dsets[k]).max()
+            dsets[k] = np.around(dsets[k])
+            dsets[k] = dsets[k].astype(np.uint16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',

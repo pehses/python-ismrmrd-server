@@ -356,7 +356,7 @@ def calc_img_coord(metadata, acq):
     ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx)
     iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny)
     slice_offset = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
-    iz = -1*(np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset) # switch sign as we measure from head to feet
+    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
     # Coordinates to DCS (physical)
@@ -366,7 +366,7 @@ def calc_img_coord(metadata, acq):
     global_offset = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [m] -> [mm]
     grid_rot[0] -= global_offset[0]
     grid_rot[1] -= global_offset[1]
-    grid_rot[2] += global_offset[2] # also switch sign here
+    grid_rot[2] += global_offset[2]
 
     # reshape back
     grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])

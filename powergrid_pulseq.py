@@ -653,8 +653,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
     if "b_values" in prot_arrays and not process_raw.reco_n_contr:
         try:
-            # Append data
-            dsets.append(data)
             data_eval = abs(data)
 
             # Reshape Arrays
@@ -670,7 +668,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
             adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
+
+            # Append data
             dsets.append(adc_maps)
+            dsets.append(data)
         except:
             logging.debug("ADC map calculation failed.")
             dsets.append(data)

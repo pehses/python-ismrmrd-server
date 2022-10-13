@@ -655,18 +655,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         try:
             data_eval = abs(data)
 
-            # Reshape Arrays
-            shp = data_eval.shape
-            n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-            n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
-            n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-            b0 = data_eval[:,np.nonzero(bvals==0)[0]]
-            diffw_imgs = data_eval[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
-
             # Calculate ADC maps
             mask = fmap_mask.copy()
-            b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
-            adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
+            adc_maps = process_diffusion_images(data_eval, bvals, mask)
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
@@ -994,33 +985,36 @@ def calc_phasemaps(shotimgs, mask, metadata):
     
     return phasemaps
 
-def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
+def process_diffusion_images(data, bvals, mask):
     """ Calculate ADC maps from diffusion images
     """
 
     from scipy.stats.mstats import gmean
 
-    b_val = prot_arrays['b_values']
-    n_bval = np.count_nonzero(b_val)
-    bval = b_val[np.nonzero(b_val)[0]]
+    data = data[0,:,0,:,0] # [contrast, slice, ny, nx]
+    b0 = data[np.where(bvals==0)] # b0 images
+    b0 = b0.mean(0)
 
-    # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
-    b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
-    imgshape = [s for s in b0.shape]
-    diff = np.transpose(diffw_imgs[:,:,:,:,0].mean(0), [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
+    trace_log = []
+    b_val_nz = np.unique(bvals[np.nonzero(bvals)]) # nonzero b-values
+    for bval in b_val_nz:
+        diffimgs = data[np.where(bvals==bval)]
 
-    # calculate trace images (geometric mean)
-    trace = gmean(diff, axis=-2)
+        # calculate trace images (geometric mean)
+        trace = gmean(diffimgs, axis=0)
 
-    # calculate trace ADC map with LLS
-    trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
-    trace_log  = -np.log(trace_norm, out=np.zeros_like(trace_norm), where=trace_norm!=0)
+        # calculate trace log
+        trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
+        trace_log.append(-np.log(trace_norm, out=np.zeros_like(trace_norm), where=trace_norm!=0))
 
-    # calculate trace diffusion coefficient - WIP: Is the fitting function working correctly?
-    if n_bval<3:
-        adc_map = (trace_log / bval).mean(-1)
+    trace_log = np.asarray(trace_log) # [n_bval, slice, ny, nx]
+
+    if len(b_val_nz) < 3:
+        adc_map = (trace_log.T / b_val_nz).T.mean(0)
     else:
-        adc_map = np.polynomial.polynomial.polyfit(bval, trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
+        imgshape = b0.shape
+        adc_map = np.polynomial.polynomial.polyfit(b_val_nz, trace_log.reshape([trace_log.shape[0],-1]), 1)[1]
+        adc_map = adc_map.reshape(imgshape)
 
     adc_map *= mask
 

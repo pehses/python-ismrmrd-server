@@ -647,7 +647,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
    
     images = []
     dsets = []
-    dsets.append(data)
+    dsets.append(data.copy())
 
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
@@ -695,16 +695,16 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(acqGroup[0][0][0])
-    for series_ix, data in enumerate(dsets):
+    for series_ix, imgs in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
-        if data.ndim > 4:
-            for contr in range(data.shape[1]):
-                for phs in range(data.shape[2]):
-                    for rep in range(data.shape[0]): # save one repetition after another
-                        for slc in range(data.shape[3]):
+        if imgs.ndim > 4:
+            for contr in range(imgs.shape[1]):
+                for phs in range(imgs.shape[2]):
+                    for rep in range(imgs.shape[0]): # save one repetition after another
+                        for slc in range(imgs.shape[3]):
                             img_ix += 1
-                            for nz in range(data.shape[4]):
-                                image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                            for nz in range(imgs.shape[4]):
+                                image = ismrmrd.Image.from_array(imgs[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
                                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 image.image_index = img_ix
@@ -728,7 +728,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 images.append(image)
         else:
             # ADC maps and Refimg
-            for slc, img in enumerate(data):
+            for slc, img in enumerate(imgs):
                 image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix

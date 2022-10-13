@@ -647,6 +647,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
    
     images = []
     dsets = []
+    dsets.append(data)
 
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
@@ -661,13 +662,9 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
-            dsets.append(data)
             dsets.append(adc_maps)
         except:
             logging.debug("ADC map calculation failed.")
-            dsets.append(data)
-    else:
-        dsets.append(data)
 
     # Append reference image
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)

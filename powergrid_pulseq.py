@@ -661,8 +661,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
-            dsets.append(adc_maps)
             dsets.append(data)
+            dsets.append(adc_maps)
         except:
             logging.debug("ADC map calculation failed.")
             dsets.append(data)

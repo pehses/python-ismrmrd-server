@@ -839,10 +839,9 @@ def calc_fmap(imgs, te_diff, metadata):
         phasediff_uw = phasediff_uw.reshape([-1,nc])
         img_mag = abs(imgs[...,0]).reshape([-1,nc])
         fmap = np.zeros([phasediff_uw.shape[0]])
-        for i in range(phasediff_uw.shape[0]):
-            ix = np.argsort(phasediff_uw[i])[nc//4:-nc//4] # remove lowest & highest quartile
-            weights = img_mag[i,ix] / np.sum(img_mag[i,ix])
-            fmap[i] = np.sum(weights * phasediff_uw[i,ix])
+        ix = np.argsort(phasediff_uw, axis=-1)[:,nc//4:-nc//4] # remove lowest & highest quartile
+        weights = np.take_along_axis(img_mag, ix, axis=-1) / np.sum(np.take_along_axis(img_mag, ix, axis=-1), axis=-1)[:,np.newaxis]
+        fmap = np.sum(weights * np.take_along_axis(phasediff_uw, ix, axis=-1), axis=-1)
         fmap = fmap.reshape(fmap_shape)
     else:
         fmap = np.sum(phasediff, axis=-1) # coil combination

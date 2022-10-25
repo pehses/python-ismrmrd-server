@@ -11,7 +11,6 @@ import psutil
 from time import perf_counter
 
 from bart import bart
-import bartpy.tools
 import subprocess
 from cfft import cfftn, cifftn
 import mrdhelper
@@ -21,11 +20,26 @@ from skimage.transform import resize
 from skimage.restoration import unwrap_phase
 from dipy.segment.mask import median_otsu
 
-from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, check_signature, read_acqs
+from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 import reco_helper as rh
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
+
+    Normal field (B0) corrected recon is done in the logical coordinate system
+    Trajctories therefore have to be int the logical coordinate system and scaled with "FOV[m] / (2*pi)" to make them dimensionless and suitable for BART/PowerGrid.
+
+    A higher order reconstruction is done in the physical coordinate system.
+    The k-space coefficients from the Skope system (atm only 1st & 2nd order) have to stay in the physical coordinate system without rescaling,
+    when they are inserted into the MRD file. Units are: 1st order: [rad/m], 2nd order: [rad/m^2]
+
+    The MRD trajectory field should have the following trajectory dimensions
+    0: kx, 1: ky, 2: kz, 3: k0, 4-8: 2nd order, 9-15: 3rd order, 16-19: concomitant fields
+
+    If 2nd or 3rd order was not measured, the concomitant field terms move to lower dimensions (no zero-filling), to reduce the required space
+
+    The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
+    
 """
 
 # Folder for sharing data/debugging
@@ -36,28 +50,25 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
 read_ecalib = False
+save_cmplx = True # save images as complex data
 
 ########################
 # Main Function
 ########################
 
-def process(connection, config, metadata):
+def process(connection, config, metadata, prot_file):
     
     # -- Some manual parameters --- #
 
-    # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
-    process_raw.slc_sel = None
-
-    # Reconstruct only first contrast after that data was acquired
-    process_raw.first_contrast = False
+    # reco_n_contr: if >0 only the volumes up to the specified number will be reconstructed
+    process_raw.reco_n_contr = 0
     if len(metadata.userParameters.userParameterLong) > 0:
-        online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
-        if online_slc >= 0:
-            logging.debug(f"Dataset is processed online. Only slice {online_slc} is reconstructed.")
-            process_raw.slc_sel = int(online_slc)
-        else:
-            logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
-            process_raw.first_contrast = True # reconstruct only first contrast, if complete volume is processed online
+        # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
+        # however, it will still indicate, whether the recon is executed online
+        logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
+        process_raw.reco_n_contr = 1 # reconstruct only first contrast, if data is processed online
+        global save_cmplx
+        save_cmplx = False
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -78,31 +89,14 @@ def process(connection, config, metadata):
         seq_signature = metadata.userParameters.userParameterString[1].value
         global debugFolder 
         debugFolder += f"/{seq_signature}"
-        if not os.path.exists(debugFolder):
-            os.makedirs(debugFolder)
-            logging.debug("Created folder " + debugFolder + " for debug output files")
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    # ISMRMRD protocol file
-    prot_folder = os.path.join(dependencyFolder, "metadata")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree, remove .seq ending in Pulseq version 1.4
-    prot_file = prot_folder + "/" + prot_filename + ".h5"
-
-    # Check if local protocol folder is available, if protocol is not in dependency protocol folder
-    if not os.path.isfile(prot_file):
-        prot_folder_local = "/tmp/local/metadata" # optional local protocol mountpoint (via -v option)
-        date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-        prot_folder_loc = os.path.join(prot_folder_local, date)
-        prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"
-        if os.path.isfile(prot_file_loc):
-            prot_file = prot_file_loc
-        else:
-            raise ValueError(f"Metadata file {prot_file} not available.")
-
-    # check signature
-    prot = ismrmrd.Dataset(prot_file, create_if_needed=False)
-    prot_hdr = ismrmrd.xsd.CreateFromDocument(prot.read_xml_header())
-    check_signature(metadata, prot_hdr) # check MD5 signature
-    prot.close()
+    # Check if ecalib maps calculated
+    global read_ecalib
+    if read_ecalib and not os.path.isfile(debugFolder + "/sensmaps.npy"):
+        read_ecalib = False
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)
@@ -110,11 +104,8 @@ def process(connection, config, metadata):
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
-    # Check SMS
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1 and process_raw.slc_sel is not None:
-        process_raw.slc_sel = None
-        logging.debug("SMS reconstruction is not possible for single slices. Reconstruct whole volume.")
+    # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
 
     # Get additional arrays from protocol file for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
@@ -128,7 +119,9 @@ def process(connection, config, metadata):
     dwelltime = 1e-6*up_double["dwellTime_us"] # [s]
     t_min = up_double["t_min"] # [s]
     spiral_delay =  up_double["traj_delay"] # [s]
-    t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
+    trajtype = metadata.encoding[0].trajectory.value
+    if spiral_delay > 0 and trajtype=='spiral':
+        t_min += int(spiral_delay/dwelltime) * dwelltime # account for removing possibly corrupted ADCs at the start (insert_acq)
 
     logging.info("Config: \n%s", config)
 
@@ -157,7 +150,7 @@ def process(connection, config, metadata):
 
     # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
-    n_contr = 1 if process_raw.first_contrast else metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_contr = process_raw.reco_n_contr if process_raw.reco_n_contr else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_intl = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
     if half_refscan and n_slc%2:
@@ -170,11 +163,13 @@ def process(connection, config, metadata):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
+    img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     shotimgs = None
     sens_shots = False
     base_trj = None
     skope = False
+    higher_order = False
     process_acs.cc_mat = [None] * n_slc # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
 
@@ -187,12 +182,11 @@ def process(connection, config, metadata):
 
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
-        process_acs.fmap = {'fmap': [None] * n_slc, 'mask': [None] * n_slc, 'name': 'Field Map from reference scan'}
         echo_times = prot_arrays['echo_times']
         te_diff = echo_times[1] - echo_times[0] # [s]
+        process_acs.fmap = {'fmap': [None] * n_slc, 'mask': None, 'dTE': te_diff, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
-        te_diff = None
 
     # read protocol acquisitions - faster than using read_acquisition
     logging.debug("Reading in protocol acquisitions.")
@@ -206,8 +200,12 @@ def process(connection, config, metadata):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
-                if item.traj.size > 0:
+                if item.traj.size > 0 and not skope:
                     skope = True # Skope data inserted?
+                    if item.traj.shape[1] > 4 and not higher_order:                
+                        # Trajectory is shaped as: kx,ky,kz,time (+2nd_order,3rd_order,coco if higher order)
+                        logging.debug("Higher order reconstruction.")
+                        higher_order = True
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -234,121 +232,130 @@ def process(connection, config, metadata):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
                     continue
 
-                # skip slices in single slice reconstruction
-                if process_raw.slc_sel is None or item.idx.slice == process_raw.slc_sel:
+                # Process reference scans
+                if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    if half_refscan:
+                        item.idx.slice *= 2
+                        acsGroup[item.idx.slice].append(item)
+                        item2 = copy.deepcopy(item)
+                        item2.idx.slice += 1
+                        acsGroup[item2.idx.slice].append(item2)
+                    else:
+                        acsGroup[item.idx.slice].append(item)
+                    continue
 
-                    # Process reference scans
-                    if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                # Coil Compression calibration
+                if process_acs.cc_cha < n_cha and process_acs.cc_mat[item.idx.slice] is None:
+                    cc_data = [acsGroup[item.idx.slice + n_slc//sms_factor*k] for k in range(sms_factor)]
+                    cc_data = [item for sublist in cc_data for item in sublist] # flatten list
+                    cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
+                    for k in range(sms_factor):
+                        process_acs.cc_mat[item.idx.slice + n_slc//sms_factor*k] = cc_mat
+
+                for k in range(sms_factor):
+                    slc_ix = item.idx.slice + n_slc//sms_factor*k
+                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                    if sensmaps[slc_ix] is None:
+                        sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, sens_shots) # [nx,ny,nz,nc]
+                        acsGroup[slc_ix].clear()
+                        # copy data
                         if half_refscan:
-                            item.idx.slice *= 2
-                            acsGroup[item.idx.slice].append(item)
-                            item2 = copy.deepcopy(item)
-                            item2.idx.slice += 1
-                            acsGroup[item2.idx.slice].append(item2)
-                        else:
-                            acsGroup[item.idx.slice].append(item)
-                        continue
+                            if slc_ix%2==0:
+                                sensmaps[slc_ix+1] = sensmaps[slc_ix]
+                                sensmaps_shots[slc_ix+1] = sensmaps_shots[slc_ix]
+                                process_acs.refimg[slc_ix+1] = process_acs.refimg[slc_ix]
+                                if process_acs.fmap is not None:
+                                    process_acs.fmap['fmap'][slc_ix+1] = process_acs.fmap['fmap'][slc_ix]
+                                    process_acs.fmap['mask'][slc_ix+1] = process_acs.fmap['mask'][slc_ix]
+                            if slc_ix%2==1:
+                                sensmaps[slc_ix-1] = sensmaps[slc_ix]
+                                sensmaps_shots[slc_ix-1] = sensmaps_shots[slc_ix]
+                                process_acs.refimg[slc_ix-1] = process_acs.refimg[slc_ix]
+                                if process_acs.fmap is not None:
+                                    process_acs.fmap['fmap'][slc_ix-1] = process_acs.fmap['fmap'][slc_ix]
+                                    process_acs.fmap['mask'][slc_ix-1] = process_acs.fmap['mask'][slc_ix]
+                                
 
-                    # Coil Compression calibration
-                    if process_acs.cc_cha < n_cha and process_acs.cc_mat[item.idx.slice] is None:
-                        cc_data = [acsGroup[item.idx.slice + n_slc//sms_factor*k] for k in range(sms_factor)]
-                        cc_data = [item for sublist in cc_data for item in sublist] # flatten list
-                        cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
-                        for k in range(sms_factor):
-                            process_acs.cc_mat[item.idx.slice + n_slc//sms_factor*k] = cc_mat
+                # trigger recon early
+                if process_raw.reco_n_contr and item.idx.contrast > process_raw.reco_n_contr - 1:
+                    if len(acqGroup) > 0:
+                        process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
+                    continue
 
+                # Process imaging scans - deal with ADC segments 
+                # (not needed in newer spiral sequence versions, but kept for compatibility also with other scanners)
+                if item.idx.segment == 0:
+                    nsamples = item.number_of_samples
+                    t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
+                    acqGroup[item.idx.slice][item.idx.contrast].append(item)
+                    if higher_order and img_coord[item.idx.slice] is None:
+                        img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item)
+                else:
+                    # append data to first segment of ADC group
+                    last_idx = acqGroup[item.idx.slice][item.idx.contrast][-1].number_of_samples - 1
+                    idx_lower = last_idx - (nsegments-item.idx.segment) * item.number_of_samples
+                    idx_upper = last_idx - (nsegments-item.idx.segment-1) * item.number_of_samples
+                    acqGroup[item.idx.slice][item.idx.contrast][-1].data[:,idx_lower:idx_upper] = item.data[:]
+
+                if item.idx.segment == nsegments - 1:
+
+                    last_item = acqGroup[item.idx.slice][item.idx.contrast][-1]
+
+                    # Noise whitening
+                    if dmtx is not None:
+                        last_item.data[:] = rh.apply_prewhitening(last_item.data[:], dmtx)
+
+                    # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
+                    if process_acs.cc_mat[last_item.idx.slice] is not None:
+                        rh.apply_cc(last_item, process_acs.cc_mat[last_item.idx.slice])
+
+                    # Reapply FOV Shift with predicted trajectory
+                    rotmat = rh.calc_rotmat(item)
+                    shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
+                    shift_px = shift / res # shift in pixel
+                    if higher_order:
+                        # for higher order recon, we just undo the shift -> shift is then done in recon with correct image coordinates
+                        traj = np.zeros_like(base_trj)
+                    else:
+                        traj = last_item.traj[:,:3]
+                    last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], traj, base_trj, shift_px, matr_sz)
+
+                    # filter signal to avoid Gibbs Ringing
+                    traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
+                    last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
+
+                    # Correct the global phase
+                    if skope:
+                        k0 = last_item.traj[:,3]
+                        last_item.data[:] *= np.exp(-1j*k0)
+
+                    # replace k0 with time vector
+                    last_item.traj[:,3] = t_vec.copy()
+
+                    # T2* filter
+                    if freq < 2e8:
+                        t2_star = 70e-3 # 3T
+                    else:
+                        t2_star = 40e-3 # 7T
+                    last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
+
+                    # remove ADC oversampling
+                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                    if os_factor == 2:
+                        rh.remove_os_spiral(last_item)
+                    
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and shotimgs is not None:
+                    # Reconstruct shot images for phase maps in multishot diffusion imaging
+                    # WIP: Repetitions or Averages not possible atm
+                    sensmaps_shots_stack = []
                     for k in range(sms_factor):
                         slc_ix = item.idx.slice + n_slc//sms_factor*k
-                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        if sensmaps[slc_ix] is None:
-                            sensmaps[slc_ix], sensmaps_shots[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, te_diff, sens_shots) # [nx,ny,nz,nc]
-                            acsGroup[slc_ix].clear()
-                            # copy data
-                            if half_refscan:
-                                if slc_ix%2==0:
-                                    sensmaps[slc_ix+1] = sensmaps[slc_ix]
-                                    sensmaps_shots[slc_ix+1] = sensmaps_shots[slc_ix]
-                                    process_acs.refimg[slc_ix+1] = process_acs.refimg[slc_ix]
-                                    if process_acs.fmap is not None:
-                                        process_acs.fmap['fmap'][slc_ix+1] = process_acs.fmap['fmap'][slc_ix]
-                                        process_acs.fmap['mask'][slc_ix+1] = process_acs.fmap['mask'][slc_ix]
-                                if slc_ix%2==1:
-                                    sensmaps[slc_ix-1] = sensmaps[slc_ix]
-                                    sensmaps_shots[slc_ix-1] = sensmaps_shots[slc_ix]
-                                    process_acs.refimg[slc_ix-1] = process_acs.refimg[slc_ix]
-                                    if process_acs.fmap is not None:
-                                        process_acs.fmap['fmap'][slc_ix-1] = process_acs.fmap['fmap'][slc_ix]
-                                        process_acs.fmap['mask'][slc_ix-1] = process_acs.fmap['mask'][slc_ix]
-                                    
-
-                    # trigger online first-contrast-recon early
-                    if process_raw.first_contrast and item.idx.contrast > 0:
-                        if len(acqGroup) > 0:
-                            process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
-                        continue
-
-                    # Process imaging scans - deal with ADC segments 
-                    # (not needed in newer spiral sequence versions, but kept for compatibility also with other scanners)
-                    if item.idx.segment == 0:
-                        nsamples = item.number_of_samples
-                        t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
-                        item.traj[:,3] = t_vec.copy()
-                        acqGroup[item.idx.slice][item.idx.contrast].append(item)
-                    else:
-                        # append data to first segment of ADC group
-                        last_idx = acqGroup[item.idx.slice][item.idx.contrast][-1].number_of_samples - 1
-                        idx_lower = last_idx - (nsegments-item.idx.segment) * item.number_of_samples
-                        idx_upper = last_idx - (nsegments-item.idx.segment-1) * item.number_of_samples
-                        acqGroup[item.idx.slice][item.idx.contrast][-1].data[:,idx_lower:idx_upper] = item.data[:]
-
-                    if item.idx.segment == nsegments - 1:
-
-                        last_item = acqGroup[item.idx.slice][item.idx.contrast][-1]
-
-                        # Noise whitening
-                        if dmtx is not None:
-                            last_item.data[:] = rh.apply_prewhitening(last_item.data[:], dmtx)
-
-                        # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
-                        if process_acs.cc_mat[last_item.idx.slice] is not None:
-                            rh.apply_cc(last_item, process_acs.cc_mat[last_item.idx.slice])
-
-                        # Reapply FOV Shift with predicted trajectory
-                        rotmat = rh.calc_rotmat(item)
-                        shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
-                        shift_px = shift / res # shift in pixel
-                        last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], last_item.traj[:], base_trj, shift_px, matr_sz)
-
-                        # filter signal to avoid Gibbs Ringing
-                        traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
-                        last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
-
-                        # Correct the global phase
-                        if skope:
-                            k0 = last_item.traj[:,4]
-                            last_item.data[:] *= np.exp(-1j*k0)
-
-                        # T2* filter
-                        t2_star = 40e-3
-                        last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
-
-                        # remove ADC oversampling
-                        os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
-                        if os_factor == 2:
-                            rh.remove_os_spiral(last_item)
-                        
-                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and shotimgs is not None:
-                        # Reconstruct shot images for phase maps in multishot diffusion imaging
-                        # WIP: Repetitions or Averages not possible atm
-                        sensmaps_shots_stack = []
-                        for k in range(sms_factor):
-                            slc_ix = item.idx.slice + n_slc//sms_factor*k
-                            sensmaps_shots_stack.append(sensmaps_shots[slc_ix])
-                        shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots_stack)
+                        sensmaps_shots_stack.append(sensmaps_shots[slc_ix])
+                    shotimgs[item.idx.slice][item.idx.contrast] = process_shots(acqGroup[item.idx.slice][item.idx.contrast], metadata, sensmaps_shots_stack)
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -394,15 +401,18 @@ def process(connection, config, metadata):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, half_refscan):
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
+    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
+
+    # Multiband factor
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
 
     # average acquisitions before reco
     avg_before = True 
@@ -415,24 +425,17 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         os.remove(tmp_file)
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
-    # Write header
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
-    if sms_factor > 1:
-        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
-        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
-    if process_raw.slc_sel is not None:
-        metadata.encoding[0].encodingLimits.slice.maximum = 0
-    if process_raw.first_contrast:
-        metadata.encoding[0].encodingLimits.contrast.maximum = 0
-        metadata.encoding[0].encodingLimits.repetition.maximum = 0
-    if avg_before:
-        n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
-        metadata.encoding[0].encodingLimits.average.maximum = 0
-    dset_tmp.write_xml_header(metadata.toXML())
+    # Insert Coordinates (if calculated)
+    higher_order = False
+    if not any(elem is None for elem in img_coord):
+        img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
+        img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
+        dset_tmp.append_array("ImgCoord", img_coord)
+        higher_order = True
 
     # Insert Sensitivity Maps
-    if process_raw.slc_sel is not None:
-        sens = np.transpose(sensmaps[process_raw.slc_sel][np.newaxis], [0,4,3,2,1])
+    if read_ecalib:
+        sens = np.load(debugFolder + "/sensmaps.npy")
     else:
         sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
         if sms_factor > 1:
@@ -444,22 +447,17 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # process_acs.fmap = None # just for debugging
     if process_acs.fmap is not None:
         fmap = process_acs.fmap
+        refimgs = np.asarray(fmap['fmap'])
+        te_diff = fmap['dTE']
+        fmap['fmap'], fmap['mask'] = calc_fmap(refimgs, te_diff, metadata)
     else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
-        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check field map dims
+        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
         fmap = load_external_fmap(fmap_path, fmap_shape)
 
     fmap_data = fmap['fmap']
     fmap_mask = fmap['mask']
     fmap_name = fmap['name']
-    if process_raw.slc_sel is not None:
-        fmap_data = fmap_data[process_raw.slc_sel][np.newaxis]
-        fmap_mask = fmap_mask[process_raw.slc_sel][np.newaxis]
-    fmap_data = np.asarray(fmap_data)
-    fmap_mask = np.asarray(fmap_mask)
-    if fmap_data.ndim == 4: # remove slice dimension, if 3D dataset 
-        fmap_data = fmap_data[0]
-        fmap_mask = fmap_mask[0]
     np.save(debugFolder+"/fmap_data.npy", fmap_data)
     np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     if sms_factor > 1:
@@ -471,11 +469,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # Calculate phase maps from shot images and append if necessary
     pcSENSE = False
     if shotimgs is not None:
+        if higher_order:
+            raise ValueError("Higher order reconstruction currently not implemented for multishot data.")
         pcSENSE = True
-        if process_raw.slc_sel is not None:
-            shotimgs = np.stack(shotimgs[process_raw.slc_sel])[np.newaxis]
-        else:
-            shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
+        shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
         if sms_factor > 1:
             mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # to [slice,nz,ny,nx]
@@ -483,6 +480,18 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps)
+
+    # Write header
+    if sms_factor > 1:
+        metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
+        metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
+    if process_raw.reco_n_contr:
+        metadata.encoding[0].encodingLimits.contrast.maximum = process_raw.reco_n_contr - 1
+        metadata.encoding[0].encodingLimits.repetition.maximum = 0
+    if avg_before:
+        n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
+        metadata.encoding[0].encodingLimits.average.maximum = 0
+    dset_tmp.write_xml_header(metadata.toXML())
 
     # Average acquisition data before reco
     # Assume that averages are acquired in the same order for every slice, contrast, ...
@@ -502,29 +511,19 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     for slc in acqGroup:
         for contr in slc:
             for acq in contr:
-                slc_ix = acq.idx.slice
                 if avg_before:
                     if acq.idx.average == 0:
                         acq.data[:] = avgData[avg_ix]
                         avg_ix += 1
                     else:
                         continue
-                if process_raw.slc_sel is not None:
-                    if slc_ix != process_raw.slc_sel:
-                        continue
-                    else:
-                        acq.idx.slice = 0
-                if process_raw.first_contrast and acq.idx.repetition > 0:
+                if process_raw.reco_n_contr and acq.idx.repetition > 0:
                     continue
                 if acq.idx.contrast > contr_ctr:
                     contr_ctr += 1
                     bvals.append(acq.user_int[0])
                     dirs.append(acq.user_float[:3])
 
-                # get rid of k0 in 5th dim, we dont need it in PowerGrid
-                save_trj = acq.traj[:,:4].copy()
-                acq.resize(trajectory_dimensions=4, number_of_samples=acq.number_of_samples, active_channels=acq.active_channels)
-                acq.traj[:] = save_trj.copy()
                 dset_tmp.append_acquisition(acq)
 
     bvals = np.asarray(bvals)
@@ -553,7 +552,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     temp_intp = 'hanning' # hanning / histo / minmax
     if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
     if sms_factor > 1:
-        logging.debug(f'Readout is {1e3*readout_dur} ms. Use DFT for reconstruction as SMS was used.')
+        logging.debug(f'Readout is {1e3*readout_dur} ms. DFT reconstruction as this is a multiband acquisition.')
     else:
         logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
@@ -574,6 +573,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     mps_server = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
         # Start an MPS Server for faster MPI on GPU
+        # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
         # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
         # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
         mps_server = True
@@ -584,30 +584,33 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
-
-    if pcSENSE: # Multishot
-        if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
-            if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+    if higher_order:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
+        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
+    else:
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+        if pcSENSE: # Multishot
+            if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSense ' + pg_opts
+            else: # nufft with time segmentation
+                pg_opts += f' -I {temp_intp} -t {ts}'
+                if mpi:
+                    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                else:
+                    subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
+        else: # Singleshot
+            pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
+            if sms_factor > 1:
+                pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
             else:
-                subproc = 'PowerGridPcSense ' + pg_opts
-        else: # nufft with time segmentation
-            pg_opts += f' -I {temp_intp} -t {ts}'
+                pg_opts += ' -F NUFFT' # nufft with time segmentation
             if mpi:
-                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridPcSenseMPI_TS ' + pg_opts
+                subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
             else:
-                subproc = 'PowerGridPcSenseTimeSeg ' + pg_opts
-    else: # Singleshot
-        pg_opts += f' -I {temp_intp} -t {ts}' # these are added also for the DFT, even though they are not used (required option in "PowerGridSenseMPI")
-        if sms_factor > 1:
-            pg_opts += ' -F DFT' # use discrete Fourier transform as 3D gridding has bug
-        else:
-            pg_opts += ' -F NUFFT' # nufft with time segmentation
-        if mpi:
-            subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
-        else:
-            subproc = 'PowerGridIsmrmrd ' + pg_opts
+                subproc = 'PowerGridIsmrmrd ' + pg_opts
     # Run in bash
     logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
     try:
@@ -626,7 +629,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # Image data is saved as .npy
     data = np.load(pg_dir + "/images_pg.npy")
-    data = np.abs(data)
+    if not save_cmplx:
+        data = np.abs(data)
 
     """
     """
@@ -643,51 +647,40 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
    
     images = []
     dsets = []
+    dsets.append(data.copy())
 
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
-    if "b_values" in prot_arrays and not process_raw.first_contrast:
-        # Append data
-        dsets.append(data)
+    if "b_values" in prot_arrays and not process_raw.reco_n_contr:
+        try:
+            data_eval = abs(data)
 
-        # Reshape Arrays
-        shp = data.shape
-        n_b0 = len(prot_arrays['b_values']) - np.count_nonzero(prot_arrays['b_values'])
-        n_bval = metadata.encoding[0].encodingLimits.contrast.center # number of b-values (incl b=0)
-        n_dirs = metadata.encoding[0].encodingLimits.phase.center # number of directions
-        b0 = data[:,np.nonzero(bvals==0)[0]]
-        diffw_imgs = data[:,np.nonzero(bvals)[0]].reshape(shp[0], n_bval-n_b0, n_dirs, shp[3], shp[4], shp[5], shp[6])
+            # Calculate ADC maps
+            mask = fmap_mask.copy()
+            adc_maps = process_diffusion_images(data_eval, bvals, mask)
+            adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
-        # Calculate ADC maps
-        mask = fmap_mask.copy()
-        b0 = np.expand_dims(b0.mean(1), 1) # averages b=0 scans
-        adc_maps = process_diffusion_images(b0, diffw_imgs, prot_arrays, mask)
-        adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
-        dsets.append(adc_maps)
-    else:
-        dsets.append(data)
-        n_b0 = 0
+            # Append data
+            dsets.append(adc_maps)
+        except:
+            logging.debug("ADC map calculation failed.")
 
     # Append reference image
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)
-    if process_raw.slc_sel is not None:
-        dsets.append(process_acs.refimg[process_raw.slc_sel][np.newaxis])
-    else:
-        dsets.append(np.asarray(process_acs.refimg))
+    dsets.append(np.asarray(process_acs.refimg))
 
     # Correct orientation, normalize and convert to int16 for online recon
     int_max = np.iinfo(np.uint16).max
-    imascale = dsets[0].max() # use max of T2 weighted, should be also global max
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
-        if dsets[k].ndim>4:
-            dsets[k] *= int_max / imascale # images from PowerGrid (T2 and diff images)
+        if k==0 and save_cmplx:
+            dsets[k] /= abs(dsets[k]).max()
         else:
-            dsets[k] *= int_max / dsets[k].max() # other images (ADC maps, Refimage)
-        dsets[k] = np.around(dsets[k])
-        dsets[k] = dsets[k].astype(np.uint16)
+            dsets[k] *= int_max / abs(dsets[k]).max()
+            dsets[k] = np.around(dsets[k])
+            dsets[k] = dsets[k].astype(np.uint16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -698,61 +691,52 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 
-    series_ix = 0
     img_ix = 0
     n_slc = data.shape[3]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
-    rotmat = rh.calc_rotmat(acqGroup[0][0][0]) if process_raw.slc_sel is None else rh.calc_rotmat(acqGroup[process_raw.slc_sel][0][0]) # rotmat is always the same
-    for data_ix,data in enumerate(dsets):
-        series_ix += 1
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0])
+    for series_ix, imgs in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
-        if data.ndim > 4:
-            for contr in range(data.shape[1]):
-                for phs in range(data.shape[2]):
-                    for rep in range(data.shape[0]): # save one repetition after another
-                        for slc in range(data.shape[3]):
+        if imgs.ndim > 4:
+            for contr in range(imgs.shape[1]):
+                for phs in range(imgs.shape[2]):
+                    for rep in range(imgs.shape[0]): # save one repetition after another
+                        for slc in range(imgs.shape[3]):
                             img_ix += 1
-                            for nz in range(data.shape[4]):
-                                if process_raw.slc_sel is None:
-                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
-                                    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
-                                    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
-                                else:
-                                    image = ismrmrd.Image.from_array(data[rep,contr,phs,slc,nz], acquisition=acqGroup[process_raw.slc_sel][contr][0])
-                                    meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].read_dir[2])]
-                                    meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[process_raw.slc_sel][0][0].phase_dir[2])]
+                            for nz in range(imgs.shape[4]):
+                                image = ismrmrd.Image.from_array(imgs[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
+                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
                                 image.slice = slc
                                 image.repetition = rep
                                 image.phase = phs
                                 image.contrast = contr
+                                # b-values and directions should already be correct, as they are in the acquisition header
+                                # but we set them here explicitly again
                                 if 'b_values' in prot_arrays:
                                     image.user_int[0] = bvals[contr]
-                                if 'Directions' in prot_arrays and data_ix>0:
+                                if 'Directions' in prot_arrays:
                                     image.user_float[:3] = dirs[contr]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                                       ctypes.c_float(1)) # 2D
+                                                       ctypes.c_float(slc_res))
                                 offset = [0, 0, -1*slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
                                 image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
             # ADC maps and Refimg
-            series_ix += 1
-            for slc, img in enumerate(data):
-                if process_raw.slc_sel is None:
-                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
-                else:
-                    image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[process_raw.slc_sel][0][0])
+            for slc, img in enumerate(imgs):
+                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc
                 image.attribute_string = meta.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                       ctypes.c_float(1))
+                                       ctypes.c_float(slc_res))
                 offset = [0, 0, -1*slc_res*(slc-(n_slc-1)/2)]    
                 image.position[:] += rh.gcs_to_pcs(offset, rotmat)
                 images.append(image)
@@ -762,15 +746,22 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     return images
 
-def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
+def process_acs(group, metadata, dmtx=None, sens_shots=False):
     """ Process reference scans for parallel imaging calibration
     """
 
     if len(group)==0:
         raise ValueError("Process ACS was triggered for empty acquisition group.")
 
-    data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+    data = sort_into_kspace(group, metadata, dmtx)
     data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
+
+    # cut matrix to correct size for sensitivity maps
+    # for field maps, we use the whole size, but interpolate in the end of calc_fmap
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
 
     slc_ix = group[0].idx.slice
 
@@ -781,18 +772,17 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
     if read_ecalib:
         sensmaps = np.zeros(1)
     else:
-        if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data_sens[...,0])
 
-    # Field Map calculation - if acquired
-    refimg = cifftn(data, [0,1,2])
-    process_acs.refimg[slc_ix] = rh.rss(refimg[...,0], axis=-1).T
-    if te_diff is not None and data.shape[-1] > 1:
-        process_acs.fmap['fmap'][slc_ix], process_acs.fmap['mask'][slc_ix] = calc_fmap(refimg, te_diff, metadata)
+    # Save reference data for masking and field mapping
+    process_acs.refimg[slc_ix] = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1).T # save at spiral matrix size
+    if data.shape[-1] > 1 and process_acs.fmap is not None:
+        process_acs.fmap['fmap'][slc_ix] = cifftn(data, [0,1,2]) # save at refscan matrix size (will get interpolated in fmap calculation)
 
     # calculate low resolution sensmaps for shot images
     if sens_shots:
@@ -801,11 +791,11 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
         if np.allclose(os_region,0):
             os_region = 0.25 # use default if no region provided
         nx = metadata.encoding[0].encodedSpace.matrixSize.x
-        data = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data)
-        if gpu and data.shape[2] > 1:
-            sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data[...,0])
+        data_sens = bart(1,f'resize -c 0 {int(nx*os_region)} 1 {int(nx*os_region)}', data_sens)
+        if gpu and data_sens.shape[2] > 1:
+            sensmaps_shots = bart(1, 'ecalib -g -m 1 -k 6', data_sens[...,0])
         else:
-            sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data[...,0])
+            sensmaps_shots = bart(1, 'ecalib -m 1 -k 6', data_sens[...,0])
     else:
         sensmaps_shots = None
 
@@ -816,77 +806,90 @@ def process_acs(group, metadata, dmtx=None, te_diff=None, sens_shots=False):
 def calc_fmap(imgs, te_diff, metadata):
     """ Calculate field maps from reference images with two different contrasts
 
-        imgs: [nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
+        imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
         te_diff: TE difference [s]
     """
     
-    mc_fmaps = True # calculate multi-coil field maps to remove outliers
-    filtering = False # apply Gaussian and median filtering
+    mc_fmaps = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011)
+    filtering = False # apply Gaussian and median filtering (not recommended)
 
-    phasediff = imgs[...,1] * np.conj(imgs[...,0]) # phase difference
-    if phasediff.shape[2] == 1:
-        phasediff = phasediff[:,:,0]
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    n_slc = imgs.shape[0]
 
+    if nz == 1:
+        imgs = imgs[:,:,:,0] # 2D field map acquisition
+    elif nz > 1:
+        imgs = imgs[0] # 3D field map acquisition
+    elif nz > 1 and n_slc > 1:
+        raise ValueError("Multi-slab is not supported.")
+
+    # phase difference
+    phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
+
+    # from here on either [slices,nx,ny,coils] or [nx,ny,nz,coils]
+    # Multi-coil field map calculation // WIP: standard deviation denoising - s. Paper Robinson 2011
     if mc_fmaps:
         fmap_shape = imgs.shape[:3]
         phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
         for k in range(phasediff.shape[-1]):
-            phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k]))
+            phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k])) # unwrap phase for each coil
         nc = phasediff_uw.shape[-1]
         phasediff_uw = phasediff_uw.reshape([-1,nc])
         img_mag = abs(imgs[...,0]).reshape([-1,nc])
         fmap = np.zeros([phasediff_uw.shape[0]])
-        for i in range(phasediff_uw.shape[0]):
-            ix = np.argsort(phasediff_uw[i])[nc//4:-nc//4] # remove lowest & highest quartile
-            weights = img_mag[i,ix] / np.sum(img_mag[i,ix])
-            fmap[i] = np.sum(weights * phasediff_uw[i,ix])
+        ix = np.argsort(phasediff_uw, axis=-1)[:,nc//4:-nc//4] # remove lowest & highest quartile
+        weights = np.take_along_axis(img_mag, ix, axis=-1) / np.sum(np.take_along_axis(img_mag, ix, axis=-1), axis=-1)[:,np.newaxis]
+        fmap = np.sum(weights * np.take_along_axis(phasediff_uw, ix, axis=-1), axis=-1)
         fmap = fmap.reshape(fmap_shape)
     else:
         fmap = np.sum(phasediff, axis=-1) # coil combination
         fmap = unwrap_phase(np.angle(fmap))
         
-    fmap = np.atleast_3d(fmap)
     fmap = -1 * fmap/te_diff # for some reason the sign in Powergrid is different
 
     # mask image with median otsu from dipy
-    img = rh.rss(imgs[...,0], axis=-1)
-    img_masked, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
+    # do it in 2D as it works better and hole filling is easier
+    img_mask = rh.rss(imgs[...,0], axis=-1) # [slices,nx,ny] or [nx,ny,nz]
+    if nz > 1:
+        img_mask = np.moveaxis(img_mask,-1,0) # move nz to the front
+    mask = np.zeros_like(img_mask)
+    for k,img in enumerate(img_mask):
+        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
 
-    # simple threshold mask
-    thresh = 0.13
-    mask_thresh = img/np.max(img)
-    mask_thresh[mask_thresh<thresh] = 0
-    mask_thresh[mask_thresh>=thresh] = 1
+        # simple threshold mask
+        thresh = 0.13
+        mask_thresh = img/np.max(img)
+        mask_thresh[mask_thresh<thresh] = 0
+        mask_thresh[mask_thresh>=thresh] = 1
 
-    # combine masks
-    mask = mask_thresh + mask_otsu
-    mask[mask>0] = 1
-    if mask.shape[-1] == 1:
-        mask = binary_fill_holes(mask[...,0])[...,np.newaxis]
-    else:
-        mask = binary_fill_holes(mask)
-    mask = binary_dilation(mask, iterations=2) # some extrapolation
+        # combine masks
+        mask[k] = mask_thresh + mask_otsu
+        mask[k][mask[k]>0] = 1
+        mask[k] = binary_fill_holes(mask[k])
+        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
+    if nz > 1:
+        mask = np.moveaxis(mask,0,-1) # move nz back
 
-    # apply masking and some regularization
-    fmap *= mask
+    # apply masking and filtering, if selected
     if filtering:
-        # WIP: standard deviation denoising - s. Paper Robinson 2009
+        fmap *= mask # only need masking, if field map is filtered
         fmap = gaussian_filter(fmap, sigma=0.5)
         fmap = median_filter(fmap, size=2)
 
-    # interpolate if necessary
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    newshape = [nx,ny,nz]
-    fmap = resize(fmap, newshape, anti_aliasing=True)
-
-    # if fmap is 2D, remove nz
+    # interpolate to correct matrix size
     if nz == 1:
-        fmap = fmap[...,0]
-        mask = mask[...,0]
+        newshape = [n_slc,ny,nx]
+        fmap = resize(np.transpose(fmap,[0,2,1]), newshape, anti_aliasing=True)
+        mask = resize(np.transpose(mask,[0,2,1]), newshape, anti_aliasing=False)
+    else:
+        newshape = [nz,ny,nx]
+        fmap = resize(fmap.T, newshape, anti_aliasing=True)
+        mask = resize(mask.T, newshape, anti_aliasing=False)
+    mask[mask>0] = 1 # fix interpolation artifacts in binary mask
 
-    return fmap.T, mask.T # to [nz,ny,nx]
+    return fmap, mask
 
 def process_shots(group, metadata, sensmaps_shots):
     """ Reconstruct images from single shots for calculation of phase maps
@@ -897,19 +900,29 @@ def process_shots(group, metadata, sensmaps_shots):
     # sort data
     data, traj = sort_spiral_data(group)
 
+    higher_order = (group[0].traj.shape[1] > 4)
+    if higher_order: # trajectory to logical system - never tested this, as I didnt really do multishot anymore
+        rotmat = rh.calc_rotmat(group[0])
+        fov = np.array([metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.y,
+                metadata.encoding[0].reconSpace.fieldOfView_mm.z])
+        for k in range(traj.shape[2]):
+            traj[:,:,k] = rh.dcs_to_gcs(traj[:,:,k], rotmat) * 1e-3 * fov[:,np.newaxis] / (2*np.pi)
+
     # stack SMS dimension
     sensmaps_shots = np.stack(sensmaps_shots)
 
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor > 1:
         sms = True
         sms_dim = 13
         data = rh.add_naxes(data, sms_dim+1-data.ndim)
-        data = np.concatenate((data, np.zeros_like(data)),axis=sms_dim) # WIP: this might not work for stacked spiral
+        for s in range(sms_factor):
+            data = np.concatenate((data, np.zeros_like(data[...,0,np.newaxis])),axis=sms_dim)
         sensmaps_shots = rh.add_naxes(sensmaps_shots, sms_dim+1-sensmaps_shots.ndim)
         sensmaps_shots = np.moveaxis(sensmaps_shots,0,sms_dim)
     else:
-        sms = None
+        sms = False
         sensmaps_shots = sensmaps_shots[0]
 
     # undo the swap in process_acs as BART needs different orientation  
@@ -921,11 +934,12 @@ def process_shots(group, metadata, sensmaps_shots):
     for k in range(data.shape[2]):
         traj_shot = traj[:,:,k,np.newaxis]
         data_shot = data[:,:,k,np.newaxis]
-        pat = bartpy.tools.pattern(data_shot) if sms is not None else None # k-space pattern - needed for SMS recon
-        img = bartpy.tools.pics(data_shot, sensmaps, t=traj_shot, l='1', r=0.001, S=True, e=True, i=15, M=sms, p=pat)
+        pat = bart(1, 'pattern', data_shot) if sms else None # k-space pattern - needed for SMS recon
         if sms:
+            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 15 -M', data_shot, sensmaps, t=traj_shot, p=pat)
             img = np.moveaxis(img,-1,0)[...,0,0,0,0,0,0,0,0,0,0,0]
         else:
+            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 15', data_shot, sensmaps, t=traj_shot)
             img = img[np.newaxis]
         imgs.append(img) # shot images in list with [nz,ny,nx]
     
@@ -967,33 +981,36 @@ def calc_phasemaps(shotimgs, mask, metadata):
     
     return phasemaps
 
-def process_diffusion_images(b0, diffw_imgs, prot_arrays, mask):
+def process_diffusion_images(data, bvals, mask):
     """ Calculate ADC maps from diffusion images
     """
 
     from scipy.stats.mstats import gmean
 
-    b_val = prot_arrays['b_values']
-    n_bval = np.count_nonzero(b_val)
-    bval = b_val[np.nonzero(b_val)[0]]
+    data = data[0,:,0,:,0] # [contrast, slice, ny, nx]
+    b0 = data[np.where(bvals==0)] # b0 images
+    b0 = b0.mean(0)
 
-    # reshape images - atm: just average repetitions and Nz is not used (no 3D imaging for diffusion)
-    b0 = b0[:,0,0,:,0,:,:].mean(0) # [slices, Ny, Nx]
-    imgshape = [s for s in b0.shape]
-    diff = np.transpose(diffw_imgs[:,:,:,:,0].mean(0), [2,3,4,1,0]) # from [Rep, b_val, Direction, Slice, Nz, Ny, Nx] to [Slice, Ny, Nx, Direction, b_val]
+    trace_log = []
+    b_val_nz = np.unique(bvals[np.nonzero(bvals)]) # nonzero b-values
+    for bval in b_val_nz:
+        diffimgs = data[np.where(bvals==bval)]
 
-    # calculate trace images (geometric mean)
-    trace = gmean(diff, axis=-2)
+        # calculate trace images (geometric mean)
+        trace = gmean(diffimgs, axis=0)
 
-    # calculate trace ADC map with LLS
-    trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
-    trace_log  = -np.log(trace_norm, out=np.zeros_like(trace_norm), where=trace_norm!=0)
+        # calculate trace log
+        trace_norm = np.divide(trace.T, b0.T, out=np.zeros_like(trace.T), where=b0.T!=0).T
+        trace_log.append(-np.log(trace_norm, out=np.zeros_like(trace_norm), where=trace_norm!=0))
 
-    # calculate trace diffusion coefficient - WIP: Is the fitting function working correctly?
-    if n_bval<3:
-        adc_map = (trace_log / bval).mean(-1)
+    trace_log = np.asarray(trace_log) # [n_bval, slice, ny, nx]
+
+    if len(b_val_nz) < 3:
+        adc_map = (trace_log.T / b_val_nz).T.mean(0)
     else:
-        adc_map = np.polynomial.polynomial.polyfit(bval, trace_log.reshape([-1,n_bval]).T, 1)[1,].T.reshape(imgshape)
+        imgshape = b0.shape
+        adc_map = np.polynomial.polynomial.polyfit(b_val_nz, trace_log.reshape([trace_log.shape[0],-1]), 1)[1]
+        adc_map = adc_map.reshape(imgshape)
 
     adc_map *= mask
 
@@ -1026,7 +1043,7 @@ def sort_spiral_data(group):
    
     return sig, trj
 
-def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
+def sort_into_kspace(group, metadata, dmtx=None):
     # initialize k-space
     enc1_min, enc1_max = int(999), int(0)
     enc2_min, enc2_max = int(999), int(0)
@@ -1052,9 +1069,10 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         acq.data[:] = data
 
     nc = process_acs.cc_cha
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    # if reference scan has bigger matrix than spiral scan (e.g. because of higher resolution), use the bigger matrix
+    nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, acq.number_of_samples)
+    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1_max+1)
+    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2_max+1)
     n_contr = contr_max + 1
 
     kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)
@@ -1074,16 +1092,13 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         ccol = ncol // 2
         col = slice(cx - ccol, cx + ccol)
 
-        if zf_around_center:
-            cy = ny // 2
-            cz = nz // 2
-
-            cenc1 = (enc1_max+1) // 2
-            cenc2 = (enc2_max+1) // 2
-
-            # sort data into center k-space (assuming a symmetric acquisition)
-            enc1 += cy - cenc1
-            enc2 += cz - cenc2
+        # sort data into center k-space (assuming a symmetric acquisition)
+        cy = ny // 2
+        cz = nz // 2
+        cenc1 = (enc1_max+1) // 2
+        cenc2 = (enc2_max+1) // 2
+        enc1 += cy - cenc1
+        enc2 += cz - cenc2
         
         # Noise-whitening
         if dmtx is not None:

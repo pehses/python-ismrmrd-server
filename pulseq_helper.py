@@ -77,6 +77,10 @@ def insert_hdr(prot_file, metadata):
         dset_e1.encodingLimits.kspace_encoding_step_1.minimum = prot_e1.encodingLimits.kspace_encoding_step_1.minimum
         dset_e1.encodingLimits.kspace_encoding_step_1.maximum = prot_e1.encodingLimits.kspace_encoding_step_1.maximum
         dset_e1.encodingLimits.kspace_encoding_step_1.center = prot_e1.encodingLimits.kspace_encoding_step_1.center
+    if prot_e1.encodingLimits.kspace_encoding_step_2 is not None:
+        dset_e1.encodingLimits.kspace_encoding_step_2.minimum = prot_e1.encodingLimits.kspace_encoding_step_2.minimum
+        dset_e1.encodingLimits.kspace_encoding_step_2.maximum = prot_e1.encodingLimits.kspace_encoding_step_2.maximum
+        dset_e1.encodingLimits.kspace_encoding_step_2.center = prot_e1.encodingLimits.kspace_encoding_step_2.center
     if prot_e1.encodingLimits.average is not None:
         dset_e1.encodingLimits.average.minimum = prot_e1.encodingLimits.average.minimum
         dset_e1.encodingLimits.average.maximum = prot_e1.encodingLimits.average.maximum
@@ -250,31 +254,33 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         data_tmp = dset_acq.data[:].copy()
         traj_tmp = dset_acq.traj[:].copy()
 
-        # resize data - traj_dims: [kx,ky,kz,t,(GIRF-)k0]
-        dset_acq.resize(trajectory_dimensions=5, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
-        dset_acq.traj[:,3] = np.zeros(nsamples_full) # space for time vector for B0 correction
+        # resize data
+        if dset_acq.trajectory_dimensions > 4:
+            # higher order: [kx/ky/kz, k0, 2nd order (5), 3rd order (7), concomitant fields (4)] - 2nd & 3rd order only if measured
+            n_trajdims = dset_acq.trajectory_dimensions
+        else:
+            n_trajdims = 4 # [kx/ky/kz, k0]
+        dset_acq.resize(trajectory_dimensions=n_trajdims, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
 
         # trajectory already inserted from Skope system
-        # kz should be set to zero, if trajectory is 2-dimensional
+        # kz should be set to zero, if trajectory is 2D
         if traj_tmp.size > 0:
-            dset_acq.traj[:,:3] = traj_tmp[:,:3]
+            dset_acq.traj[:] = traj_tmp[:]
             rotmat = calc_rotmat(dset_acq)
             base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False)[0] # for FOV shift reapply
-            if traj_tmp.shape[1] > 3: # Skope k0 is saved in 3rd dim -> move to 4th dim
-                dset_acq.traj[:,4] = traj_tmp[:,3]
-            else:
-                dset_acq.traj[:,4] = np.zeros(len(dset_acq.traj[:]))              
+            if traj_tmp.shape[1] < 4:
+                dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj[:])) # k0 not inserted     
 
         # trajectory from protocol file - check via shape
         elif prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
             dset_acq.traj[:,:3] = prot_acq.traj[:,:3]
-            dset_acq.traj[:,4] = np.zeros(len(dset_acq.traj))
+            dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj))
             base_trj = dset_acq.traj[:].copy()
 
         # gradients from protocol file - calculate trajectory with girf
         else:
             rotmat = calc_rotmat(dset_acq)
-            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,4] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
+            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
 
         # fill extended part of data with zeros
         dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
@@ -379,8 +385,16 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         base_trj[2] =  kz * np.ones(base_trj.shape[1])
 
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1) # align trajectory to scanner ADC
-    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]   
-    base_trj = intp_axis(adctime, gradtime-1e-5, base_trj, axis=1) # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]
+
+    # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+        extra_gradshift = -1 * 1e-5 # validated for 7T plus
+    elif hdr.acquisitionSystemInformation.systemModel == 'ConnectomA':
+        extra_gradshift = 1e-5 # for some reason this is different for the connectom
+    else:
+        extra_gradshift = -1 * 1e-5
+    base_trj = intp_axis(adctime, gradtime+extra_gradshift, base_trj, axis=1) 
     base_trj = np.swapaxes(base_trj,0,1)
 
     return base_trj, pred_trj, k0

@@ -143,7 +143,7 @@ def pcs_to_dcs(grads, patient_position='HFS'):
 
 def dcs_to_pcs(grads, patient_position='HFS'):
     """ Convert from device coordinate system (DCS, physical) 
-        to patient coordinate system (DCS, physical)
+        to patient coordinate system (PCS, physical)
         this is valid for patient orientation head first/supine
     """
     return pcs_to_dcs(grads, patient_position) # same sign switch
@@ -332,31 +332,44 @@ def add_naxes(arr, n):
     return arr
 
 ## WIP: Calculate image space coordinates in physical coordinate system
-# Can be used for higher order recon or phase correction
-def img_coord(metadata, acq):
-    "Calculate voxel coordinates in physical coordinate system"
+# Can be used for higher order recon
+def calc_img_coord(metadata, acq):
+    """
+    Calculate voxel coordinates in physical coordinate system for a given slice
+    Voxel coordinates only validated (in different test reconstructions) for Pulseq sequences.     
+    """
 
-    # matric size
+    # matrix size & rotmat
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) # sms factor
+    rotmat =  calc_rotmat(acq)
 
     # scaling
-    res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / nx
-    slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    res = 1e-3 * metadata.encoding[0].encodedSpace.fieldOfView_mm.x / nx
+    slc_res = 1e-3 * metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    slc_sep = n_slc // nz * slc_res
+    n_slc_red = n_slc // nz # number of reduced slices
+    slc_sep = n_slc_red * slc_res
 
-    ix = iy = np.linspace(-nx/2*res,(nx/2-1)*res, nx) # spirals have quadratic FOV
-    iz = np.linspace(0, slc_sep*(nz-1), nz)
+    # Make grid in GCS (logical)
+    ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx)
+    iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny)
+    slice_offset = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
+    iz = -1*(np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset) # head to foot
+    grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
-    # WIP: slice (group) offset and global offset (is in PCS --> pcs to dcs)
+    # Coordinates to DCS (physical)
+    grid_rot = gcs_to_dcs(grid, rotmat) # [dims, coords]
 
-    # calculate grid
-    grid = np.asarray(np.meshgrid(*[ix,iy,iz]))
+    # Add global offset in DCS
+    global_offset = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [m] -> [mm]
+    grid_rot[0] -= global_offset[0]
+    grid_rot[1] -= global_offset[1]
+    grid_rot[2] -= global_offset[2]
 
-    # rotate grid
-    rotmat =  calc_rotmat(acq)
-    grid_rot = gcs_to_dcs(grid, rotmat)
+    # reshape back
+    grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])
 
     return grid_rot
 

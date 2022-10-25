@@ -861,179 +861,179 @@
 
                 <!-- ECC  -->
                 <!-- B0 compensation amplitude X -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[1]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Amp_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[2]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Amp_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[3]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Amp_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflAmplitude[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflAmplitude[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 <!-- B0 compensation amplitude Y -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[1]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Amp_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[2]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Amp_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[3]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Amp_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflAmplitude[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflAmplitude[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
                 <!-- B0 compensation amplitude Z -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[1]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Amp_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[2]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Amp_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[3]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Amp_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflAmplitude[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflAmplitude[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>				
                 
                 <!-- B0 compensation constant X -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[1]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Tau_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[2]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Tau_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[3]">
                     <userParameterDouble>
                         <name>sB0CompensationX_Tau_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationX/aflTimeConstant[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationX/aflTimeConstant[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
 
                 <!-- B0 compensation constant Y -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[1]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Tau_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[2]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Tau_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[3]">
                     <userParameterDouble>
                         <name>sB0CompensationY_Tau_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationY/aflTimeConstant[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationY/aflTimeConstant[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
                 <!-- B0 compensation constant Z -->
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[6]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[1]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Tau_0</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[6]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[1]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[7]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[2]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Tau_1</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[7]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[2]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>
                 
                 
-                <xsl:if test="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[8]">
+                <xsl:if test="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[3]">
                     <userParameterDouble>
                         <name>sB0CompensationZ_Tau_2</name>
                         <value>
-                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/VE/sB0CompensationZ/aflTimeConstant[8]" />
+                            <xsl:value-of select="siemens/MEAS/sGRADSPEC/sB0CompensationZ/aflTimeConstant[3]" />
                         </value>
                     </userParameterDouble>
                 </xsl:if>

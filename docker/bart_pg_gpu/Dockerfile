@@ -45,8 +45,9 @@ RUN cd /opt/code \
 
 # siemens_to_ismrmrd converter
 RUN cd /opt/code \
-    && git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git \
+    && git clone https://github.com/mavel101/siemens_to_ismrmrd.git \
     && cd siemens_to_ismrmrd \
+    && git checkout skope_ecc \
     && cp /opt/code/python-ismrmrd-server/parameter_maps/* parameter_maps/ \
     && mkdir build \
     && cd build \
@@ -66,7 +67,6 @@ RUN  cd /opt/code \
      && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
      && make install
-     # && echo ENABLE_MEM_CFL=1 >> Makefile.local \
 
 ### Dependencies for PowerGrid ###
 
@@ -143,15 +143,9 @@ RUN  cd /opt/code \
      && git submodule update --init --recursive \
      && mkdir build && cd build \
      && cmake ../ -DCMAKE_CXX_COMPILER=pgc++ -DCMAKE_INSTALL_PREFIX=/usr/local/PowerGrid \
-     && make -j4 && make install
-     # && cd /opt/code/PowerGrid \
-     # && git checkout python_pybind \
-     # && git submodule update --init --recursive \
-     # && cp PowerGrid/Python/setup_GPU.py setup.py \
-     # && pip3 wheel . \
-     
+     && make -j4 && make install    
 
-# ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
+# ----- Start another clean build without all of the build dependencies-----
 FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
@@ -164,7 +158,6 @@ COPY --from=mrd_converter /usr/local/. /usr/local/
 COPY --from=mrd_converter /opt/nvidia /opt/nvidia 
 COPY --from=mrd_converter /opt/code/PowerGrid /opt/code/PowerGrid
 COPY --from=mrd_converter /opt/code/spiraltraj/SpiralTraj* /opt/code/
-# COPY --from=mrd_converter /opt/code/PowerGrid/PowerGridPy* /opt/code/
 
 # Set variables for PowerGrid
 ENV LD_LIBRARY_PATH="/usr/local/PowerGrid/lib:${LD_LIBRARY_PATH}"
@@ -199,15 +192,9 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd \
-     && pip3 install git+https://github.com/mrirecon/bartpy
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd
 
 RUN  mkdir -p /opt/code
-
-# Old PowerGrid pybind bindings
-# RUN  cd /opt/code \
-#      && pip3 install PowerGridPy* \
-#      && rm PowerGrid*
 
 RUN  cd /opt/code \
      && pip3 install SpiralTraj* \
@@ -219,7 +206,7 @@ RUN  cd /opt/code \
      && python3 setup.py install
 
 RUN  cd /opt/code \
-     && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip

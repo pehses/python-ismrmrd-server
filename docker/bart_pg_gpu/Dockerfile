@@ -191,7 +191,7 @@ COPY --from=mrd_converter ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
+        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget \
      && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd
 
 RUN  mkdir -p /opt/code
@@ -208,8 +208,16 @@ RUN  cd /opt/code \
 RUN  cd /opt/code \
      && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
 
+# Romeo Unwrapping tool
+RUN  cd /opt/code \
+     && wget -c https://github.com/korbinian90/CompileMRI.jl/releases/download/v3.6.2/mritools_Linux_3.6.2.tar.gz \
+     && tar xvf mritools_Linux_3.6.2.tar.gz \
+     && rm mritools_Linux_3.6.2.tar.gz
+
+ENV PATH=${PATH}:"/opt/code/mritools_Linux_3.6.2/bin"
+
 # Cleanup files not required after compiling
-RUN  apt-get remove --yes gcc git python3-pip
+RUN  apt-get remove --yes gcc git python3-pip wget
 RUN  apt-get autoremove --yes 
 RUN  apt-get autoclean --yes
 

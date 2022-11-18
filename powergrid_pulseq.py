@@ -672,19 +672,32 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     dsets.append(fmap["fmap"][:,np.newaxis]) # add axis for [slc,z,y,x]
 
     # Correct orientation, normalize and convert to int16 for online recon
-    int_max = np.iinfo(np.uint16).max
+    uint_max = np.iinfo(np.uint16).max
+    int_max = np.iinfo(np.int16).max
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
         if k==0 and save_cmplx:
             dsets[k] /= abs(dsets[k]).max()
         elif k<len(dsets)-1:
-            dsets[k] *= int_max / abs(dsets[k]).max()
+            dsets[k] *= uint_max / abs(dsets[k]).max()
             dsets[k] = np.around(dsets[k])
             dsets[k] = dsets[k].astype(np.uint16)
+        else:
+            dsets[k] *= int_max / abs(dsets[k]).max()
+            dsets[k] = np.around(dsets[k])
+            dsets[k] = dsets[k].astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
+                        'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                        'WindowCenter':           str((uint_max+1)//2),
+                        'WindowWidth':            str(uint_max+1),
+                        'Keep_image_geometry':    '1',
+                        'PG_Options':              subproc,
+                        'Field Map':               fmap_name})
+    # Set ISMRMRD Meta Attributes
+    meta2 = ismrmrd.Meta({'DataRole':               'Image',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           str((int_max+1)//2),
                         'WindowWidth':            str(int_max+1),
@@ -728,13 +741,16 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
-            # ADC maps and Refimg
+            # ADC maps, Refimg & Fmap
             for slc, img in enumerate(imgs):
                 image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc
-                image.attribute_string = meta.serialize()
+                if series_ix != len(dsets) - 1:
+                    image.attribute_string = meta.serialize()
+                else:
+                    image.attribute_string = meta2.serialize()
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                        ctypes.c_float(slc_res))

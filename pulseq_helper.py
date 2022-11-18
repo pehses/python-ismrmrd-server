@@ -319,7 +319,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
     grad = np.swapaxes(acq.traj[:],0,1) # [dims, samples] [T/m]
     dims = grad.shape[0]
 
-    # WIP: currently unclear how to set z-FOV / scale trajectory correctly for SMS-recon with phase blips
+    # FOV for scaling the trajectory 
     fov = np.array([hdr.encoding[0].reconSpace.fieldOfView_mm.x,
                     hdr.encoding[0].reconSpace.fieldOfView_mm.y,
                     hdr.encoding[0].reconSpace.fieldOfView_mm.z])

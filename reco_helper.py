@@ -251,7 +251,8 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
 
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
                of the scanner is lagging behind be one gradient raster time (10 us).
-               For GIRF predicted Pulseq trajectories this is done in pulseq_helper.py
+               For Pulseq sequences this is done in pulseq_helper.py
+               For the Connectome, the shift seemed to be +10us (see pulseq_helper.py)
 
     sig: signal data (dimensions as in ISMRMRD [coils, samples]) 
     pred_traj: predicted trajectory (dimensions as in ISMRMRD [samples, dims]) 
@@ -331,7 +332,7 @@ def add_naxes(arr, n):
         arr = arr[...,np.newaxis]
     return arr
 
-## WIP: Calculate image space coordinates in physical coordinate system
+# Calculate image space coordinates in physical coordinate system
 # Can be used for higher order recon
 def calc_img_coord(metadata, acq):
     """
@@ -372,6 +373,62 @@ def calc_img_coord(metadata, acq):
     grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])
 
     return grid_rot
+
+def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
+    """
+        Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)
+
+        imgs: Input (multi-coil, multi-echo) images [x,y,z, coils, echoes] (coils & echoes are optional)
+        echo_times: list of echo times [ms]
+        path_out: Output path for romeo outputs
+        mc_unwrap: unwrap each channel individually (coil dimension has to be present)
+        return_b0: return B0 map in rad/m (only if mc_unwrap=False)
+    """
+
+    import nibabel as nib
+    import subprocess
+
+    if mc_unwrap and imgs.ndim<4:
+        raise ValueError("No multi-coil data available.")
+    if len(echo_times) > 0:
+        echo_times *= 1e3
+    if imgs.ndim == 5:
+        coildim = -2
+        echodim = -1
+        imgs = np.swapaxes(imgs, echodim, coildim) # romeo needs [x,y,z,echoes,coils]
+    else:
+        coildim = -1
+
+    phs_in = np.angle(imgs)
+    mag_in = abs(imgs)
+    phs_name = path_out+"/phs_romeo.nii.gz"
+    mag_name = path_out+"/mag_romeo.nii.gz"
+    mag_romeo = nib.Nifti1Image(mag_in, np.eye(4))
+    nib.save(mag_romeo, mag_name)
+
+    if mc_unwrap:
+        phs_uw = []
+        for k in range(phs_in.shape[-1]):
+            phs_romeo = nib.Nifti1Image(phs_in[...,k], np.eye(4))
+            nib.save(phs_romeo, phs_name)
+            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -o {path_out}"
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
+            phs_uw.append(nib.load(path_out+"/unwrapped.nii").get_fdata().copy())
+        phs_uw = np.stack(phs_uw)
+        return np.moveaxis(phs_uw,0,coildim) 
+    else:
+        phs_romeo = nib.Nifti1Image(phs_in, np.eye(4))
+        nib.save(phs_romeo, phs_name)
+        if return_b0:
+            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -B -o {path_out}"
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
+            fmap = -1 * 2*np.pi * nib.load(path_out+"/B0.nii").get_fdata() # to [rad/m]
+            return fmap # [x,y,z]
+        else:
+            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -o {path_out}"
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
+            phs_uw = nib.load(path_out+"/unwrapped.nii").get_fdata()
+            return phs_uw
 
 ## Old
 

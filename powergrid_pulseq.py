@@ -669,11 +669,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Append reference image & field map
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)
     dsets.append(np.asarray(process_acs.refimg))
-    dsets.append(fmap["fmap"][:,np.newaxis]) # add axis for [slc,z,y,x]
+    dsets.append(fmap["fmap"][:,np.newaxis] /2/np.pi) # add axis for [slc,z,y,x], save in [Hz]
 
     # Correct orientation, normalize and convert to int16 for online recon
     uint_max = np.iinfo(np.uint16).max
-    int_max = np.iinfo(np.int16).max
     for k in range(len(dsets)):
         dsets[k] = np.swapaxes(dsets[k], -1, -2)
         dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
@@ -684,7 +683,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
             dsets[k] = np.around(dsets[k])
             dsets[k] = dsets[k].astype(np.uint16)
         else:
-            dsets[k] *= int_max / abs(dsets[k]).max()
             dsets[k] = np.around(dsets[k])
             dsets[k] = dsets[k].astype(np.int16)
 
@@ -699,8 +697,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Set ISMRMRD Meta Attributes
     meta2 = ismrmrd.Meta({'DataRole':               'Image',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           str((int_max+1)//2),
-                        'WindowWidth':            str(int_max+1),
+                        'WindowCenter':           '512',
+                        'WindowWidth':            '1024',
                         'Keep_image_geometry':    '1',
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})

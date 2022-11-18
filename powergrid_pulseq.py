@@ -695,10 +695,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
     # Set ISMRMRD Meta Attributes
-    meta2 = ismrmrd.Meta({'DataRole':               'Image',
+    meta2 = ismrmrd.Meta({'DataRole':              'Quantitative',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           '512',
-                        'WindowWidth':            '1024',
+                        'WindowCenter':           '0',
+                        'WindowWidth':            '8192',
                         'Keep_image_geometry':    '1',
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})

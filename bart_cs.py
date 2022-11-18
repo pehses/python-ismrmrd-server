@@ -63,13 +63,13 @@ n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 nii_filename = 'img.nii.gz'
-cal_mode = 'espirit'
-#cal_mode = 'caldir'
+#cal_mode = 'espirit'
+cal_mode = 'caldir'
 
 # override defaults:
 # reduce_fov_x = True
 # zf_to_orig_sz = False
-ncc = 32  # we have time...
+#ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'

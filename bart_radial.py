@@ -6,6 +6,9 @@ import ctypes
 import mrdhelper
 import tempfile
 from bart import bart
+# from cfft import cfft, cifft, fft, ifft
+from cfft_mkl import cfft, cifft, fft, ifft
+
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
@@ -96,114 +99,125 @@ def process_raw(group, config, metadata):
     prj = [acquisition.idx.kspace_encode_step_1 for acquisition in group]
     par = [acquisition.idx.kspace_encode_step_2 for acquisition in group]
 
-    ncol = metadata.encoding[0].encodedSpace.matrixSize.x
-    nprj = metadata.encoding[0].encodedSpace.matrixSize.y
+    ncol = 2*metadata.encoding[0].encodedSpace.matrixSize.x
+    nprj = max(prj) + 1   #  metadata.encoding[0].encodedSpace.matrixSize.y unusable as it is always rounded up to even number!
     npar = metadata.encoding[0].encodedSpace.matrixSize.z
+    ncha = group[0].data.shape[0]
+
+    logging.debug(f"Encoded Space is {ncol}, {nprj}, {npar}, {ncha}")
 
     # Use the zero-padded matrix size
-    data = np.zeros((group[0].data.shape[0], 
-                     nprj, 
-                     ncol, 
-                     npar), 
-                    group[0].data.dtype)
+    data = np.zeros((nprj, 
+                     npar, 
+                     ncha,
+                     ncol), 
+                     group[0].data.dtype)
 
-    rawHead = [None]*npar
-
+    rawHead = None
     for acq, prj, par in zip(group, prj, par):
-        if (prj < data.shape[1]) and (par < data.shape[3]):
+        if (prj < nprj) and (par < npar):
             # TODO: Account for asymmetric echo in a better way
-            data[:,prj,-acq.data.shape[1]:,par] = acq.data
+
+            data[prj, par] = acq.data
 
             # center line of k-space is encoded in user[5]
-            if (rawHead[par] is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead[par].idx.kspace_encode_step_1 - rawHead[par].idx.user[5])):
-                rawHead[par] = acq.getHead()
+            if (rawHead is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead.idx.kspace_encode_step_1 - rawHead.idx.user[5])):
+                rawHead = acq.getHead()
 
-    # Flip matrix in RO/PE to be consistent with ICE
-    data = np.flip(data, (1, 2))
+    # Flip matrix in RO to be consistent with ICE
+    # we could do this after image recon, but this would result in one voxel shift
+    # however, now we need to make sure that trajectory is correct in case of "CenterColInCenter"
+    data = np.flip(data, (-1))
 
-    # Format as [row col par cha] for BART
-    data = data.transpose((1, 2, 3, 0))
+    # move col to front
+    data = np.moveaxis(data, 3, 0)
 
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
     # Fourier Transform in partition direction
-    logging.info("Calling BART FFT")
-    data = bart(1, 'fft -u -i 4', data)
+    if npar>0:
+        data = cfft(data, axis=2)
 
-    # calc radial trajectory - center traj. at ncol//2 (bart trj. is not centered this way)
-    trj = bart(1, f'traj -r -x {ncol+1} -y {nprj}')[:,:ncol]
+    # calc radial trajectory - center traj. at ncol//2 ('-c')
+    center_col_in_center = True
+    trj_type = 'lin'
+    # trj_type = 'ga'
+    # trj_type = 'tga'
+    # bart_cmd = f'traj -r -c -o2 -x{ncol//2} -y{nprj}'
+
+    if center_col_in_center:
+        bart_cmd = f'traj -r -x{ncol+1} -y{nprj}'
+    else:
+        bart_cmd = f'traj -r -o2 -x{ncol//2} -y{nprj}'
+    if trj_type == 'ga':
+        bart_cmd += ' -G -D'
+    elif trj_type == 'tga':
+        bart_cmd += ' -s7 -D'
+    elif nprj%2:
+        bart_cmd += ' -D'
+    trj = bart(1, bart_cmd)
+    
+    if center_col_in_center:
+        trj = trj[:,1:]/2
 
     # BART gridding
-    tmp = []
+    im = []
     for dat in np.moveaxis(data, 2, 0):
-        tmp.append(bart(1, 'nufft -i -m 30 -t -c -d %d:%d:%d'%(ncol, ncol, 1), trj, dat))
-    # data = np.moveaxis(np.asarray(tmp), 0, 2)
-    data = np.moveaxis(np.asarray(tmp)[:,:,0,:], 0, 2)
-
-    # Re-format as [cha row col par]
-    data = data.transpose((3, 0, 1, 2))
+        im.append(bart(1, 'nufft -i -t -m 20 -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
+    data = np.concatenate(im, axis=2)
 
     # Sum of squares coil combination
     # Data will be [PE RO par]
-    data = np.abs(data)
-    data = np.square(data)
-    data = np.sum(data, axis=0)
-    data = np.sqrt(data)
+    data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
+
+    # Remove partition oversampling
+    if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:
+        offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
+        data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
+
+    # switch RO & PE for consistency with ICE
+    data = np.moveaxis(data, 0, 1)
 
     # Normalize and convert to int16
     data *= 32767/data.max()
     data = np.around(data)
     data = data.astype(np.int16)
 
-    # Remove readout oversampling
-    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
-    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
+    # Set ISMRMRD Meta Attributes
+    meta = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '16384',
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    1})
+    xml = meta.serialize()
 
-    # Remove phase oversampling
-    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
-    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.x,:]
 
-    logging.debug("Image without oversampling is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "imgCrop.npy", data)
+    field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.z)
 
     # Format as ISMRMRD image data
-    imagesOut = []
-    for par in range(data.shape[2]):
-        # Create new MRD instance for the processed image
-        # NOTE: from_array() takes input data as [x y z coil], which is
-        # different than the internal representation in the "data" field as
-        # [coil z y x], so we need to transpose
-        tmpImg = ismrmrd.Image.from_array(data[...,par].transpose())
+    image = ismrmrd.Image.from_array(data)
+    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
+    image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
+    image.image_index = 1
 
-        # Set the header information
-        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[par]))
-        tmpImg.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        tmpImg.image_index = par
+    logging.debug("Image data has %d elements", image.data.size)
 
-        # Set ISMRMRD Meta Attributes
-        tmpMeta = ismrmrd.Meta()
-        tmpMeta['DataRole']               = 'Image'
-        tmpMeta['ImageProcessingHistory'] = ['PYTHON', 'BART']
-        tmpMeta['WindowCenter']           = '16384'
-        tmpMeta['WindowWidth']            = '32768'
-        tmpMeta['Keep_image_geometry']    = 1
+    # Add image orientation directions to MetaAttributes if not already present
+    if meta.get('ImageRowDir') is None:
+        meta['ImageRowDir'] = ["{:.18f}".format(image.getHead().read_dir[0]), "{:.18f}".format(image.getHead().read_dir[1]), "{:.18f}".format(image.getHead().read_dir[2])]
 
-        # Add image orientation directions to MetaAttributes if not already present
-        if tmpMeta.get('ImageRowDir') is None:
-            tmpMeta['ImageRowDir'] = ["{:.18f}".format(tmpImg.getHead().read_dir[0]), "{:.18f}".format(tmpImg.getHead().read_dir[1]), "{:.18f}".format(tmpImg.getHead().read_dir[2])]
+    if meta.get('ImageColumnDir') is None:
+        meta['ImageColumnDir'] = ["{:.18f}".format(image.getHead().phase_dir[0]), "{:.18f}".format(image.getHead().phase_dir[1]), "{:.18f}".format(image.getHead().phase_dir[2])]
 
-        if tmpMeta.get('ImageColumnDir') is None:
-            tmpMeta['ImageColumnDir'] = ["{:.18f}".format(tmpImg.getHead().phase_dir[0]), "{:.18f}".format(tmpImg.getHead().phase_dir[1]), "{:.18f}".format(tmpImg.getHead().phase_dir[2])]
+    xml = meta.serialize()
+    image.attribute_string = xml
 
-        xml = tmpMeta.serialize()
-        logging.debug("Image MetaAttributes: %s", xml)
-        tmpImg.attribute_string = xml
-        imagesOut.append(tmpImg)
+    # logging.debug("Image MetaAttributes: %s", xml)
 
-    return imagesOut
+    return image

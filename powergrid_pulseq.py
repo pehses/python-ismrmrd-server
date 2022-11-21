@@ -725,6 +725,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 image.repetition = rep
                                 image.phase = phs
                                 image.contrast = contr
+                                image.user_int[1] = sms_factor
                                 # b-values and directions should already be correct, as they are in the acquisition header
                                 # but we set them here explicitly again
                                 if 'b_values' in prot_arrays:

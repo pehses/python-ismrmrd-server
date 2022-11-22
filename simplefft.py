@@ -103,7 +103,10 @@ def process_group(group, config, metadata):
     np.save(debugFolder + "/" + "imgCrop.npy", data)
 
     # Format as ISMRMRD image data
-    image = ismrmrd.Image.from_array(data, acquisition=group[0])
+    # data has shape [RO PE], i.e. [x y].
+    # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+    # with this option, can take input as: [cha z y x], [z y x], or [y x]
+    image = ismrmrd.Image.from_array(data.transpose(), acquisition=group[0], transpose=False)
     image.image_index = 1
 
     # Set field of view

@@ -141,10 +141,10 @@ def main(args):
             tmpDset = dsets[iImg]
 
             # Create new MRD image instance.
-            # NOTE: from_array() takes input data as [x y z coil], but the
-            # pixel_array() output returns data as [row col], so need to transpose.
-            # This will also set the data_type and matrix_size fields.
-            tmpMrdImg = ismrmrd.Image.from_array(tmpDset.pixel_array.transpose())
+            # pixel_array data has shape [row col], i.e. [y x].
+            # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+            # with this option, can take input as: [cha z y x], [z y x], or [y x]
+            tmpMrdImg = ismrmrd.Image.from_array(tmpDset.pixel_array, transpose=False)
             tmpMeta   = ismrmrd.Meta()
 
             try:

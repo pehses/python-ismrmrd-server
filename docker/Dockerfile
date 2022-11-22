@@ -1,5 +1,5 @@
 # ----- First stage to build ismrmrd and siemens_to_ismrmrd -----
-FROM python:3.9-slim AS mrd_converter
+FROM python:3.10.2-slim AS mrd_converter
 ARG  DEBIAN_FRONTEND=noninteractive
 ENV  TZ=America/Chicago
 
@@ -10,6 +10,7 @@ RUN  mkdir -p /opt/code
 RUN cd /opt/code && \
     git clone https://github.com/ismrmrd/ismrmrd.git && \
     cd ismrmrd && \
+    git checkout v1.7.1 && \
     mkdir build && \
     cd build && \
     cmake ../ && \
@@ -20,6 +21,7 @@ RUN cd /opt/code && \
 RUN cd /opt/code && \
     git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git && \
     cd siemens_to_ismrmrd && \
+    git checkout v1.2.2 && \
     mkdir build && \
     cd build && \
     cmake ../ && \
@@ -30,7 +32,7 @@ RUN cd /opt/code && \
 RUN cd /usr/local/lib && tar -czvf libismrmrd.tar.gz libismrmrd*
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM python:3.9-slim
+FROM python:3.10.2-slim
 
 LABEL org.opencontainers.image.description="Python MRD Image Reconstruction and Analysis Server"
 LABEL org.opencontainers.image.url="https://github.com/kspaceKelvin/python-ismrmrd-server"
@@ -50,10 +52,8 @@ COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd  /usr/local/bin/siem
 RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103 git
 RUN mkdir -p /opt/code
 
-RUN  cd /opt/code \
-     && git clone https://github.com/ismrmrd/ismrmrd-python.git \
-     && cd /opt/code/ismrmrd-python \
-     && pip3 install --no-cache-dir .
+# Python MRD library
+RUN pip3 install ismrmrd==1.9.6
 
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \
@@ -92,4 +92,12 @@ RUN  apt-get remove git -y \
      && rm -rf /var/lib/apt/lists/* \
      && rm -rf /root/.cache/pip
 
+# Set the starting directory so that code can use relative paths
+WORKDIR /opt/code/python-ismrmrd-server
+
 CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log"]
+
+# Replace the above CMD with this ENTRYPOINT to allow allow "docker stop"
+# commands to be passed to the server.  This is useful for deployments, but
+# more annoying for development
+# ENTRYPOINT [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log"]

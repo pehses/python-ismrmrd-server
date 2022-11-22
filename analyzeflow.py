@@ -2,6 +2,7 @@ import ismrmrd
 import os
 import itertools
 import logging
+import traceback
 import numpy as np
 import numpy.fft as fft
 import base64
@@ -91,6 +92,10 @@ def process(connection, config, metadata):
             connection.send_image(image)
             imgGroup = []
 
+    except Exception as e:
+        logging.error(traceback.format_exc())
+        connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
+
     finally:
         connection.send_close()
 
@@ -165,10 +170,10 @@ def process_image(images, connection, config, metadata):
         for sli in range(data_masked.shape[2]):
             for phs in range(data_masked.shape[3]):
                 # Create new MRD instance for the processed image
-                # NOTE: from_array() takes input data as [x y z coil], which is
-                # different than the internal representation in the "data" field as
-                # [coil z y x], so we need to transpose
-                tmpImg = ismrmrd.Image.from_array(data_masked[...,sli,phs].transpose())
+                # data has shape [y x sli phs]
+                # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+                # with this option, can take input as: [cha z y x], [z y x], or [y x]
+                tmpImg = ismrmrd.Image.from_array(data_masked[...,sli,phs], transpose=False)
 
                 # Set the header information
                 tmpHead = head[sli][phs]

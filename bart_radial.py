@@ -141,10 +141,7 @@ def process_raw(group, config, metadata):
     # trj_type = 'tga'
     # bart_cmd = f'traj -r -c -o2 -x{ncol//2} -y{nprj}'
 
-    if center_col_in_center:
-        bart_cmd = f'traj -r -x{ncol+1} -y{nprj}'
-    else:
-        bart_cmd = f'traj -r -o2 -x{ncol//2} -y{nprj}'
+    bart_cmd = f'traj -r -o2 -x{ncol//2} -y{nprj}'
     if trj_type == 'ga':
         bart_cmd += ' -G -D'
     elif trj_type == 'tga':
@@ -153,8 +150,10 @@ def process_raw(group, config, metadata):
         bart_cmd += ' -D'
     trj = bart(1, bart_cmd)
     
+    # switch RO & PE for consistency with ICE
+    trj *= -1
+
     if center_col_in_center:
-        trj = trj[:,1:]/2
         ramlak = abs(np.arange(-ncol//2, ncol//2)) + 0.5
     else:
         ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
@@ -185,9 +184,6 @@ def process_raw(group, config, metadata):
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
-
-    # switch RO & PE for consistency with ICE
-    data = np.moveaxis(data, 0, 1)
 
     # Normalize and convert to int16
     data *= 32767/data.max()

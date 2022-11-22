@@ -9,9 +9,21 @@ from bart import bart
 # from cfft import cfft, cifft, fft, ifft
 from cfft_mkl import cfft, cifft, fft, ifft
 
+# Folder for sharing data/debugging
+# tempfile.tempdir = "/tmp"  # benchmark 1: 148.6 s
+tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper; benchmark 1: 131.1 s
+
+import multiprocessing
+import multiprocessing.pool
+from pe_helpers import NestablePool, calibrate_prewhitening, calibrate_cc, apply_column_ops, apply_cc, process_acs
+
 
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
+
+os_removal = True
+apply_prewhitening = True
+use_multiprocessing = False
 
 
 def process(connection, config, metadata):
@@ -40,17 +52,55 @@ def process(connection, config, metadata):
 
     # Continuously parse incoming data parsed from MRD messages
     acqGroup = []
+    noiseGroup = []
+    # hard-coded limit of 256 slices (better: use Nslice from protocol)
+    max_no_of_slices = 256
+    acsGroup = [[] for _ in range(max_no_of_slices)]
+    sensmaps = [None] * max_no_of_slices
+    optmat = None  # for pre-whitening
+    cc_matrix = [None] * max_no_of_slices  # for coil compression
+
+    if use_multiprocessing:
+        pool = NestablePool(processes=2)
+
     try:
         for item in connection:
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+                if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
+                    noiseGroup.append(item)
+                    continue
+                elif apply_prewhitening and len(noiseGroup) > 0 and optmat is None:
+                    pass
+                    noise_data = []
+                    for acq in noiseGroup:
+                        noise_data.append(acq.data)
+                    noise_data = np.concatenate(noise_data, axis=1)  # [ncha, nsamples]
+                    # calculate pre-whitening matrix
+                    optmat = calibrate_prewhitening(noise_data)
+                    del noise_data
+
+                # resize & reslice colums; remove os; apply pre-whitening
+                apply_column_ops(item, optmat, nx=metadata.encoding[0].encodedSpace.matrixSize.x, os_removal=os_removal)
+
                 # Accumulate all imaging readouts in a group
-                if (not item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT) and
-                    not item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION) and
-                    not item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA)):
-                    acqGroup.append(item)
+                if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    acsGroup[item.idx.slice].append(item)
+                    continue
+                elif sensmaps[item.idx.slice] is None:
+                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice])
+
+                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                    if use_multiprocessing:
+                        sensmaps[item.idx.slice] = pool.apply_async(process_acs, (acsGroup[item.idx.slice], config, metadata))
+                    else:
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
+
+                # apply coil-compression
+                apply_cc(item, cc_matrix[item.idx.slice])
+                acqGroup.append(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -90,6 +140,7 @@ def process(connection, config, metadata):
     finally:
         connection.send_close()
 
+
 def process_raw(group, config, metadata):
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
@@ -101,10 +152,14 @@ def process_raw(group, config, metadata):
     par = [acquisition.idx.kspace_encode_step_2 for acquisition in group]
 
     encoding = metadata.encoding[0]
-    ncol = 2*encoding.encodedSpace.matrixSize.x
+    ncol = group[0].data.shape[-1]
     nprj = encoding.trajectoryDescription.userParameterLonginterleaves
     npar = encoding.encodedSpace.matrixSize.z
     ncha = group[0].data.shape[0]
+    if os_removal:  # os already removed
+        nx = ncol
+    else:
+        nx = ncol//2
 
     logging.debug(f"Encoded Space is {ncol}, {nprj}, {npar}, {ncha}")
 
@@ -139,9 +194,10 @@ def process_raw(group, config, metadata):
     trj_type = 'lin'
     # trj_type = 'ga'
     # trj_type = 'tga'
-    # bart_cmd = f'traj -r -c -o2 -x{ncol//2} -y{nprj}'
 
-    bart_cmd = f'traj -r -o2 -x{ncol//2} -y{nprj}'
+    bart_cmd = f'traj -r -x{nx} -y{nprj}'
+    if not os_removal:  # os still needs to be removed
+        bart_cmd += ' -o2'
     if trj_type == 'ga':
         bart_cmd += ' -G -D'
     elif trj_type == 'tga':
@@ -169,8 +225,8 @@ def process_raw(group, config, metadata):
     # BART gridding
     im = []
     for dat in np.moveaxis(data, 2, 0):
-        im.append(bart(1, 'nufft -i -t -m20 -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
-        # im.append(bart(1, 'nufft -i -m20 -g -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
+        im.append(bart(1, 'nufft -i -t -m20 -d %d:%d:%d'%(nx, nx, 1), trj, dat[np.newaxis]))
+        # im.append(bart(1, 'nufft -i -m20 -g -d %d:%d:%d'%(nx, nx, 1), trj, dat[np.newaxis]))
     data = np.concatenate(im, axis=2)
 
     # Sum of squares coil combination

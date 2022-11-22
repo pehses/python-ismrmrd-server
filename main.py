@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import os
+import signal
 
 defaults = {
     'host':           '0.0.0.0',
@@ -14,8 +15,19 @@ defaults = {
 }
 
 def main(args):
-    # Start a multi-threaded dispatcher to handle incoming connections
+    # Create a multi-threaded dispatcher to handle incoming connections
     server = Server(args.host, args.port, args.savedata, args.savedataFolder, args.multiprocessing)
+
+    # Trap signal interrupts (e.g. ctrl+c, SIGTERM) and gracefully stop
+    def handle_signals(signum, frame):
+        print("Received signal interrupt -- stopping server")
+        server.socket.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_signals)
+    signal.signal(signal.SIGINT,  handle_signals)
+
+    # Start server
     server.serve()
 
 if __name__ == '__main__':

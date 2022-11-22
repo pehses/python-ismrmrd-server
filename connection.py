@@ -93,7 +93,12 @@ class Connection:
         raise StopIteration
 
     def read_mrd_message_identifier(self):
-        identifier_bytes = self.read(constants.SIZEOF_MRD_MESSAGE_IDENTIFIER)
+        try:
+            identifier_bytes = self.read(constants.SIZEOF_MRD_MESSAGE_IDENTIFIER)
+        except ConnectionResetError:
+            logging.error("Connection closed unexpectedly")
+            self.is_exhausted = True
+            return
 
         if (len(identifier_bytes) == 0):
             self.is_exhausted = True

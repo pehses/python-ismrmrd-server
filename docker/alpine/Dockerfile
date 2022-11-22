@@ -82,4 +82,7 @@ RUN find /opt/code/python-ismrmrd-server -name *.sh -exec chmod +x {} \;
 RUN  apk del gcc git \
      && rm -r /root/.cache/pip
 
+# Set the starting directory so that code can use relative paths
+WORKDIR /opt/code/python-ismrmrd-server
+
 CMD [ "python3", "/opt/code/python-ismrmrd-server/main.py", "-v", "-H=0.0.0.0", "-p=9002", "-l=/tmp/python-ismrmrd-server.log"]

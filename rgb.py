@@ -143,10 +143,10 @@ def process_raw(group, config, metadata):
     imagesOut = []
     for phs in range(data.shape[2]):
         # Create new MRD instance for the processed image
-        # NOTE: from_array() takes input data as [x y z coil], which is
-        # different than the internal representation in the "data" field as
-        # [coil z y x], so we need to transpose
-        tmpImg = ismrmrd.Image.from_array(data[...,phs].transpose())
+        # data has shape [PE RO phs], i.e. [y x].
+        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+        # with this option, can take input as: [cha z y x], [z y x], or [y x]
+        tmpImg = ismrmrd.Image.from_array(data[...,phs], transpose=False)
 
         # Set the header information
         tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
@@ -181,18 +181,15 @@ def process_image(images, config, metadata):
 
     logging.debug("Processing data with %d images of type %s", len(images), ismrmrd.get_dtype_from_data_type(images[0].data_type))
 
+    # Note: The MRD Image class stores data as [cha z y x]
+
     # Extract image data into a 5D array of size [img cha z y x]
     data = np.stack([img.data                              for img in images])
     head = [img.getHead()                                  for img in images]
     meta = [ismrmrd.Meta.deserialize(img.attribute_string) for img in images]
 
-    # Reformat data to the more intuitive [x y z cha img]
-    data = data.transpose()
-
-    # Reformat data again to [y x z cha img], i.e. [row col] for the first two
-    # dimensions.  Note we will need to undo this later prior to sending back
-    # to the client
-    data = data.transpose((1, 0, 2, 3, 4))
+    # Reformat data to [y x z cha img], i.e. [row col] for the first two dimensions
+    data = data.transpose((3, 4, 2, 1, 0))
 
     # Display MetaAttributes for first image
     logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(meta[0]))
@@ -228,20 +225,16 @@ def process_image(images, config, metadata):
     data = rgb.astype(np.uint16)
     np.save(debugFolder + "/" + "imgRGB.npy", data)
 
-    # Reformat data from [row col z cha img] back to [x y z cha img] before sending back to client
-    data = data.transpose((1, 0, 2, 3, 4))
-
     currentSeries = 0
 
     # Re-slice back into 2D images
     imagesOut = [None] * data.shape[-1]
     for iImg in range(data.shape[-1]):
-        # Create new MRD instance for the new image
-        # NOTE: from_array() takes input data as [x y z coil], which is
-        # different than the internal representation in the "data" field as
-        # [coil z y x].  However, we already transposed this data when
-        # extracting it earlier.
-        imagesOut[iImg] = ismrmrd.Image.from_array(data[...,iImg])
+        # Create new MRD instance for the inverted image
+        # Transpose from convenience shape of [y x z cha] to MRD Image shape of [cha z y x]
+        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+        # with this option, can take input as: [cha z y x], [z y x], or [y x]
+        imagesOut[iImg] = ismrmrd.Image.from_array(data[...,iImg].transpose((3, 2, 0, 1)), transpose=False)
         data_type = imagesOut[iImg].data_type
 
         # Create a copy of the original fixed header and update the data_type

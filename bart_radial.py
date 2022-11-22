@@ -26,13 +26,14 @@ def process(connection, config, metadata):
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
         logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
-            metadata.encoding[0].encodedSpace.matrixSize.x, 
-            metadata.encoding[0].encodedSpace.matrixSize.x, 
-            metadata.encoding[0].encodedSpace.matrixSize.z, 
+            metadata.encoding[0].trajectory,
             metadata.encoding[0].encodedSpace.fieldOfView_mm.x, 
             metadata.encoding[0].encodedSpace.fieldOfView_mm.x,
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.z)
+            metadata.encoding[0].encodedSpace.fieldOfView_mm.z,
+            metadata.encoding[0].encodedSpace.matrixSize.x,
+            metadata.encoding[0].encodedSpace.matrixSize.x,
+            metadata.encoding[0].encodedSpace.matrixSize.z
+        )
 
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
@@ -99,9 +100,10 @@ def process_raw(group, config, metadata):
     prj = [acquisition.idx.kspace_encode_step_1 for acquisition in group]
     par = [acquisition.idx.kspace_encode_step_2 for acquisition in group]
 
-    ncol = 2*metadata.encoding[0].encodedSpace.matrixSize.x
-    nprj = max(prj) + 1   #  metadata.encoding[0].encodedSpace.matrixSize.y unusable as it is always rounded up to even number!
-    npar = metadata.encoding[0].encodedSpace.matrixSize.z
+    encoding = metadata.encoding[0]
+    ncol = 2*encoding.encodedSpace.matrixSize.x
+    nprj = encoding.trajectoryDescription.userParameterLonginterleaves
+    npar = encoding.encodedSpace.matrixSize.z
     ncha = group[0].data.shape[0]
 
     logging.debug(f"Encoded Space is {ncol}, {nprj}, {npar}, {ncha}")
@@ -129,15 +131,8 @@ def process_raw(group, config, metadata):
     # however, now we need to make sure that trajectory is correct in case of "CenterColInCenter"
     data = np.flip(data, (-1))
 
-    # move col to front
-    data = np.moveaxis(data, 3, 0)
-
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
-
-    # Fourier Transform in partition direction
-    if npar>0:
-        data = cfft(data, axis=2)
 
     # calc radial trajectory - center traj. at ncol//2 ('-c')
     center_col_in_center = True
@@ -160,11 +155,23 @@ def process_raw(group, config, metadata):
     
     if center_col_in_center:
         trj = trj[:,1:]/2
+        ramlak = abs(np.arange(-ncol//2, ncol//2)) + 0.5
+    else:
+        ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
+    data *= ramlak
+
+    # move col to front
+    data = np.moveaxis(data, 3, 0)
+
+    # Fourier Transform in partition direction
+    if npar>0:
+        data = cfft(data, axis=2)
 
     # BART gridding
     im = []
     for dat in np.moveaxis(data, 2, 0):
-        im.append(bart(1, 'nufft -i -t -m 20 -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
+        im.append(bart(1, 'nufft -i -t -m20 -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
+        # im.append(bart(1, 'nufft -i -m20 -g -d %d:%d:%d'%(ncol//2, ncol//2, 1), trj, dat[np.newaxis]))
     data = np.concatenate(im, axis=2)
 
     # Sum of squares coil combination

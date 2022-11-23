@@ -8,6 +8,7 @@ import multiprocessing
 import multiprocessing.pool
 from multiprocessing import Pool
 
+
 class NoDaemonProcess(multiprocessing.Process):
     @property
     def daemon(self):
@@ -17,8 +18,10 @@ class NoDaemonProcess(multiprocessing.Process):
     def daemon(self, value):
         pass
 
+
 class NoDaemonContext(type(multiprocessing.get_context())):
     Process = NoDaemonProcess
+
 
 # We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
 # because the latter is only a wrapper function, not a proper class.
@@ -103,7 +106,7 @@ def calibrate_scc(data):
 
 
 def calibrate_cc(items, ncc):
-    if ncc == 0 or ncc >= items[0].data.shape[0]:
+    if ncc <= 0 or ncc >= items[0].data.shape[0]:
         return None  # nothing to do
 
     data = np.asarray([acq.data for acq in items])
@@ -123,7 +126,7 @@ def calibrate_cc(items, ncc):
 
 
 # Sorting of k-space data
-def sort_into_kspace(group, metadata):  # used for acs scan
+def sort_into_kspace(group, metadata, is_radial_seq=False):  # used for acs scan
     
     initialize = True
     for acq in group:
@@ -135,16 +138,21 @@ def sort_into_kspace(group, metadata):  # used for acs scan
             # initialize k-space
             nc = acq.active_channels
             nx = acq.number_of_samples
-            ny = metadata.encoding[0].encodedSpace.matrixSize.y
             nz = metadata.encoding[0].encodedSpace.matrixSize.z
+            if is_radial_seq:
+                ny = nx
+                cenc1 = ny//2
+                cenc2 = nz//2
+            else:
+                ny = metadata.encoding[0].encodedSpace.matrixSize.y
+                cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
+                cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
 
-            cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
-            cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
             logging.debug(f'nx={nx}, ny={ny}, nz={nz}, is_acs_scan={acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)}')
             
             kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
             counter = np.zeros([ny, nz], dtype=np.uint16)
-            logging.debug('push_to_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
+            logging.debug('sort_into_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
 
         ## now sort acq into k-space ##
         offset_enc1 = cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
@@ -164,14 +172,14 @@ def sort_into_kspace(group, metadata):  # used for acs scan
     return kspace
 
 
-def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=False, threads=8, chunk_sz=None):
+def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=False, threads=8, chunk_sz=-1, is_radial_seq=False):
 
     if len(group)==0:
         # nothing to do
         return None
 
     gpu_str = "-g" if use_gpu else ""
-    acs = sort_into_kspace(group, metadata)
+    acs = sort_into_kspace(group, metadata, is_radial_seq=is_radial_seq)
     nx, ny, nz, nc = acs.shape
 
     def ecaltwo(sig):
@@ -182,7 +190,7 @@ def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=F
             raise RuntimeError
         return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-    if chunk_sz < 0:
+    if chunk_sz is None:
         # this should usually work
         gpu_mem = 48 * 1024**3  # bytes
         chunk_sz = gpu_mem / (8*nx*ny*nc*nc*n_maps)
@@ -194,7 +202,7 @@ def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=F
 
     if cal_mode.lower() == 'espirit':
         # ESPIRiT calibration
-        if chunk_sz is not None and chunk_sz<nz:
+        if chunk_sz > 0 and chunk_sz<nz:
             # espirit_econ: reduce memory footprint by chunking
             eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
             logging.info(bart.stdout)

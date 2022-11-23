@@ -21,9 +21,9 @@ from pe_helpers import NestablePool, calibrate_prewhitening, calibrate_cc, apply
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
 
-os_removal = True
+ncc = 0
 apply_prewhitening = True
-use_multiprocessing = False
+use_multiprocessing = True
 
 
 def process(connection, config, metadata):
@@ -69,6 +69,24 @@ def process(connection, config, metadata):
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+                # skip some data fields
+                if item.is_flag_set(ismrmrd.ACQ_IS_NAVIGATION_DATA):
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_RTFEEDBACK_DATA):
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_HPFEEDBACK_DATA):
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):  # deactivate pc for now
+                    continue
+                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):  # skope sync scans
+                    continue
+                # elif item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION):  # not in python-ismrmrd yet (todo)
+                elif item.is_flag_set(31):
+                    continue
+                # elif item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE):  # not in python-ismrmrd yet (todo)
+                elif item.is_flag_set(30):
+                    continue
+
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
                     noiseGroup.append(item)
                     continue
@@ -81,24 +99,24 @@ def process(connection, config, metadata):
                     # calculate pre-whitening matrix
                     optmat = calibrate_prewhitening(noise_data)
                     del noise_data
-
-                # resize & reslice colums; remove os; apply pre-whitening
-                apply_column_ops(item, optmat, nx=metadata.encoding[0].encodedSpace.matrixSize.x, os_removal=os_removal)
+                logging.debug(f"Encoded matrix size {metadata.encoding[0].encodedSpace.matrixSize.x}  item.data.shape[-1]: {item.data.shape[-1]}")
+                
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    apply_column_ops(item, optmat, nx=metadata.encoding[0].encodedSpace.matrixSize.x, os_removal=True)
                     acsGroup[item.idx.slice].append(item)
                     continue
-                elif sensmaps[item.idx.slice] is None:
-                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice])
+                elif sensmaps[item.idx.slice] is None and len(acsGroup[item.idx.slice]):
+                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice], ncc)
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     if use_multiprocessing:
-                        sensmaps[item.idx.slice] = pool.apply_async(process_acs, (acsGroup[item.idx.slice], config, metadata))
+                        sensmaps[item.idx.slice] = pool.apply_async(process_acs, (acsGroup[item.idx.slice], config, metadata, True))
                     else:
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata, is_radial_seq=True)
 
-                # apply coil-compression
+                apply_column_ops(item, optmat, nx=item.data.shape[-1], os_removal=False)
                 apply_cc(item, cc_matrix[item.idx.slice])
                 acqGroup.append(item)
 
@@ -106,7 +124,7 @@ def process(connection, config, metadata):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                     logging.info("Processing a group of k-space data")
-                    image = process_raw(acqGroup, config, metadata)
+                    image = process_raw(acqGroup, config, metadata, sensmaps[item.idx.slice])
                     connection.send_image(image)
                     acqGroup = []
 
@@ -141,7 +159,7 @@ def process(connection, config, metadata):
         connection.send_close()
 
 
-def process_raw(group, config, metadata):
+def process_raw(group, config, metadata, sensmaps=None):
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
@@ -153,13 +171,13 @@ def process_raw(group, config, metadata):
 
     encoding = metadata.encoding[0]
     ncol = group[0].data.shape[-1]
-    nprj = encoding.trajectoryDescription.userParameterLonginterleaves
+    nprj = encoding.encodedSpace.matrixSize.y
+    logging.debug(f"nprj = {nprj}")
+    logging.debug(f"trj = {metadata.encoding[0].trajectory}")
     npar = encoding.encodedSpace.matrixSize.z
+    npar = 1
     ncha = group[0].data.shape[0]
-    if os_removal:  # os already removed
-        nx = ncol
-    else:
-        nx = ncol//2
+    nx = ncol//2
 
     logging.debug(f"Encoded Space is {ncol}, {nprj}, {npar}, {ncha}")
 
@@ -181,39 +199,45 @@ def process_raw(group, config, metadata):
             if (rawHead is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead.idx.kspace_encode_step_1 - rawHead.idx.user[5])):
                 rawHead = acq.getHead()
 
-    # Flip matrix in RO to be consistent with ICE
-    # we could do this after image recon, but this would result in one voxel shift
-    # however, now we need to make sure that trajectory is correct in case of "CenterColInCenter"
-    data = np.flip(data, (-1))
-
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
     # calc radial trajectory - center traj. at ncol//2 ('-c')
     center_col_in_center = True
+    flip_ro_in_trj = True
     trj_type = 'lin'
     # trj_type = 'ga'
     # trj_type = 'tga'
 
-    bart_cmd = f'traj -r -x{nx} -y{nprj}'
-    if not os_removal:  # os still needs to be removed
-        bart_cmd += ' -o2'
+    bart_cmd = f'traj -r -y{nprj}'
+    if center_col_in_center and flip_ro_in_trj:
+        bart_cmd += f' -x{ncol+1}'
+    else:
+        bart_cmd += f' -x{ncol}'
     if trj_type == 'ga':
         bart_cmd += ' -G -D'
     elif trj_type == 'tga':
         bart_cmd += ' -s7 -D'
     elif nprj%2:
         bart_cmd += ' -D'
-    trj = bart(1, bart_cmd)
-    
-    # switch RO & PE for consistency with ICE
-    trj *= -1
+    trj = bart(1, bart_cmd) / 2
+    if center_col_in_center and flip_ro_in_trj:
+        trj = trj[:, 1:]
+    if not flip_ro_in_trj:
+        trj[:2] *= -1
 
-    if center_col_in_center:
-        ramlak = abs(np.arange(-ncol//2, ncol//2)) + 0.5
-    else:
-        ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
-    data *= ramlak
+    if sensmaps is None:  # adjoint nufft requires density compensation
+        if center_col_in_center:
+            ramlak = abs(np.arange(-ncol//2, ncol//2)) + 0.5
+        else:
+            ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
+        data *= ramlak
+
+    # Flip matrix in RO to be consistent with ICE
+    # we could do this after image recon, but this would result in one voxel shift
+    # however, now we need to make sure that trajectory is correct in case of "CenterColInCenter"
+    if flip_ro_in_trj:
+        data = np.flip(data, (-1))
 
     # move col to front
     data = np.moveaxis(data, 3, 0)
@@ -222,16 +246,26 @@ def process_raw(group, config, metadata):
     if npar>0:
         data = cfft(data, axis=2)
 
-    # BART gridding
-    im = []
-    for dat in np.moveaxis(data, 2, 0):
-        im.append(bart(1, 'nufft -i -t -m20 -d %d:%d:%d'%(nx, nx, 1), trj, dat[np.newaxis]))
-        # im.append(bart(1, 'nufft -i -m20 -g -d %d:%d:%d'%(nx, nx, 1), trj, dat[np.newaxis]))
-    data = np.concatenate(im, axis=2)
+    logging.debug(f'sensmaps {sensmaps}')
+    if sensmaps is not None:
+        # wait for sensmaps:
+        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+            sensmaps = sensmaps.get()
+        im = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
+        im = abs(im)
+    else:
+        # BART gridding
+        im = []
+        for dat in np.moveaxis(data, 2, 0):
+            im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, dat[np.newaxis]))
+        data = np.concatenate(im, axis=2)
 
-    # Sum of squares coil combination
-    # Data will be [PE RO par]
-    data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
+        # Sum of squares coil combination
+        # Data will be [PE RO par]
+        data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
+
+    # switch RO & PE for consistency with ICE
+    data = np.moveaxis(data, 0, 1)
 
     # Remove partition oversampling
     if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:
@@ -242,18 +276,19 @@ def process_raw(group, config, metadata):
     np.save(debugFolder + "/" + "img.npy", data)
 
     # Normalize and convert to int16
-    data *= 32767/data.max()
-    data = np.around(data)
-    data = data.astype(np.int16)
+    image_scale = 32767/data.max()
+    logging.debug(f"Image scale: {image_scale}")
+    data *= image_scale
+    data = np.around(data).astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
                          'WindowWidth':            '32768',
-                         'Keep_image_geometry':    1})
+                         'Keep_image_geometry':    1,
+                         'ImageScale':             image_scale })  # store this for our own future use (e.g. in fitting)
     xml = meta.serialize()
-
 
     field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x,
                      metadata.encoding[0].reconSpace.fieldOfView_mm.x,
@@ -263,7 +298,6 @@ def process_raw(group, config, metadata):
     image = ismrmrd.Image.from_array(data)
     image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
     image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
-    image.image_index = 1
 
     logging.debug("Image data has %d elements", image.data.size)
 

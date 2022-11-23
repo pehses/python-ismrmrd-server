@@ -18,7 +18,7 @@ from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat,
 # Folder for sharing data/debugging
 shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
-dependencyFolder = os.path.join(shareFolder, "dependency")
+dependencyFolder = "/opt/custom_services/fire_recon_server/dependency"
 
 use_multiprocessing = False
 

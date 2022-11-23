@@ -307,7 +307,6 @@ def filt_ksp(kspace, traj, filt_fac=0.95):
         filt[-filt_len:] = np.hamming(2*filt_len)[filt_len:]
 
     return kspace * filt
-<<<<<<< Updated upstream
     
 
 ## Array manipulation

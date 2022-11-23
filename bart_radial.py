@@ -7,7 +7,7 @@ import mrdhelper
 import tempfile
 from bart import bart
 # from cfft import cfft, cifft, fft, ifft
-from cfft_mkl import cfft, cifft, fft, ifft
+from cfft_mkl import cfft, cifft, fft, ifft, cfftn, cifftn
 
 # Folder for sharing data/debugging
 # tempfile.tempdir = "/tmp"  # benchmark 1: 148.6 s
@@ -99,8 +99,6 @@ def process(connection, config, metadata):
                     # calculate pre-whitening matrix
                     optmat = calibrate_prewhitening(noise_data)
                     del noise_data
-                logging.debug(f"Encoded matrix size {metadata.encoding[0].encodedSpace.matrixSize.x}  item.data.shape[-1]: {item.data.shape[-1]}")
-                
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
@@ -172,10 +170,7 @@ def process_raw(group, config, metadata, sensmaps=None):
     encoding = metadata.encoding[0]
     ncol = group[0].data.shape[-1]
     nprj = encoding.encodedSpace.matrixSize.y
-    logging.debug(f"nprj = {nprj}")
-    logging.debug(f"trj = {metadata.encoding[0].trajectory}")
     npar = encoding.encodedSpace.matrixSize.z
-    npar = 1
     ncha = group[0].data.shape[0]
     nx = ncol//2
 
@@ -204,16 +199,13 @@ def process_raw(group, config, metadata, sensmaps=None):
 
     # calc radial trajectory - center traj. at ncol//2 ('-c')
     center_col_in_center = True
-    flip_ro_in_trj = True
     trj_type = 'lin'
     # trj_type = 'ga'
     # trj_type = 'tga'
 
-    bart_cmd = f'traj -r -y{nprj}'
-    if center_col_in_center and flip_ro_in_trj:
-        bart_cmd += f' -x{ncol+1}'
-    else:
-        bart_cmd += f' -x{ncol}'
+    bart_cmd = f'traj -r -x{ncol} -y{nprj}'
+    if center_col_in_center:
+        bart_cmd += ' -c'
     if trj_type == 'ga':
         bart_cmd += ' -G -D'
     elif trj_type == 'tga':
@@ -221,10 +213,12 @@ def process_raw(group, config, metadata, sensmaps=None):
     elif nprj%2:
         bart_cmd += ' -D'
     trj = bart(1, bart_cmd) / 2
-    if center_col_in_center and flip_ro_in_trj:
-        trj = trj[:, 1:]
-    if not flip_ro_in_trj:
-        trj[:2] *= -1
+    
+    # Flip matrix in RO to be consistent with ICE
+    # we could do this after image recon, but this would result in one voxel shift
+    trj[:2] *= -1
+    # switch RO & PE for consistency with ICE
+    trj[[0, 1]] = trj[[1, 0]]
 
     if sensmaps is None:  # adjoint nufft requires density compensation
         if center_col_in_center:
@@ -233,39 +227,50 @@ def process_raw(group, config, metadata, sensmaps=None):
             ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
         data *= ramlak
 
-    # Flip matrix in RO to be consistent with ICE
-    # we could do this after image recon, but this would result in one voxel shift
-    # however, now we need to make sure that trajectory is correct in case of "CenterColInCenter"
-    if flip_ro_in_trj:
-        data = np.flip(data, (-1))
-
     # move col to front
     data = np.moveaxis(data, 3, 0)
 
-    # Fourier Transform in partition direction
-    if npar>0:
-        data = cfft(data, axis=2)
-
     logging.debug(f'sensmaps {sensmaps}')
     if sensmaps is not None:
+        # bring projections and partitions into one dim (need to do same for trj for 3D meas!)
+        data = np.moveaxis(data, -1, 1)
+        data = data.reshape([*data.shape[:2], -1])
+        data = np.moveaxis(data, 1, -1)[np.newaxis]
         # wait for sensmaps:
         if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
             sensmaps = sensmaps.get()
-        im = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
-        im = abs(im)
-    else:
-        # BART gridding
+        logging.info(f'trj: {trj.shape}, data: {data.shape}, sensmaps: {sensmaps.shape}')
+        try:
+            # data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
+            data = bart(1, 'pics -S -e -l1 -r 0.0001 -t', trj, data, sensmaps)
+            logging.info(bart.stdout)
+        except:
+            logging.info(bart.stdout)
+            logging.debug(bart.stderr)
+            raise RuntimeError
+        data = np.atleast_3d(abs(data))
+        logging.debug(f'data.shape = {data.shape}')
+    else:  # normal gridding
+        # Fourier Transform in partition direction
+        if npar>0:
+            data = cfft(data, axis=2)
         im = []
         for dat in np.moveaxis(data, 2, 0):
-            im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, dat[np.newaxis]))
+            try:
+                im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, dat[np.newaxis]))
+                logging.info(bart.stdout)
+            except:
+                logging.info(bart.stdout)
+                logging.debug(bart.stderr)
+                raise RuntimeError
         data = np.concatenate(im, axis=2)
 
         # Sum of squares coil combination
         # Data will be [PE RO par]
         data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
 
-    # switch RO & PE for consistency with ICE
-    data = np.moveaxis(data, 0, 1)
+        # pre-scale data based on radial undersampling:
+        data *= nx/nprj
 
     # Remove partition oversampling
     if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:

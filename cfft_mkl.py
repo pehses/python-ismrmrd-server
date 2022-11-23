@@ -27,7 +27,7 @@ try:
             raise ValueError
 
     def fftn(data, axes, norm="ortho"):
-        fft_elem = np.prod(data.shape[axes])
+        fft_elem = np.prod([data.shape[ax] for ax in axes])
         out = mkl_fft.fftn(data, axes=axes)
         if norm == "ortho":
             return out/np.sqrt(fft_elem)
@@ -39,7 +39,7 @@ try:
             raise ValueError
 
     def ifftn(data, axes, norm="ortho"):
-        fft_elem = np.prod(data.shape[axes])
+        fft_elem = np.prod([data.shape[ax] for ax in axes])
         out = mkl_fft.ifftn(data, axes=axes)
         if norm == "ortho":
             return out*np.sqrt(fft_elem)

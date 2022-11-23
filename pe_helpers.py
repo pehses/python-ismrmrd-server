@@ -157,6 +157,8 @@ def sort_into_kspace(group, metadata, is_radial_seq=False):  # used for acs scan
         ## now sort acq into k-space ##
         offset_enc1 = cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
         offset_enc2 = cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
+        # logging.debug(f'enc1 = {enc1}, ny = {ny}, cenc1 = {cenc1}, offset_enc1 = {offset_enc1}, acq.idx.user[5] = {acq.idx.user[5]}')
+        # logging.debug(f'enc2 = {enc2}, nz = {nz}, cenc2 = {cenc2}, offset_enc2 = {offset_enc2}, acq.idx.user[6] = {acq.idx.user[6]}')
         enc1 += offset_enc1
         enc2 += offset_enc2
 
@@ -172,7 +174,8 @@ def sort_into_kspace(group, metadata, is_radial_seq=False):  # used for acs scan
     return kspace
 
 
-def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=False, threads=8, chunk_sz=-1, is_radial_seq=False):
+# def process_acs(group, config, metadata, is_radial_seq=False, cal_mode='espirit', n_maps=1, use_gpu=False, threads=8, chunk_sz=-1):
+def process_acs(group, config, metadata, is_radial_seq=False, cal_mode='caldir', n_maps=1, use_gpu=False, threads=8, chunk_sz=-1):
 
     if len(group)==0:
         # nothing to do
@@ -180,12 +183,14 @@ def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=F
 
     gpu_str = "-g" if use_gpu else ""
     acs = sort_into_kspace(group, metadata, is_radial_seq=is_radial_seq)
-    nx, ny, nz, nc = acs.shape
+    logging.info(f'acs.shape = {acs.shape}')
 
     def ecaltwo(sig):
-        maps = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
-        logging.info(bart.stdout)
-        if bart.ERR > 0:
+        try:
+            maps = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
+            logging.info(bart.stdout)
+        except:
+            logging.info(bart.stdout)
             logging.debug(bart.stderr)
             raise RuntimeError
         return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
@@ -204,9 +209,11 @@ def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=F
         # ESPIRiT calibration
         if chunk_sz > 0 and chunk_sz<nz:
             # espirit_econ: reduce memory footprint by chunking
-            eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
-            logging.info(bart.stdout)
-            if bart.ERR > 0:
+            try:
+                eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
+                logging.info(bart.stdout)
+            except:
+                logging.info(bart.stdout)
                 logging.debug(bart.stderr)
                 raise RuntimeError
 
@@ -252,5 +259,10 @@ def process_acs(group, config, metadata, cal_mode='espirit', n_maps=1, use_gpu=F
         if bart.ERR > 0:
             logging.debug(bart.stderr)
             raise RuntimeError
+
+    # Flip matrix in RO/PE to be consistent with ICE
+    sensmaps = np.flip(sensmaps, (0, 1))
+    # np.save("/tmp/share/debug/sensmaps.npy", sensmaps)
+    # np.save("/tmp/share/debug/acs.npy", acs)
 
     return sensmaps

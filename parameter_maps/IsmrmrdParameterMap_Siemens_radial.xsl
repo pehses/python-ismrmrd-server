@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="ISO-8859-1"?>
 
 <xsl:stylesheet version="1.0"
-                xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
 
     <xsl:output method="xml" indent="yes"/>
 
@@ -60,9 +60,9 @@
 
     <xsl:template match="/">
         <ismrmrdHeader xsi:schemaLocation="http://www.ismrm.org/ISMRMRD ismrmrd.xsd"
-                       xmlns="http://www.ismrm.org/ISMRMRD"
-                       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                       xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            xmlns="http://www.ismrm.org/ISMRMRD"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xmlns:xs="http://www.w3.org/2001/XMLSchema">
 
             <!--
             <subjectInformation>
@@ -97,9 +97,8 @@
             <measurementInformation>
                 <measurementID>
                     <xsl:value-of
-                            select="concat(string(siemens/DICOM/DeviceSerialNumber), $strSeperator, $patientID, $strSeperator, $studyID, $strSeperator, string(siemens/HEADER/MeasUID))"/>
+                        select="concat(string(siemens/DICOM/DeviceSerialNumber), $strSeperator, $patientID, $strSeperator, $studyID, $strSeperator, string(siemens/HEADER/MeasUID))"/>
                 </measurementID>
-                
                 <patientPosition>
                     <xsl:value-of select="siemens/YAPS/tPatientPosition"/>
                 </patientPosition>
@@ -741,17 +740,24 @@
             </sequenceParameters>
 
             <userParameters>
-		    
+
                 <xsl:for-each select="siemens/MEAS/sWipMemBlock/alFree">
-                    <!-- xsl:if test=". &gt; 0" -->
-                      <xsl:variable name="CurLong" select="position()"/>
-                      <userParameterLong>
-                        <name>sWipMemBlock.alFree[<xsl:value-of select="$CurLong - 1" />]</name>
+                    <xsl:variable name="CurLong" select="position()"/>
+                    <userParameterLong>
+                        <name>alFree[<xsl:value-of select="$CurLong - 1" />]</name>
                         <value>
-                          <xsl:value-of select="."/>
+                            <xsl:value-of select="."/>
                         </value>
-                      </userParameterLong>
-                    <!-- /xsl:if -->
+                    </userParameterLong>
+                </xsl:for-each>
+                <xsl:for-each select="siemens/MEAS/sWipMemBlock/adFree">
+                    <xsl:variable name="CurDouble" select="position()"/>
+                    <userParameterDouble>
+                        <name>adFree[<xsl:value-of select="$CurDouble - 1" />]</name>
+                        <value>
+                            <xsl:value-of select="."/>
+                        </value>
+                    </userParameterDouble>
                 </xsl:for-each>
 
 		<xsl:if test="siemens/MEAS/sAngio/sFlowArray/lSize">

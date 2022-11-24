@@ -24,6 +24,7 @@ debugFolder = "/tmp/share/debug"
 ncc = 0
 apply_prewhitening = True
 use_multiprocessing = True
+fft_in_par = False  # use normal fft in par dir. instead of gridding
 
 
 def process(connection, config, metadata):
@@ -171,10 +172,27 @@ def process_raw(group, config, metadata, sensmaps=None):
     ncol = group[0].data.shape[-1]
     nprj = encoding.encodedSpace.matrixSize.y
     npar = encoding.encodedSpace.matrixSize.z
+    center_par = encoding.encodingLimits.kspace_encoding_step_2.center
     ncha = group[0].data.shape[0]
     nx = ncol//2
 
-    logging.debug(f"Encoded Space is {ncol}, {nprj}, {npar}, {ncha}")
+    wip_params = {item.name: item.value for item in metadata.userParameters.userParameterLong}
+    # wip_params.update({item.name: item.value for item in metadata.userParameters.userParameterDouble})
+    
+    def unpack_bits(input):
+        # numpy's unpackbits does not work correctly for some reason
+        return np.bitwise_and(
+            np.int32(input), 2**np.arange(32, dtype=np.uint32)).astype(bool)
+
+    compact_bool = unpack_bits(wip_params['alFree[6]'])
+    center_col_in_center = compact_bool[3]
+    compact_sels = (ctypes.c_uint8*4).from_buffer(ctypes.c_int32(wip_params['alFree[0]']))
+    if compact_sels[1] == 6:
+        trj_type = 'ga'
+    elif compact_sels[1] == 7:
+        trj_type = 'tga'
+    else:
+        trj_type = 'lin'  # or shuffled traj. (Fibonacci) / unknown
 
     # Use the zero-padded matrix size
     data = np.zeros((nprj, 
@@ -198,11 +216,6 @@ def process_raw(group, config, metadata, sensmaps=None):
     np.save(debugFolder + "/" + "raw.npy", data)
 
     # calc radial trajectory - center traj. at ncol//2 ('-c')
-    center_col_in_center = True
-    trj_type = 'lin'
-    # trj_type = 'ga'
-    # trj_type = 'tga'
-
     bart_cmd = f'traj -r -x{ncol} -y{nprj}'
     if center_col_in_center:
         bart_cmd += ' -c'
@@ -230,47 +243,66 @@ def process_raw(group, config, metadata, sensmaps=None):
     # move col to front
     data = np.moveaxis(data, 3, 0)
 
-    logging.debug(f'sensmaps {sensmaps}')
-    if sensmaps is not None:
-        # bring projections and partitions into one dim (need to do same for trj for 3D meas!)
-        data = np.moveaxis(data, -1, 1)
-        data = data.reshape([*data.shape[:2], -1])
-        data = np.moveaxis(data, 1, -1)[np.newaxis]
+    if npar>1 and fft_in_par:  # Fourier Transform in partition direction
+        data = cfft(data, axis=2)
         # wait for sensmaps:
         if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
             sensmaps = sensmaps.get()
-        logging.info(f'trj: {trj.shape}, data: {data.shape}, sensmaps: {sensmaps.shape}')
-        try:
-            # data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
-            data = bart(1, 'pics -S -e -l1 -r 0.0001 -t', trj, data, sensmaps)
-            logging.info(bart.stdout)
-        except:
-            logging.info(bart.stdout)
-            logging.debug(bart.stderr)
-            raise RuntimeError
-        data = np.atleast_3d(abs(data))
-        logging.debug(f'data.shape = {data.shape}')
-    else:  # normal gridding
-        # Fourier Transform in partition direction
-        if npar>0:
-            data = cfft(data, axis=2)
         im = []
-        for dat in np.moveaxis(data, 2, 0):
+        for p in range(data.shape[2]):
             try:
-                im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, dat[np.newaxis]))
+                if sensmaps is None:
+                    im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, data[np.newaxis,:,:,p]))
+                else:
+                    im.append(bart(1, f"pics -S -e -l1 -r 0.0001 -t", trj, data[np.newaxis,:,:,p], sensmaps[:,:,p]))
                 logging.info(bart.stdout)
             except:
                 logging.info(bart.stdout)
                 logging.debug(bart.stderr)
                 raise RuntimeError
         data = np.concatenate(im, axis=2)
+    else:
+        if npar>1:
+            # concatenate trj. and add partitions to z-dir.
+            trj = np.tile(trj[..., np.newaxis], npar)
+            trj[2] = (np.arange(npar) - center_par)[np.newaxis, np.newaxis]
+            trj = np.moveaxis(trj, [1, -1])
+            trj = trj.reshape(trj, *trj.shape[:2], -1)
+            trj = np.moveaxis(trj, [-1, 1])
 
+            # bring projections and partitions into one dim
+            data = np.moveaxis(data, -1, 1)
+            data = data.reshape([*data.shape[:2], -1])
+            data = np.moveaxis(data, 1, -1)[np.newaxis]
+        else:
+            # first dim needs to be empty for non-cartesian scans
+            data = data[np.newaxis,:,:,0]
+
+        try:
+            if sensmaps is None:
+                data = bart(1, f"nufft -a -d {nx}:{nx}:{npar}", trj, data)
+            else:
+                # wait for sensmaps:
+                if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+                    sensmaps = sensmaps.get()
+                # data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
+                data = bart(1, 'pics -S -e -l1 -r 0.0001 -t', trj, data, sensmaps)
+            logging.info(bart.stdout)
+        except:
+            logging.info(bart.stdout)
+            logging.debug(bart.stderr)
+            raise RuntimeError
+        data = np.atleast_3d(abs(data))
+
+    if sensmaps is None:
         # Sum of squares coil combination
         # Data will be [PE RO par]
         data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
 
         # pre-scale data based on radial undersampling:
         data *= nx/nprj
+
+    logging.debug(f'data.shape = {data.shape}')
 
     # Remove partition oversampling
     if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:

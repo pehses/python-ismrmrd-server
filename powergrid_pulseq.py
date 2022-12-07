@@ -432,7 +432,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     if not any(elem is None for elem in img_coord):
         img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
         img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
-        dset_tmp.append_array("ImgCoord", img_coord)
+        dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
         higher_order = True
 
     # Insert Sensitivity Maps
@@ -465,7 +465,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
-    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
+    dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64)) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
     logging.debug("Field Map name: %s", fmap_name)
 
     # Calculate phase maps from shot images and append if necessary
@@ -481,7 +481,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         else:
             mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
-        dset_tmp.append_array("PhaseMaps", phasemaps)
+        dset_tmp.append_array("PhaseMaps", phasemaps.astype(np.float64))
 
     # Write header
     if sms_factor > 1:
@@ -587,10 +587,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Define PowerGrid options
     if higher_order:
-        pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20'
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
     else:
-        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -n 20' # -w option writes intermediate results as niftis in pg_dir folder
         if pcSENSE: # Multishot
             if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
                 if mpi:

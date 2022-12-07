@@ -374,6 +374,16 @@ def calc_img_coord(metadata, acq):
 
     return grid_rot
 
+def calc_dcf(traj):
+    """ Estimates the density compensation function for a given k-space trajectory
+        taken from https://github.com/TardifLab/ESM_image_reconstruction/blob/main/general/cg_dcf_spiral.m
+    """
+    theta = np.arctan2(traj[:,0],traj[:,1])
+    theta = np.unwrap(theta)
+    dcf = theta[1:] - theta[:-1]
+    dcf = np.append(dcf,dcf[-1]) * np.sqrt(traj[:,0]**2+traj[:,1]**2)
+    return dcf
+
 def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
     """
         Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)

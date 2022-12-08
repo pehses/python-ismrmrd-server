@@ -438,6 +438,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     # Calculate and insert DCF
     traj = acqGroup[0][0][0].traj[:,:2]
     dcf = rh.calc_dcf(traj)
+    dcf /= np.max(dcf)
     dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)
     dset_tmp.append_array("DCF", dcf2.astype(np.float64))
 
@@ -593,7 +594,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Define PowerGrid options
     if higher_order:
-        pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.005'
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.002'
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
     else:
         pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -n 20 -B 500 -D 2' # -w option writes intermediate results as niftis in pg_dir folder

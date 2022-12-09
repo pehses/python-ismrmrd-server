@@ -61,7 +61,7 @@ def process(connection, config, metadata, prot_file):
     
     # -- Some manual parameters --- #
 
-    # reco_n_contr: if >0 only the volumes up to the specified number will be reconstructed
+    # if >0 only the volumes up to the specified number will be reconstructed
     process_raw.reco_n_contr = 0
     if len(metadata.userParameters.userParameterLong) > 0:
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
@@ -179,7 +179,6 @@ def process(connection, config, metadata, prot_file):
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
         # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-        # WIP: This does not work with multiple repetitions or averages atm (needs more list dimensions)
         shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
         sens_shots = True
 
@@ -331,6 +330,12 @@ def process(connection, config, metadata, prot_file):
                         k0 = last_item.traj[:,3]
                         last_item.data[:] *= np.exp(-1j*k0)
 
+                    if higher_order:
+                        # invert trajectory sign (seems to be necessary, field map and k0 also need sign change)
+                        # for some unknown reason, not inverting the concomitant field terms yields better results
+                        # for non-higher order recons, the sign is correct, as it fits to the coordinate system calculated in PowerGrid
+                        last_item.traj[:,:-4] *= -1
+
                     # replace k0 with time vector
                     last_item.traj[:,3] = t_vec.copy()
 
@@ -427,7 +432,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         os.remove(tmp_file)
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
-    # Insert Coordinates (if calculated)
+    # Insert Coordinates (only for higher order recon, otherwise calculated in PowerGrid)
     higher_order = False
     if not any(elem is None for elem in img_coord):
         img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]

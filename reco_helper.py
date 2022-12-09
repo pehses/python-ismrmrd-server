@@ -332,12 +332,13 @@ def add_naxes(arr, n):
         arr = arr[...,np.newaxis]
     return arr
 
-# Calculate image space coordinates in physical coordinate system
-# Can be used for higher order recon
 def calc_img_coord(metadata, acq):
     """
-    Calculate voxel coordinates in physical coordinate system for a given slice
-    Voxel coordinates only validated (in different test reconstructions) for Pulseq sequences.     
+    Calculate voxel coordinates for a given slice for use in higher order reconstructions.
+    The coordinate system is the Siemens device coordinate system (DCS), as the Skope data is also acquired in that coordinate system:
+    x: neg -> pos is right -> left
+    y: neg -> pos is posterior -> anterior
+    z: neg -> pos is head -> feet
     """
 
     # matrix size & rotmat
@@ -354,10 +355,10 @@ def calc_img_coord(metadata, acq):
     slc_sep = n_slc_red * slc_res
 
     # Make grid in GCS (logical)
-    ix = np.linspace(-nx/2*res,(nx/2-1)*res, nx)
-    iy = np.linspace(-ny/2*res,(ny/2-1)*res, ny)
+    ix = np.linspace(nx/2*res,-(nx/2-1)*res, nx)
+    iy = np.linspace(ny/2*res,-(ny/2-1)*res, ny)
     slice_offset = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
-    iz = -1*(np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset) # head to foot
+    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
     # Coordinates to DCS (physical)
@@ -365,9 +366,9 @@ def calc_img_coord(metadata, acq):
 
     # Add global offset in DCS
     global_offset = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [m] -> [mm]
-    grid_rot[0] -= global_offset[0]
-    grid_rot[1] -= global_offset[1]
-    grid_rot[2] -= global_offset[2]
+    grid_rot[0] += global_offset[0]
+    grid_rot[1] += global_offset[1]
+    grid_rot[2] += global_offset[2]
 
     # reshape back
     grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])

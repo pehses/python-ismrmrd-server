@@ -7,6 +7,7 @@
         <p><s>MEAS.sKSpace.dPhaseResolution</s>                                 <d>siemens.MEAS.sKSpace.dPhaseResolution</d></p>
         <p><s>MEAS.sKSpace.dSliceResolution</s>                                 <d>siemens.MEAS.sKSpace.dSliceResolution</d></p>
         <p><s>MEAS.sKSpace.ucTrajectory</s>                                     <d>siemens.MEAS.sKSpace.ucTrajectory</d></p>
+        <p><s>MEAS.sKSpace.ucAsymmetricEchoAllowed</s>                          <d>siemens.MEAS.sKSpace.ucAsymmetricEchoAllowed</d></p>
         <p><s>MEAS.sKSpace.lImagesPerSlab</s>                                   <d>siemens.MEAS.sKSpace.lImagesPerSlab</d></p>
         <p><s>MEAS.sKSpace.dSliceOversamplingForDialog</s>                      <d>siemens.MEAS.sKSpace.dSliceOversamplingForDialog</d></p>
         <p><s>MEAS.sKSpace.ucPhasePartialFourier</s>                            <d>siemens.MEAS.sKSpace.ucPhasePartialFourier</d></p>

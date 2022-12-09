@@ -22,9 +22,179 @@ from pe_helpers import NestablePool, calibrate_prewhitening, calibrate_cc, apply
 debugFolder = "/tmp/share/debug"
 
 ncc = 0
-apply_prewhitening = True
+apply_prewhitening = False
 use_multiprocessing = True
 fft_in_par = False  # use normal fft in par dir. instead of gridding
+window_sz = 89  # for ga/tga reconstructions
+
+
+def calc_traj(ncol, nprj, trj_type='lin', center_col_in_center=True, is_ute=False):
+
+    gr = (1+np.sqrt(5)) / 2
+    if trj_type == 'ga':
+        angles = (np.pi/gr * np.arange(nprj))%(2*np.pi)
+    elif trj_type == 'tga':
+        angles = (np.pi / (gr + 7 - 1) * np.arange(nprj))%(2*np.pi)
+    elif nprj%2 or is_ute:
+        angles = 2*np.pi/nprj * np.arange(nprj)
+    else:
+        angles = np.pi/nprj * np.arange(nprj)
+
+    if is_ute:
+        trj_1d = np.arange(ncol, dtype=float)  # does not account for ramp-sampling yet!
+    else:
+        trj_1d = np.arange(-ncol//2, ncol//2, dtype=float) + (0 if center_col_in_center else 0.5)
+    trj_1d /= 2  # account for oversampling
+
+    # create trajectory by rotating trj_1d
+    rot = np.asarray([np.sin(angles), np.cos(angles), np.zeros(len(angles))])
+    trj = rot[:, np.newaxis] * trj_1d[np.newaxis, :, np.newaxis]
+    trj = np.complex64(trj)  # bart uses complex64
+    
+    # Flip matrix in RO to be consistent with ICE
+    # we could do this after image recon, but this would result in one voxel shift
+    trj[:2] *= -1
+    # switch RO & PE for consistency with ICE
+    trj[[0, 1]] = trj[[1, 0]]
+    
+    return trj, trj_1d, angles
+
+
+def calc_ramlak(trj_1d, angles=None, is_ute=False):
+    ramlak = 0.5 + abs(trj_1d[:, np.newaxis])
+    if angles is not None:
+        # account for angular sampling anisotropy:
+        angle_dist = []
+        for angle in angles:
+            angle_diff = np.angle(np.exp(1j*angles) * np.exp(-1j*angle))
+            if not is_ute:
+                # make sure to account for other half of projection
+                for key, angle in enumerate(angle_diff):
+                    if angle > np.pi / 2:
+                        angle_diff[key] = angle - np.pi
+                    elif angle < -np.pi / 2:
+                        angle_diff[key] = angle + np.pi
+            right_dist = angle_diff[angle_diff>0].min()
+            left_dist = -angle_diff[angle_diff<0].max()
+            angle_dist.append((left_dist+right_dist)/2.)
+        angle_dist = np.asarray(angle_dist)
+        angle_dist /= angle_dist.mean()
+        ramlak = ramlak * angle_dist[np.newaxis]
+    return ramlak
+
+
+def recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps=None, fft_in_par=False, frame_num=0):
+    ncol, nprj, npar, cha = data.shape
+    nx = ncol//2
+    center_par = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
+
+    if sensmaps is None:  # adjoint nufft requires density compensation
+        data *= ramlak[:, :, np.newaxis, np.newaxis]
+
+    if npar>1 and fft_in_par:  # Fourier Transform in partition direction
+        data = cfft(data, axis=2)
+        # wait for sensmaps:
+        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+            sensmaps = sensmaps.get()
+        im = []
+        for p in range(data.shape[2]):
+            try:
+                if sensmaps is None:
+                    im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, data[np.newaxis,:,:,p]))
+                else:
+                    im.append(bart(1, f"pics -S -e -l1 -r 0.0001", data[np.newaxis,:,:,p], sensmaps[:,:,p], t=trj, p=np.sqrt(ramlak)[np.newaxis]))
+                logging.info(bart.stdout)
+            except:
+                logging.info(bart.stdout)
+                logging.debug(bart.stderr)
+                raise RuntimeError
+        data = np.concatenate(im, axis=2)
+    else:
+        if npar>1:
+            # concatenate trj. and add partitions to z-dir.
+            trj = np.tile(trj[..., np.newaxis], npar)
+            trj[2] = (np.arange(npar) - center_par)[np.newaxis, np.newaxis]
+            trj = np.moveaxis(trj, [1, -1])
+            trj = trj.reshape(trj, *trj.shape[:2], -1)
+            trj = np.moveaxis(trj, [-1, 1])
+
+            # bring projections and partitions into one dim
+            data = np.moveaxis(data, -1, 1)
+            data = data.reshape([*data.shape[:2], -1])
+            data = np.moveaxis(data, 1, -1)[np.newaxis]
+        else:
+            # first dim needs to be empty for non-cartesian scans
+            data = data[np.newaxis,:,:,0]
+
+        try:
+            if sensmaps is None:
+                data = bart(1, f"nufft -a -d {nx}:{nx}:{npar}", trj, data)
+            else:
+                # wait for sensmaps:
+                if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
+                    sensmaps = sensmaps.get()
+                # data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
+                data = bart(1, 'pics -S -e -l1 -r 0.0001 -t', trj, data, sensmaps)
+            logging.info(bart.stdout)
+        except:
+            logging.info(bart.stdout)
+            logging.debug(bart.stderr)
+            raise RuntimeError
+        data = np.atleast_3d(abs(data))
+
+    if sensmaps is None:
+        # Sum of squares coil combination
+        # Data will be [PE RO par]
+        data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
+
+        # pre-scale data based on radial undersampling:
+        data *= nx/nprj
+
+    # Remove partition oversampling
+    if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:
+        offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
+        data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
+
+    logging.debug("Image data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "img.npy", data)
+
+    # Normalize and convert to int16
+    image_scale = 32767/data.max()
+    logging.debug(f"Image scale: {image_scale}")
+    data *= image_scale
+    data = np.around(data).astype(np.int16)
+
+    # Set ISMRMRD Meta Attributes
+    meta = ismrmrd.Meta({'DataRole':               'Image',
+                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                         'WindowCenter':           '16384',
+                         'WindowWidth':            '32768',
+                         'Keep_image_geometry':    1,
+                         'ImageScale':             image_scale })  # store this for our own future use (e.g. in fitting)
+    xml = meta.serialize()
+
+    field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.x,
+                     metadata.encoding[0].reconSpace.fieldOfView_mm.z)
+
+    # Format as ISMRMRD image data
+    image = ismrmrd.Image.from_array(data)
+    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
+    image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
+    image.image_series_index = frame_num + 1
+
+    # Add image orientation directions to MetaAttributes if not already present
+    if meta.get('ImageRowDir') is None:
+        meta['ImageRowDir'] = ["{:.18f}".format(image.getHead().read_dir[0]), "{:.18f}".format(image.getHead().read_dir[1]), "{:.18f}".format(image.getHead().read_dir[2])]
+
+    if meta.get('ImageColumnDir') is None:
+        meta['ImageColumnDir'] = ["{:.18f}".format(image.getHead().phase_dir[0]), "{:.18f}".format(image.getHead().phase_dir[1]), "{:.18f}".format(image.getHead().phase_dir[2])]
+
+    xml = meta.serialize()
+    image.attribute_string = xml
+
+    # logging.debug("Image MetaAttributes: %s", xml)
+    return image
 
 
 def process(connection, config, metadata):
@@ -172,20 +342,18 @@ def process_raw(group, config, metadata, sensmaps=None):
     ncol = group[0].data.shape[-1]
     nprj = encoding.encodedSpace.matrixSize.y
     npar = encoding.encodedSpace.matrixSize.z
-    center_par = encoding.encodingLimits.kspace_encoding_step_2.center
     ncha = group[0].data.shape[0]
-    nx = ncol//2
 
     wip_params = {item.name: item.value for item in metadata.userParameters.userParameterLong}
     # wip_params.update({item.name: item.value for item in metadata.userParameters.userParameterDouble})
-    
+    traj_params = {item.name: item.value for item in encoding.trajectoryDescription.userParameterLong}
+    is_ute = traj_params['ute']
+
     def unpack_bits(input):
-        # numpy's unpackbits does not work correctly for some reason
         return np.bitwise_and(
             np.int32(input), 2**np.arange(32, dtype=np.uint32)).astype(bool)
-
     compact_bool = unpack_bits(wip_params['alFree[6]'])
-    center_col_in_center = compact_bool[3]
+    center_col_in_center = bool(compact_bool[3])
     compact_sels = (ctypes.c_uint8*4).from_buffer(ctypes.c_int32(wip_params['alFree[0]']))
     if compact_sels[1] == 6:
         trj_type = 'ga'
@@ -193,6 +361,7 @@ def process_raw(group, config, metadata, sensmaps=None):
         trj_type = 'tga'
     else:
         trj_type = 'lin'  # or shuffled traj. (Fibonacci) / unknown
+    logging.debug(f'trj_type = {trj_type}, center_col_in_center = {center_col_in_center}')
 
     # Use the zero-padded matrix size
     data = np.zeros((nprj, 
@@ -212,142 +381,23 @@ def process_raw(group, config, metadata, sensmaps=None):
             if (rawHead is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead.idx.kspace_encode_step_1 - rawHead.idx.user[5])):
                 rawHead = acq.getHead()
 
-    logging.debug("Raw data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "raw.npy", data)
-
-    # calc radial trajectory - center traj. at ncol//2 ('-c')
-    bart_cmd = f'traj -r -x{ncol} -y{nprj}'
-    if center_col_in_center:
-        bart_cmd += ' -c'
-    if trj_type == 'ga':
-        bart_cmd += ' -G -D'
-    elif trj_type == 'tga':
-        bart_cmd += ' -s7 -D'
-    elif nprj%2:
-        bart_cmd += ' -D'
-    trj = bart(1, bart_cmd) / 2
-    
-    # Flip matrix in RO to be consistent with ICE
-    # we could do this after image recon, but this would result in one voxel shift
-    trj[:2] *= -1
-    # switch RO & PE for consistency with ICE
-    trj[[0, 1]] = trj[[1, 0]]
-
-    if sensmaps is None:  # adjoint nufft requires density compensation
-        if center_col_in_center:
-            ramlak = abs(np.arange(-ncol//2, ncol//2)) + 0.5
-        else:
-            ramlak = abs(np.arange(-ncol//2, ncol//2) + 0.5) + 0.5
-        data *= ramlak
-
     # move col to front
     data = np.moveaxis(data, 3, 0)
 
-    if npar>1 and fft_in_par:  # Fourier Transform in partition direction
-        data = cfft(data, axis=2)
-        # wait for sensmaps:
-        if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
-            sensmaps = sensmaps.get()
-        im = []
-        for p in range(data.shape[2]):
-            try:
-                if sensmaps is None:
-                    im.append(bart(1, f"nufft -a -d {nx}:{nx}:1", trj, data[np.newaxis,:,:,p]))
-                else:
-                    im.append(bart(1, f"pics -S -e -l1 -r 0.0001 -t", trj, data[np.newaxis,:,:,p], sensmaps[:,:,p]))
-                logging.info(bart.stdout)
-            except:
-                logging.info(bart.stdout)
-                logging.debug(bart.stderr)
-                raise RuntimeError
-        data = np.concatenate(im, axis=2)
+    logging.debug("Raw data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "raw.npy", data)
+
+    trj, trj_1d, angles = calc_traj(ncol, nprj, trj_type, center_col_in_center, is_ute)
+
+    if trj_type == 'ga' or trj_type == 'tga':
+        nframes = nprj // window_sz
+        images = []
+        for frame in range(nframes):
+            sel = slice(frame*window_sz, (frame+1)*window_sz)
+            ramlak = calc_ramlak(trj_1d, angles[sel], is_ute)
+            images.append(recon_radial_3d(data[:,sel], trj[:,:,sel], metadata, rawHead, ramlak, sensmaps, fft_in_par))
+
+        return images
     else:
-        if npar>1:
-            # concatenate trj. and add partitions to z-dir.
-            trj = np.tile(trj[..., np.newaxis], npar)
-            trj[2] = (np.arange(npar) - center_par)[np.newaxis, np.newaxis]
-            trj = np.moveaxis(trj, [1, -1])
-            trj = trj.reshape(trj, *trj.shape[:2], -1)
-            trj = np.moveaxis(trj, [-1, 1])
-
-            # bring projections and partitions into one dim
-            data = np.moveaxis(data, -1, 1)
-            data = data.reshape([*data.shape[:2], -1])
-            data = np.moveaxis(data, 1, -1)[np.newaxis]
-        else:
-            # first dim needs to be empty for non-cartesian scans
-            data = data[np.newaxis,:,:,0]
-
-        try:
-            if sensmaps is None:
-                data = bart(1, f"nufft -a -d {nx}:{nx}:{npar}", trj, data)
-            else:
-                # wait for sensmaps:
-                if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
-                    sensmaps = sensmaps.get()
-                # data = bart(1, 'pics -S -e -l1 -r 0.0001 -i 50 -t', trj, data, sensmaps)
-                data = bart(1, 'pics -S -e -l1 -r 0.0001 -t', trj, data, sensmaps)
-            logging.info(bart.stdout)
-        except:
-            logging.info(bart.stdout)
-            logging.debug(bart.stderr)
-            raise RuntimeError
-        data = np.atleast_3d(abs(data))
-
-    if sensmaps is None:
-        # Sum of squares coil combination
-        # Data will be [PE RO par]
-        data = np.sqrt(np.sum(np.square(np.abs(data)), axis=-1))
-
-        # pre-scale data based on radial undersampling:
-        data *= nx/nprj
-
-    logging.debug(f'data.shape = {data.shape}')
-
-    # Remove partition oversampling
-    if data.shape[2] > metadata.encoding[0].reconSpace.matrixSize.z:
-        offset = (data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.z)//2
-        data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.z]
-
-    logging.debug("Image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "img.npy", data)
-
-    # Normalize and convert to int16
-    image_scale = 32767/data.max()
-    logging.debug(f"Image scale: {image_scale}")
-    data *= image_scale
-    data = np.around(data).astype(np.int16)
-
-    # Set ISMRMRD Meta Attributes
-    meta = ismrmrd.Meta({'DataRole':               'Image',
-                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                         'WindowCenter':           '16384',
-                         'WindowWidth':            '32768',
-                         'Keep_image_geometry':    1,
-                         'ImageScale':             image_scale })  # store this for our own future use (e.g. in fitting)
-    xml = meta.serialize()
-
-    field_of_view = (metadata.encoding[0].reconSpace.fieldOfView_mm.x,
-                     metadata.encoding[0].reconSpace.fieldOfView_mm.x,
-                     metadata.encoding[0].reconSpace.fieldOfView_mm.z)
-
-    # Format as ISMRMRD image data
-    image = ismrmrd.Image.from_array(data)
-    image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
-    image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
-
-    logging.debug("Image data has %d elements", image.data.size)
-
-    # Add image orientation directions to MetaAttributes if not already present
-    if meta.get('ImageRowDir') is None:
-        meta['ImageRowDir'] = ["{:.18f}".format(image.getHead().read_dir[0]), "{:.18f}".format(image.getHead().read_dir[1]), "{:.18f}".format(image.getHead().read_dir[2])]
-
-    if meta.get('ImageColumnDir') is None:
-        meta['ImageColumnDir'] = ["{:.18f}".format(image.getHead().phase_dir[0]), "{:.18f}".format(image.getHead().phase_dir[1]), "{:.18f}".format(image.getHead().phase_dir[2])]
-
-    xml = meta.serialize()
-    image.attribute_string = xml
-
-    # logging.debug("Image MetaAttributes: %s", xml)
-
-    return image
+        ramlak = calc_ramlak(trj_1d, None, is_ute)
+        return recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps, fft_in_par)

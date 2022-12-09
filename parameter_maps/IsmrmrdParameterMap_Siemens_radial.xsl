@@ -264,53 +264,71 @@
                     </xsl:choose>
                 </trajectory>
 
-                <xsl:if test="siemens/MEAS/sKSpace/ucTrajectory = 4">
-                    <trajectoryDescription>
-                        <identifier>HargreavesVDS2000</identifier>
-                        <userParameterLong>
-                            <name>interleaves</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sKSpace/lRadialViews"/>
-                            </value>
-                        </userParameterLong>
-                        <userParameterLong>
-                            <name>fov_coefficients</name>
-                            <value>1</value>
-                        </userParameterLong>
-                        <userParameterLong>
-                            <name>SamplingTime_ns</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[57]"/>
-                            </value>
-                        </userParameterLong>
-                        <userParameterDouble>
-                            <name>MaxGradient_G_per_cm</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[7]"/>
-                            </value>
-                        </userParameterDouble>
-                        <userParameterDouble>
-                            <name>MaxSlewRate_G_per_cm_per_s</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[8]"/>
-                            </value>
-                        </userParameterDouble>
-                        <userParameterDouble>
-                            <name>FOVCoeff_1_cm</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[10]"/>
-                            </value>
-                        </userParameterDouble>
-                        <userParameterDouble>
-                            <name>krmax_per_cm</name>
-                            <value>
-                                <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[9]"/>
-                            </value>
-                        </userParameterDouble>
-                        <comment>Using spiral design by Brian Hargreaves (http://mrsrl.stanford.edu/~brian/vdspiral/)
-                        </comment>
-                    </trajectoryDescription>
-                </xsl:if>
+                <xsl:choose>
+                    <xsl:when test="siemens/MEAS/sKSpace/ucTrajectory = 2">
+                        <trajectoryDescription>
+                            <identifier>radial</identifier>
+                            <userParameterLong>
+                                <name>ute</name>
+                                <value>
+                                    <xsl:choose>
+                                        <xsl:when test="not(siemens/MEAS/sKSpace/ucAsymmetricEchoAllowed)">0</xsl:when>
+                                        <xsl:otherwise>
+                                            <xsl:value-of select="siemens/MEAS/sKSpace/ucAsymmetricEchoAllowed"/>
+                                        </xsl:otherwise>
+                                    </xsl:choose>
+                                </value>
+                            </userParameterLong>
+                        </trajectoryDescription>
+                    </xsl:when>
+                    <xsl:when test="siemens/MEAS/sKSpace/ucTrajectory = 4">
+                        <trajectoryDescription>
+                            <identifier>HargreavesVDS2000</identifier>
+                            <userParameterLong>
+                                <name>interleaves</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sKSpace/lRadialViews"/>
+                                </value>
+                            </userParameterLong>
+                            <userParameterLong>
+                                <name>fov_coefficients</name>
+                                <value>1</value>
+                            </userParameterLong>
+                            <userParameterLong>
+                                <name>SamplingTime_ns</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[57]"/>
+                                </value>
+                            </userParameterLong>
+                            <userParameterDouble>
+                                <name>MaxGradient_G_per_cm</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[7]"/>
+                                </value>
+                            </userParameterDouble>
+                            <userParameterDouble>
+                                <name>MaxSlewRate_G_per_cm_per_s</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[8]"/>
+                                </value>
+                            </userParameterDouble>
+                            <userParameterDouble>
+                                <name>FOVCoeff_1_cm</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[10]"/>
+                                </value>
+                            </userParameterDouble>
+                            <userParameterDouble>
+                                <name>krmax_per_cm</name>
+                                <value>
+                                    <xsl:value-of select="siemens/MEAS/sWipMemBlock/adFree[9]"/>
+                                </value>
+                            </userParameterDouble>
+                            <comment>Using spiral design by Brian Hargreaves (http://mrsrl.stanford.edu/~brian/vdspiral/)
+                            </comment>
+                        </trajectoryDescription>
+                    </xsl:when>
+                </xsl:choose>
 
                 <xsl:if test="siemens/YAPS/alRegridRampupTime > 0">
                     <xsl:if test="siemens/YAPS/alRegridRampdownTime > 0">

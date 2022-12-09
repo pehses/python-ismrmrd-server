@@ -25,7 +25,7 @@ ncc = 0
 apply_prewhitening = False
 use_multiprocessing = True
 fft_in_par = False  # use normal fft in par dir. instead of gridding
-window_sz = 89  # for ga/tga reconstructions
+window_sz = 144  # for ga/tga reconstructions
 
 
 def calc_traj(ncol, nprj, trj_type='lin', center_col_in_center=True, is_ute=False):
@@ -61,7 +61,7 @@ def calc_traj(ncol, nprj, trj_type='lin', center_col_in_center=True, is_ute=Fals
 
 
 def calc_ramlak(trj_1d, angles=None, is_ute=False):
-    ramlak = 0.5 + abs(trj_1d[:, np.newaxis])
+    ramlak = 0.25/2 + abs(trj_1d[:, np.newaxis])
     if angles is not None:
         # account for angular sampling anisotropy:
         angle_dist = []
@@ -83,7 +83,7 @@ def calc_ramlak(trj_1d, angles=None, is_ute=False):
     return ramlak
 
 
-def recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps=None, fft_in_par=False, frame_num=0):
+def recon_radial_3d(data, trj, metadata, ramlak, sensmaps=None, fft_in_par=False):
     ncol, nprj, npar, cha = data.shape
     nx = ncol//2
     center_par = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
@@ -158,11 +158,16 @@ def recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps=None, fft_in_
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
 
-    # Normalize and convert to int16
-    image_scale = 32767/data.max()
+    return data
+
+
+def convert_to_image(imdata, metadata, rawHead, frame_num=0, image_scale=None):
+    if image_scale is None:
+        # Normalize and convert to int16
+        image_scale = 32767/imdata.max()
     logging.debug(f"Image scale: {image_scale}")
-    data *= image_scale
-    data = np.around(data).astype(np.int16)
+    imdata = imdata * image_scale
+    imdata = np.around(imdata).astype(np.int16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -178,10 +183,10 @@ def recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps=None, fft_in_
                      metadata.encoding[0].reconSpace.fieldOfView_mm.z)
 
     # Format as ISMRMRD image data
-    image = ismrmrd.Image.from_array(data)
+    image = ismrmrd.Image.from_array(imdata)
     image.setHead(mrdhelper.update_img_header_from_raw(image.getHead(), rawHead))
     image.field_of_view = tuple(ctypes.c_float(fov) for fov in field_of_view)
-    image.image_series_index = frame_num + 1
+    # image.image_series_index = frame_num + 1
 
     # Add image orientation directions to MetaAttributes if not already present
     if meta.get('ImageRowDir') is None:
@@ -391,13 +396,72 @@ def process_raw(group, config, metadata, sensmaps=None):
 
     if trj_type == 'ga' or trj_type == 'tga':
         nframes = nprj // window_sz
-        images = []
+        imdata = []
         for frame in range(nframes):
             sel = slice(frame*window_sz, (frame+1)*window_sz)
             ramlak = calc_ramlak(trj_1d, angles[sel], is_ute)
-            images.append(recon_radial_3d(data[:,sel], trj[:,:,sel], metadata, rawHead, ramlak, sensmaps, fft_in_par))
+            imdata.append(recon_radial_3d(data[:,sel], trj[:,:,sel], metadata, ramlak, sensmaps, fft_in_par))
+        imdata = np.array(imdata)
+        
+        images = []
+        image_scale = 0.8 * 32767/imdata.max()
+        for frame, im in enumerate(imdata):
+            images.append(convert_to_image(im, metadata, rawHead, frame, image_scale))
+
+        ndummy = 2
+        TR = metadata.sequenceParameters.TR[0]
+        TI = metadata.sequenceParameters.TI[0]
+        time_vec = TI + TR * (ndummy + window_sz/2 + window_sz * np.arange(nframes))
+        time_vec *= 1e-3 # ms -> s
+        logging.debug(f'time_vec = {time_vec}')
+        logging.debug(f'imdata.shape = {imdata.shape}')
+
+        mask = abs(imdata).mean(axis=0)
+        mask = mask > (0.8 * mask.mean())
+        imdata = imdata[:, mask]
+        # imdata = imdata.transpose([1,2,3,0])
+        # imdata = imdata[mask]
+        # imdata = imdata.T
+
+        def ir_abs(x, a, b, r1):
+            return abs(a - b * np.exp(-r1 * x))
+
+        def ir_real(x, a, b, r1):
+            return a - b * np.exp(-r1 * x)
+
+        if sensmaps is not None:
+            # phase correction and transform to real numbers
+            imdata = imdata * np.exp(-1j * np.angle(imdata[-1]))
+            imdata = np.sign(imdata.real) * np.abs(imdata)
+
+        from scipy.optimize import curve_fit
+        a = np.zeros_like(imdata[0])
+        b = np.zeros_like(imdata[0])
+        r1s = np.zeros_like(imdata[0])
+        for key, ydata in enumerate(imdata.T):
+            p0 = list()
+            p0.append(ydata[-1])
+            p0.append(abs(ydata[0]) + abs(ydata[-1]))
+            p0.append(1) # 1/seconds
+            try:
+                popt, pcov = curve_fit((ir_abs if sensmaps is None else ir_real), time_vec, ydata, p0=p0)
+            except:
+                popt = [0, 0, 0]
+            a[key] = popt[0]
+            b[key] = popt[1]
+            r1s[key] = popt[2]
+
+        t1s = np.zeros(mask.shape)
+        t1s[mask] = r1s
+        t1s[t1s!=0] = 1/t1s[t1s!=0]
+        s0 = np.zeros(mask.shape)
+        s0[mask] = b - a
+
+        images.append(convert_to_image(s0, metadata, rawHead, nframes+1, image_scale))
+        images.append(convert_to_image(t1s, metadata, rawHead, nframes+2, 10000))
 
         return images
     else:
         ramlak = calc_ramlak(trj_1d, None, is_ute)
-        return recon_radial_3d(data, trj, metadata, rawHead, ramlak, sensmaps, fft_in_par)
+        imdata = recon_radial_3d(data, trj, metadata, ramlak, sensmaps, fft_in_par)
+        return convert_to_image(imdata, metadata, rawHead)

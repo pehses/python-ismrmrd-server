@@ -372,14 +372,14 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                          'Keep_image_geometry':    '1'})
     xml = meta.serialize()
 
-    meta2 = ismrmrd.Meta({'DataRole':               'Image',
+    meta2 = ismrmrd.Meta({'DataRole':               'Quantitative',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '512',
                          'WindowWidth':            '1024',
                          'Keep_image_geometry':    '1'})
     xml2 = meta2.serialize()
 
-    meta3 = ismrmrd.Meta({'DataRole':               'Image',
+    meta3 = ismrmrd.Meta({'DataRole':               'Quantitative',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '512',
                          'WindowWidth':            '1024',

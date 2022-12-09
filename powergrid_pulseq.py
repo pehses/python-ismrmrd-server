@@ -13,7 +13,6 @@ from time import perf_counter
 from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
-import mrdhelper
 
 from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
 from skimage.transform import resize
@@ -52,6 +51,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 read_ecalib = False
 save_cmplx = True # save images as complex data
+online_recon = False
 
 ########################
 # Main Function
@@ -61,7 +61,7 @@ def process(connection, config, metadata, prot_file):
     
     # -- Some manual parameters --- #
 
-    # reco_n_contr: if >0 only the volumes up to the specified number will be reconstructed
+    # if >0 only the volumes up to the specified number will be reconstructed
     process_raw.reco_n_contr = 0
     if len(metadata.userParameters.userParameterLong) > 0:
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
@@ -70,6 +70,8 @@ def process(connection, config, metadata, prot_file):
         process_raw.reco_n_contr = 1 # reconstruct only first contrast, if data is processed online
         global save_cmplx
         save_cmplx = False
+        global online_recon
+        online_recon = True
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -177,7 +179,6 @@ def process(connection, config, metadata, prot_file):
     if "b_values" in prot_arrays and n_intl > 1:
         # we use the contrast index here to get the PhaseMaps into the correct order
         # PowerGrid reconstructs with ascending contrast index, so the phase maps should be ordered like that
-        # WIP: This does not work with multiple repetitions or averages atm (needs more list dimensions)
         shotimgs = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
         sens_shots = True
 
@@ -329,6 +330,12 @@ def process(connection, config, metadata, prot_file):
                         k0 = last_item.traj[:,3]
                         last_item.data[:] *= np.exp(-1j*k0)
 
+                    if higher_order:
+                        # invert trajectory sign (seems to be necessary, field map and k0 also need sign change)
+                        # for some unknown reason, not inverting the concomitant field terms yields better results
+                        # for non-higher order recons, the sign is correct, as it fits to the coordinate system calculated in PowerGrid
+                        last_item.traj[:,:-4] *= -1
+
                     # replace k0 with time vector
                     last_item.traj[:,3] = t_vec.copy()
 
@@ -425,13 +432,20 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         os.remove(tmp_file)
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
-    # Insert Coordinates (if calculated)
+    # Insert Coordinates (only for higher order recon, otherwise calculated in PowerGrid)
     higher_order = False
     if not any(elem is None for elem in img_coord):
         img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
         img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
-        dset_tmp.append_array("ImgCoord", img_coord)
+        dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
         higher_order = True
+
+    # Calculate and insert DCF
+    traj = acqGroup[0][0][0].traj[:,:2]
+    dcf = rh.calc_dcf(traj)
+    dcf /= np.max(dcf)
+    dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)
+    dset_tmp.append_array("DCF", dcf2.astype(np.float64))
 
     # Insert Sensitivity Maps
     if read_ecalib:
@@ -463,7 +477,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
-    dset_tmp.append_array('FieldMap', fmap_data) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
+    dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64)) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
     logging.debug("Field Map name: %s", fmap_name)
 
     # Calculate phase maps from shot images and append if necessary
@@ -479,7 +493,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
         else:
             mask = fmap_mask.copy()[:,np.newaxis]
         phasemaps = calc_phasemaps(shotimgs, mask, metadata)
-        dset_tmp.append_array("PhaseMaps", phasemaps)
+        dset_tmp.append_array("PhaseMaps", phasemaps.astype(np.float64))
 
     # Write header
     if sms_factor > 1:
@@ -585,10 +599,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
 
     # Define PowerGrid options
     if higher_order:
-        pg_opts = f'-i {tmp_file} -o {pg_dir} -B 500 -n 20 -D 2'
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.002'
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
     else:
-        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 500 -n 20 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+        pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -n 20 -B 500 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
         if pcSENSE: # Multishot
             if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
                 if mpi:
@@ -695,10 +709,10 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
     # Set ISMRMRD Meta Attributes
-    meta2 = ismrmrd.Meta({'DataRole':               'Image',
+    meta2 = ismrmrd.Meta({'DataRole':              'Quantitative',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           '512',
-                        'WindowWidth':            '1024',
+                        'WindowCenter':           '0',
+                        'WindowWidth':            '8192',
                         'Keep_image_geometry':    '1',
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
@@ -725,6 +739,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                                 image.repetition = rep
                                 image.phase = phs
                                 image.contrast = contr
+                                image.user_int[1] = sms_factor
                                 # b-values and directions should already be correct, as they are in the acquisition header
                                 # but we set them here explicitly again
                                 if 'b_values' in prot_arrays:
@@ -787,12 +802,15 @@ def process_acs(group, metadata, dmtx=None, sens_shots=False):
     if read_ecalib:
         sensmaps = np.zeros(1)
     else:
-        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        logging.debug(f"Sensmap calibration for slice {slc_ix}.")
+        if online_recon:
+            sensmaps = bart(1, 'caldir 40', data_sens[...,0])
+        elif gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data_sens[...,0])
+            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0])
 
     # Save reference data for masking and field mapping
     process_acs.refimg[slc_ix] = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1).T # save at spiral matrix size
@@ -831,6 +849,9 @@ def calc_fmap(imgs, echo_times, metadata):
     romeo_fmap = False # use the ROMEO toolbox for field map calculation
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
     filtering = False # apply Gaussian and median filtering (not recommended for mc_fmap)
+
+    if online_recon:
+        std_filter = False
 
     if len(echo_times) > 2:
         romeo_fmap = True # more than one echo time only possible with ROMEO

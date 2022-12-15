@@ -79,6 +79,11 @@ class Server:
                 importlib.reload(simplefft3D)
                 logging.info("Starting simplefft processing based on config")
                 simplefft3D.process(connection, config, metadata)
+            elif (config == "invertcontrast"):
+                import invertcontrast
+                importlib.reload(invertcontrast)
+                logging.info("Starting invertcontrast processing based on config")
+                invertcontrast.process(connection, config, metadata)
             elif (config == "bart_pics"):
                 import bart_pics
                 importlib.reload(bart_pics)
@@ -119,16 +124,16 @@ class Server:
                 with cProfile.Profile() as pr:
                     powergrid_pulseq.process(connection, config, metadata)
                 pr.dump_stats("/tmp/share/debug/powergrid_pulseq.prof")
-            elif (config == "invertcontrast"):
-                import invertcontrast
-                importlib.reload(invertcontrast)
-                logging.info("Starting invertcontrast processing based on config")
-                invertcontrast.process(connection, config, metadata)
             elif (config == "analyzeflow"):
                 import analyzeflow
                 importlib.reload(analyzeflow)
                 logging.info("Starting analyzeflow processing based on config")
                 analyzeflow.process(connection, config, metadata)
+            elif (config == "ir_fit"):
+                import ir_fit
+                importlib.reload(ir_fit)
+                logging.info("Starting ir_fit processing based on config")
+                ir_fit.process(connection, config, metadata)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:

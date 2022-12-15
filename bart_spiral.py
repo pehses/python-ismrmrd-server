@@ -21,6 +21,7 @@ debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = "/opt/custom_services/fire_recon_server/dependency"
 
 use_multiprocessing = False
+use_caldir = False  # much faster than ecalib (but less accurate)
 
 
 def process(connection, config, metadata):
@@ -516,7 +517,10 @@ def process_acs(group, config, metadata, dmtx=None):
         #     data = np.concatenate((tmp, data, tmp) ,axis=2)
         
         # print(data.shape)
-        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
+        
+        if use_caldir:
+            sensmaps = bart(1, f'caldir 32', data)
+        elif os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
@@ -558,8 +562,11 @@ def process_raw(group, config, metadata, dmtx=None, sensmaps=None):
     if sensmaps is None and force_pics:
         sensmaps = bart(1, 'nufft -i -m 30 -t -c -d %d:%d:%d'%(nx, nx, nz), trj, data) # nufft
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
-        # sensmaps = bart(1, 'ecalib -m 1 -I -r 32 -k 8', sensmaps)  # ESPIRiT calibration
-        sensmaps = bart(1, 'ecalib -m 1 -I', sensmaps)  # ESPIRiT calibration
+        if use_caldir:
+            sensmaps = bart(1, f'caldir 32', data)
+        else:
+            # sensmaps = bart(1, 'ecalib -m 1 -I -r 32 -k 8', sensmaps)  # ESPIRiT calibration
+            sensmaps = bart(1, 'ecalib -m 1 -I', sensmaps)  # ESPIRiT calibration
 
     if sensmaps is None:
         logging.debug("no pics necessary, just do standard recon")

@@ -186,10 +186,8 @@ def process_raw(group, connection, config, metadata):
 
     # Sum of squares coil combination
     # Data will be [PE RO phs]
-    data = np.abs(data)
-    data = np.square(data)
-    data = np.sum(data, axis=0)
-    data = np.sqrt(data)
+    data = np.abs(np.square(data))
+    data = np.sqrt(data.sum(axis=0))
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
@@ -243,7 +241,7 @@ def process_raw(group, connection, config, metadata):
         tmpMeta['Keep_image_geometry']    = 1
 
         xml = tmpMeta.serialize()
-        logging.debug("Image MetaAttributes: %s", xml)
+#        logging.debug("Image MetaAttributes: %s", xml)
         tmpImg.attribute_string = xml
         imagesOut.append(tmpImg)
 
@@ -272,11 +270,11 @@ def process_image(images, connection, config, metadata):
     data = data.transpose((3, 4, 2, 1, 0))
 
     # Display MetaAttributes for first image
-    logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(meta[0]))
+#    logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(meta[0]))
 
     # Optional serialization of ICE MiniHeader
-    if 'IceMiniHead' in meta[0]:
-        logging.debug("IceMiniHead[0]: %s", base64.b64decode(meta[0]['IceMiniHead']).decode('utf-8'))
+#    if 'IceMiniHead' in meta[0]:
+#        logging.debug("IceMiniHead[0]: %s", base64.b64decode(meta[0]['IceMiniHead']).decode('utf-8'))
 
     logging.debug("Original image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgOrig.npy", data)
@@ -341,7 +339,7 @@ def process_image(images, connection, config, metadata):
             tmpMeta['ImageColumnDir'] = ["{:.18f}".format(oldHeader.phase_dir[0]), "{:.18f}".format(oldHeader.phase_dir[1]), "{:.18f}".format(oldHeader.phase_dir[2])]
 
         metaXml = tmpMeta.serialize()
-        logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(metaXml).toprettyxml())
+#        logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(metaXml).toprettyxml())
         logging.debug("Image data has %d elements", imagesOut[iImg].data.size)
 
         imagesOut[iImg].attribute_string = metaXml

@@ -184,6 +184,7 @@ def process_acs(group, config, metadata, is_radial_seq=False, cal_mode='caldir',
     gpu_str = "-g" if use_gpu else ""
     acs = sort_into_kspace(group, metadata, is_radial_seq=is_radial_seq)
     logging.info(f'acs.shape = {acs.shape}')
+    nx, ny, nz, nc = acs.shape 
 
     def ecaltwo(sig):
         try:

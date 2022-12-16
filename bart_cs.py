@@ -13,7 +13,7 @@ import constants
 from multiprocessing import Pool
 from functools import partial
 from time import perf_counter
-from reco_helper import interpolate
+
 from bart import bart
 
 
@@ -63,17 +63,18 @@ n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 nii_filename = 'img.nii.gz'
-#cal_mode = 'espirit'
-cal_mode = 'caldir'
+cal_mode = 'espirit'
+#cal_mode = 'caldir'
 
 # override defaults:
 # reduce_fov_x = True
 # zf_to_orig_sz = False
-#ncc = 32  # we have time...
+ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
 use_multiprocessing = True
+
 
 def export_nifti(data, metadata, filename):
     import nibabel as nib
@@ -490,8 +491,6 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
 
             push_to_kspace.cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
             push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
-            logging.debug(f'nx={nx}, ny={ny}, nz={nz}, is_acs_scan={acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION)}')
-            
             push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
             push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16)
             push_to_kspace.rawHead = None
@@ -550,6 +549,7 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
         return None
 
     gpu_str = "-g" if use_gpu else ""
+
     acs = sort_into_kspace(group, metadata)
     nx, ny, nz, nc = acs.shape
 
@@ -616,8 +616,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
             logging.debug(bart.stderr)
             raise RuntimeError
 
-    np.save(os.path.join(debugFolder, "acs.npy"), acs)
-    np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
+    # np.save(os.path.join(debugFolder, "acs.npy"), acs)
+    # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
 
     return sensmaps
 

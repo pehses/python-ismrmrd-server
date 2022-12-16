@@ -63,6 +63,8 @@ n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 nii_filename = 'img.nii.gz'
+cal_mode = 'espirit'
+#cal_mode = 'caldir'
 
 # override defaults:
 # reduce_fov_x = True
@@ -123,11 +125,12 @@ def getCoilInfo(coilname='nova_ptx'):
     return fft_scale, rawdata_corrfactors
 
 
-def apply_column_ops(item, optmat, metadata):
+def apply_column_ops(item, optmat, nx=None):
     # pre-whitening & os-removal & slicing & resizing
 
     ncol = item.data.shape[-1]
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    if nx is None:
+        nx = ncol
 
     # operations to perform:
     resize = nx != ncol
@@ -360,7 +363,7 @@ def process(connection, config, metadata):
                     del noise_data
 
                 # resize & reslice colums; remove os; apply pre-whitening
-                apply_column_ops(item, optmat, metadata)
+                apply_column_ops(item, optmat, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
@@ -474,6 +477,9 @@ def process_and_send(connection, kspace, rawHead, config, metadata, sensmap):
 def push_to_kspace(acq=None, metadata=None, finalize=False):
 
     if acq is not None:
+        enc1 = acq.idx.kspace_encode_step_1
+        enc2 = acq.idx.kspace_encode_step_2
+
         try:
             push_to_kspace.kspace
         except:
@@ -482,6 +488,7 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             nx = acq.number_of_samples
             ny = metadata.encoding[0].encodedSpace.matrixSize.y
             nz = metadata.encoding[0].encodedSpace.matrixSize.z
+
             push_to_kspace.cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
             push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
             push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
@@ -493,9 +500,8 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
         ## now sort acq into k-space ##
         offset_enc1 = push_to_kspace.cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
         offset_enc2 = push_to_kspace.cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
-
-        enc1 = acq.idx.kspace_encode_step_1 + offset_enc1
-        enc2 = acq.idx.kspace_encode_step_2 + offset_enc2
+        enc1 += offset_enc1
+        enc2 += offset_enc2
 
         push_to_kspace.kspace[enc1, enc2] += acq.data
         push_to_kspace.counter[enc1, enc2] += 1
@@ -557,47 +563,54 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
         chunk_sz = 2 * (chunk_sz//2)  # round down to multiple of 2
         chunk_sz = int(max(1, chunk_sz))
 
-    # ESPIRiT calibration
-    if chunk_sz>0 and chunk_sz<nz:
-        # espirit_econ: reduce memory footprint by chunking
-        eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
-        logging.info(bart.stdout)
-        if bart.ERR > 0:
-            logging.debug(bart.stderr)
-            raise RuntimeError
+    if cal_mode.lower() == 'espirit':
+        # ESPIRiT calibration
+        if chunk_sz>0 and chunk_sz<nz:
+            # espirit_econ: reduce memory footprint by chunking
+            eon = bart(1, f'ecalib {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
+            logging.info(bart.stdout)
+            if bart.ERR > 0:
+                logging.debug(bart.stderr)
+                raise RuntimeError
 
-        # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
-        # scaling is very important for proper masking in ecaltwo!
-        tic = perf_counter()
-        eon = ifft(eon, axis=2, norm='forward')
-        tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
-        cutpos = eon.shape[2]//2
-        eon = np.concatenate((eon[:,:,:cutpos,:], tmp, eon[:,:,cutpos:,:]), axis=2)
-        eon = fft(eon, axis=2, norm='backward')
-        toc = perf_counter()
-        strProcessTime = "FFT interpolation processing time: %.2f s" % (toc-tic)
-        logging.info(strProcessTime)
+            # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
+            # scaling is very important for proper masking in ecaltwo!
+            tic = perf_counter()
+            eon = ifft(eon, axis=2, norm='forward')
+            tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
+            cutpos = eon.shape[2]//2
+            eon = np.concatenate((eon[:,:,:cutpos,:], tmp, eon[:,:,cutpos:,:]), axis=2)
+            eon = fft(eon, axis=2, norm='backward')
+            toc = perf_counter()
+            strProcessTime = "FFT interpolation processing time: %.2f s" % (toc-tic)
+            logging.info(strProcessTime)
 
-        tic = perf_counter()
+            tic = perf_counter()
 
-        logging.debug(f"loop: 'bart ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
-        # sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
+            logging.debug(f"loop: 'bart ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
+            # sensmaps = np.zeros(acs.shape + ((n_maps,) if n_maps>1 else ()), dtype=acs.dtype)
 
-        slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
-        chunks = (eon[:,:,sl] for sl in slcs)
+            slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
+            chunks = (eon[:,:,sl] for sl in slcs)
 
-        if threads is None or threads < 2:
-            sensmaps = [ecaltwo(nx, ny, sig) for sig in chunks]
+            if threads is None or threads < 2:
+                sensmaps = [ecaltwo(nx, ny, sig) for sig in chunks]
+            else:
+                with Pool(threads) as p:
+                    sensmaps = p.map(partial(ecaltwo, nx, ny), chunks)
+
+            sensmaps = np.concatenate(sensmaps, axis=0)
+            sensmaps = np.moveaxis(sensmaps, 0, 2)
+
+            logging.debug(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
         else:
-            with Pool(threads) as p:
-                sensmaps = p.map(partial(ecaltwo, nx, ny), chunks)
-
-        sensmaps = np.concatenate(sensmaps, axis=0)
-        sensmaps = np.moveaxis(sensmaps, 0, 2)
-
-        logging.debug(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
-    else:
-        sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
+            sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
+            logging.info(bart.stdout)
+            if bart.ERR > 0:
+                logging.debug(bart.stderr)
+                raise RuntimeError
+    else:  # simple 'caldir mode
+        sensmaps = bart(1, f'caldir 32', acs)
         logging.info(bart.stdout)
         if bart.ERR > 0:
             logging.debug(bart.stderr)

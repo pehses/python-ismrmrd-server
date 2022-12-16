@@ -170,7 +170,7 @@ def read_acqs(filename):
         acqs[n].data[:] = acq_data[n]['data'].view(np.complex64).reshape((acqs[n].active_channels, acqs[n].number_of_samples))[:]
     return acqs
 
-def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True):
+def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=True, traj_phys=False):
     """
         Inserts acquisitions from an ISMRMRD protocol file
         
@@ -181,6 +181,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
                       If readout gradients are provided, the GIRF is applied, but additional parameters have to be provided.
                       The unit for gradients is [T/m]
                       The unit for trajectories is [rad/m * FOV[m]/2pi], which is unitless (used by the BART toolbox & PowerGrid)
+        return basetrj: return trajectory calculated from nominal gradients (for FOV shift reapply)
+        traj_phys:    Calculate GIRF predicted and base trajectories in physical coordinate system in rad/m 
     """
   
     # #---------------------------
@@ -250,40 +252,21 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         if nsamples_full > nsamples_max:
             raise ValueError("The number of samples exceed the maximum allowed number of 65535 (uint16 maximum).")
        
-        # save data as it gets corrupted by the resizing, dims are [nc, samples]
-        data_tmp = dset_acq.data[:].copy()
-        traj_tmp = dset_acq.traj[:].copy()
+        # rotation matrix
+        rotmat = calc_rotmat(dset_acq)
 
-        # resize data
-        if dset_acq.trajectory_dimensions > 4:
-            # higher order: [kx/ky/kz, k0, 2nd order (5), 3rd order (7), concomitant fields (4)] - 2nd & 3rd order only if measured
-            n_trajdims = dset_acq.trajectory_dimensions
+        if dset_acq.traj.size > 0:
+            # trajectory already inserted from Skope system
+            base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False, traj_phys=traj_phys)[0] # for FOV shift reapply
+            if dset_acq.traj.shape[1] < 4:
+                dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj[:])) # add zeros, if k0 from Skope not inserted
         else:
-            n_trajdims = 4 # [kx/ky/kz, k0]
-        dset_acq.resize(trajectory_dimensions=n_trajdims, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
-
-        # trajectory already inserted from Skope system
-        # kz should be set to zero, if trajectory is 2D
-        if traj_tmp.size > 0:
-            dset_acq.traj[:] = traj_tmp[:]
-            rotmat = calc_rotmat(dset_acq)
-            base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False)[0] # for FOV shift reapply
-            if traj_tmp.shape[1] < 4:
-                dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj[:])) # k0 not inserted     
-
-        # trajectory from protocol file - check via shape
-        elif prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
-            dset_acq.traj[:,:3] = prot_acq.traj[:,:3]
-            dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj))
-            base_trj = dset_acq.traj[:].copy()
-
-        # gradients from protocol file - calculate trajectory with girf
-        else:
-            rotmat = calc_rotmat(dset_acq)
-            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf) # [samples, dims]
-
-        # fill extended part of data with zeros
-        dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1)
+            # gradients from protocol file - calculate trajectory with girf
+            data_tmp = dset_acq.data[:].copy() # save data as it gets corrupted by the resizing [nc, samples]
+            traj_tmp = dset_acq.traj[:].copy()
+            dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf, traj_phys=traj_phys) # [samples, dims]        
+            dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
 
         # remove first ADCs of spirals as they can be corrupted
         delay = metadata.userParameters.userParameterDouble[1].value
@@ -303,7 +286,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         return base_trj
  
 
-def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
+def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     """ Calculates the kspace trajectory from any gradient using Girf prediction and interpolates it on the adc raster
 
         acq: acquisition from hdf5 protocol file
@@ -371,13 +354,17 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True):
         k0 = None
 
     pred_trj = np.cumsum(pred_grad, axis=1) * dt_grad * gammabar # calculate trajectory [1/m]
-    pred_trj *= 1e-3 * fov[:,np.newaxis] # scale with FOV for BART & PowerGrid recon
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
-    base_trj *= 1e-3 * fov[:,np.newaxis]
+    if traj_phys:
+        pred_trj = 2*np.pi * gcs_to_dcs(pred_trj, rotmat) # [1/m] -> [rad/m]
+        base_trj = 2*np.pi * gcs_to_dcs(base_trj, rotmat)
+    else:
+        pred_trj *= 1e-3 * fov[:,np.newaxis] # scale with FOV for BART recon
+        base_trj *= 1e-3 * fov[:,np.newaxis]
 
     # set z-axis for 3D imaging if trajectory is two-dimensional 
     # this only works for Cartesian sampling in kz (works also with CAIPI)
-    if dims == 2:
+    if dims == 2 and not traj_phys:
         nz = hdr.encoding[0].encodedSpace.matrixSize.z
         partition = acq.idx.kspace_encode_step_2
         kz = partition - nz//2

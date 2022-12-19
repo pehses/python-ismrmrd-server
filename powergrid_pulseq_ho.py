@@ -47,7 +47,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
-read_ecalib = True
+read_ecalib = False
 save_cmplx = True # save images as complex data
 online_recon = False
 
@@ -60,7 +60,7 @@ def process(connection, config, metadata, prot_file):
     # -- Some manual parameters --- #
 
     # if >0 only the volumes up to the specified number will be reconstructed
-    process_raw.reco_n_contr = 1
+    process_raw.reco_n_contr = 0
     if len(metadata.userParameters.userParameterLong) > 0:
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
         # however, it will still indicate, whether the recon is executed online

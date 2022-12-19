@@ -295,9 +295,8 @@ def process(connection, config, metadata, prot_file):
                     k0 = last_item.traj[:,3]
                     last_item.data[:] *= np.exp(-1j*k0)
 
-                    # invert trajectory sign (seems to be necessary, field map and k0 also need sign change)
-                    # for some unknown reason, not inverting the concomitant field terms yields better results
-                    # for non-higher order recons, the sign is correct, as it fits to the coordinate system calculated in PowerGrid
+                    # invert trajectory sign (is necessary as field map and k0 also need sign change)
+                    # WIP: for some unknown reason, not inverting the concomitant field terms yields better results
                     if last_item.traj.shape[1] > 4:
                         last_item.traj[:,:-4] *= -1
                     else:

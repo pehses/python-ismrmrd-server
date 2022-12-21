@@ -63,13 +63,13 @@ n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True  # not sure whether FIRE supports it (or how)
 filter_type = None
 nii_filename = 'img.nii.gz'
-cal_mode = 'espirit'
-#cal_mode = 'caldir'
+# cal_mode = 'espirit'
+cal_mode = 'caldir'
 
 # override defaults:
 # reduce_fov_x = True
 # zf_to_orig_sz = False
-ncc = 32  # we have time...
+# ncc = 32  # we have time...
 sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
@@ -737,10 +737,17 @@ def process_image(data, rawHead, config, metadata):
         #test
         # process_image.imascale = int_max/np.max(data)
         # not sure whether we need to account for chunksz or sel_x (probably)
+        # failsafe scaling:
+        max_voxel = data.max()
+        if max_voxel * process_image.imascale > 0.8 * int_max:
+            new_scale = 0.8 * int_max / max_voxel
+            logging.debug(f'WARNING: image scaling modified to avoid clipping.\n\
+                old scale: {process_image.imascale}, new_scale: {new_scale}')
+            process_image.imascale = new_scale
 
     data *= process_image.imascale
 
-    export_nifti(data, metadata, os.path.join(debugFolder, nii_filename))
+    # export_nifti(data, metadata, os.path.join(debugFolder, nii_filename))
 
     # convert to int
     data = np.minimum(int_max, np.floor(data))

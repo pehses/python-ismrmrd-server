@@ -221,8 +221,8 @@ def fov_shift(sig, shift):
     fac_x = np.exp(-1j*shift[0]*2*np.pi*np.arange(sig.shape[0])/sig.shape[0])
     fac_y = np.exp(-1j*shift[1]*2*np.pi*np.arange(sig.shape[1])/sig.shape[1])
 
-    sig *= fac_x[:,np.newaxis,np.newaxis,np.newaxis]
-    sig *= fac_y[:,np.newaxis,np.newaxis]
+    sig = (sig.T * fac_x).T
+    sig = (sig.T * fac_y[:,np.newaxis]).T
     return sig
 
 def fov_shift_spiral(sig, trj, shift, matr_sz):

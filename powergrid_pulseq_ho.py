@@ -498,7 +498,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.002'
+    pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.0005'
     subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
     
     # Run in bash

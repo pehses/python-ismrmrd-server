@@ -290,7 +290,7 @@ def process(connection, config, metadata, prot_file):
                     if last_item.traj.shape[1] > 4:
                         last_item.traj[:,:-4] *= -1
                     else:
-                        last_item.traj *= -1 # no concomitant fields
+                        last_item.traj[:] *= -1 # no concomitant fields
 
                     # replace k0 with time vector
                     last_item.traj[:,3] = t_vec.copy()
@@ -456,19 +456,6 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
         os.makedirs(pg_dir)
     if os.path.exists(pg_dir+"/images_pg.npy"):
         os.remove(pg_dir+"/images_pg.npy")
-
-    """ PowerGrid reconstruction
-    # Comment from Alex Cerjanic, who developed PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
-    # He recommends using the Hanning interpolator with ~1 time segment per ms of readout (which is based on experience @3T)
-    # However, histo lead to quite nice results so far & does not need as many time segments
-    """
- 
-    temp_intp = 'hanning' # hanning / histo / minmax
-    if temp_intp == 'histo' or temp_intp == 'minmax': ts = int(ts/1.5 + 0.5)
-    if sms_factor > 1:
-        logging.debug(f'Readout is {1e3*readout_dur} ms. DFT reconstruction as this is a multiband acquisition.')
-    else:
-        logging.debug(f'Readout is {1e3*readout_dur} ms. Use {ts} time segments.')
 
     # MPI and hyperthreading
     mpi = True

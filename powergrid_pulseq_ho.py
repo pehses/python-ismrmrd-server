@@ -49,6 +49,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 read_ecalib = False
 save_cmplx = True # save images as complex data
+online_recon = False
 
 ########################
 # Main Function
@@ -60,6 +61,15 @@ def process(connection, config, metadata, prot_file):
 
     # if >0 only the volumes up to the specified number will be reconstructed
     process_raw.reco_n_contr = 0
+    if len(metadata.userParameters.userParameterLong) > 0:
+        # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
+        # however, it will still indicate, whether the recon is executed online
+        logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
+        process_raw.reco_n_contr = 1 # reconstruct only first contrast, if data is processed online
+        global save_cmplx
+        save_cmplx = False
+        global online_recon
+        online_recon = True
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -667,7 +677,9 @@ def process_acs(group, metadata, dmtx=None):
         sensmaps = np.zeros(1)
     else:
         logging.debug(f"Sensmap calibration for slice {slc_ix}.")
-        if gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
+        if online_recon:
+            sensmaps = bart(1, 'caldir 40', data_sens[...,0])
+        elif gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
@@ -696,6 +708,9 @@ def calc_fmap(imgs, echo_times, metadata):
     romeo_fmap = False # use the ROMEO toolbox for field map calculation
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
     filtering = False # apply Gaussian and median filtering (not recommended for mc_fmap)
+
+    if online_recon:
+        std_filter = False
 
     if len(echo_times) > 2:
         romeo_fmap = True # more than one echo time only possible with ROMEO

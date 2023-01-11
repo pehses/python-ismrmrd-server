@@ -14,8 +14,10 @@ from multiprocessing import Pool
 from functools import partial
 from time import perf_counter
 
-from bart import bart
-
+from bart import bart as oldbart
+# from _pybart import bart as newbart
+newbart = oldbart  # use oldbart for now
+bart = oldbart
 
 import multiprocessing
 import multiprocessing.pool
@@ -55,25 +57,24 @@ use_multiprocessing = False  # multiprocessing is always used; this only activat
 # sane defaults:
 use_gpu = True
 os_removal = True
-reduce_fov_x = False
-zf_to_orig_sz = True
 apply_prewhitening = True
 ncc = 16      # number of compressed coils
+cc_mode = 'gcc'
 n_maps = 1    # set to 2 in case of fold-over / too tight FoV
-save_unsigned = True  # not sure whether FIRE supports it (or how)
+save_unsigned = True
 filter_type = None
 nii_filename = 'img.nii.gz'
-# cal_mode = 'espirit'
-cal_mode = 'caldir'
+# cal_mode = 'caldir'
+cal_mode = 'espirit'
 
 # override defaults:
-# reduce_fov_x = True
-# zf_to_orig_sz = False
 # ncc = 32  # we have time...
-sel_x = None
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
 use_multiprocessing = True
+
+cc_mode = cc_mode.lower()
+cal_mode = cal_mode.lower()
 
 
 def export_nifti(data, metadata, filename):
@@ -94,7 +95,8 @@ def export_nifti(data, metadata, filename):
     nii.header['pixdim'][1] = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].reconSpace.matrixSize.x
     nii.header['pixdim'][2] = metadata.encoding[0].reconSpace.fieldOfView_mm.y / metadata.encoding[0].reconSpace.matrixSize.y
     nii.header['pixdim'][3] = metadata.encoding[0].reconSpace.fieldOfView_mm.z / metadata.encoding[0].reconSpace.matrixSize.z
-    
+    logging.debug(f'fov_x = {metadata.encoding[0].reconSpace.fieldOfView_mm.x}, fov_y = {metadata.encoding[0].reconSpace.fieldOfView_mm.y}, fov_z = {metadata.encoding[0].reconSpace.fieldOfView_mm.z}')
+    logging.debug(f'matrix_x = {metadata.encoding[0].reconSpace.matrixSize.x}, matrix_y = {metadata.encoding[0].reconSpace.matrixSize.y}, matrix_z = {metadata.encoding[0].reconSpace.matrixSize.z}')
     nib.save(nii, filename)
 
 
@@ -125,52 +127,47 @@ def getCoilInfo(coilname='nova_ptx'):
     return fft_scale, rawdata_corrfactors
 
 
-def apply_column_ops(item, optmat, nx=None):
+def apply_gcc(data, cc_matrix, ncc):
+    ndim = data.ndim
+    if ndim == 4:  # should already be in correct order
+        return bart(1, f'ccapply -G -p{ncc}', data, cc_matrix)
+    newdims = 4 - ndim
+    data = np.expand_dims(data, [-i for i in range(1, newdims+1)])
+    data = np.moveaxis(data, 0, -1)
+    data = newbart(1, f'ccapply -G -p{ncc}', data, cc_matrix)
+    data = np.moveaxis(data, -1, 0)
+    return data.reshape(data.shape[:-newdims])
+
+
+def apply_block_ops(item, optmat, cc_matrix, nx=None):
     # pre-whitening & os-removal & slicing & resizing
 
-    ncol = item.data.shape[-1]
-    if nx is None:
-        nx = ncol
-
-    # operations to perform:
-    resize = nx != ncol
-    whiten = optmat is not None
-
     data = item.data
+    ncol = data.shape[-1]
 
-    if resize or reduce_fov_x or os_removal:
-        if resize:
-            # first pad refscan to full col size (cutting not yet supported)
-            dsz = nx - ncol
-            data = np.pad(data, ((0, 0), (dsz//2, dsz//2)))
-            ncol = data.shape[-1]
-
-        # the next operations need to be performed in image space
-        data = cifft(data, -1)
-
-        if os_removal:
-            data = data[:, slice(ncol//4, (ncol*3)//4)]
-
-        if reduce_fov_x:
-            data = data[..., sel_x]
-
-        data = cfft(data, -1)
-
-    if whiten:
+    if optmat is not None:  # apply pre-whitening
         data = optmat @ data
     else:
         data *= 2e5  # scale it up
 
-    # store modified data
-    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-    item.data[:] = data
+    if os_removal:
+        data = cifft(data, -1)
+        data = data[:, slice(ncol//4, (ncol*3)//4)]
+        data = cfft(data, -1)
 
+    if nx != ncol: # resize necessary:
+        # pad refscan to full col size (cutting not yet supported)
+        if os_removal:
+            dsz = nx//2 - ncol//2
+        else:
+            dsz = nx - ncol
+        data = np.pad(data, ((0, 0), (dsz//2, dsz//2)))
 
-def apply_cc(item, cc_matrix):
-    if cc_matrix is None:
-        return
-
-    data = cc_matrix @ item.data
+    if cc_matrix is not None:
+        if cc_matrix.ndim == 2:  # scc
+            data = cc_matrix @ data
+        else:  # assume that gcc is used
+            data = apply_gcc(data, cc_matrix, ncc)
 
     # store modified data
     item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
@@ -199,20 +196,32 @@ def calibrate_scc(data):
     # output: [ncha, ncha]
     U, s, _ = np.linalg.svd(data, full_matrices=False)
     mtx = np.conj(U.T)
-    return mtx, s
+    return mtx
 
 
-def calibrate_cc(items):
+def calibrate_cc(items, cc_mode=cc_mode):
     if ncc == 0 or ncc >= items[0].data.shape[0]:
         return None  # nothing to do
 
     data = np.asarray([acq.data for acq in items])
     nc = data.shape[1]
-    cc_matrix, s = calibrate_scc(np.moveaxis(data, 1, 0).reshape([nc, -1]))
-    cc_matrix = cc_matrix[:ncc, :]
 
-    # apply coil compression
-    data = cc_matrix @ data
+    if cc_mode == 'scc':
+        # columns may have been resized, in this case cut out zeros for cal.:
+        mask = abs(data[0,0])>0
+        cc_matrix = calibrate_scc(np.moveaxis(data[:,:,mask], 1, 0).reshape([nc, -1]))
+        cc_matrix = cc_matrix[:ncc, :]
+        # apply coil compression
+        data = cc_matrix @ data
+    elif cc_mode == 'gcc':
+        tmp = np.moveaxis(np.expand_dims(data, -1), (1, 0), (-1, 1))
+        cc_matrix = oldbart(1, 'cc -M -G', tmp)
+        # apply coil compression
+        data = apply_gcc(np.moveaxis(data, 0, 2), cc_matrix, ncc)
+        data = np.moveaxis(data, 2, 0)
+    else:
+        raise ValueError
+    logging.debug(f'calibrate_cc: data.shape = {data.shape}')
 
     # write data back to acsGroup:
     for acq, dat in zip(items, data):
@@ -220,6 +229,20 @@ def calibrate_cc(items):
         acq.data[:] = dat
 
     return cc_matrix
+
+
+def apply_cc(item, cc_matrix, ncc=ncc):
+    if cc_matrix is None:
+        return
+
+    if cc_matrix.ndim == 2:  # scc
+        data = cc_matrix @ item.data
+    else:  # assume gcc (ndim==3)
+        data = apply_gcc(item.data, cc_matrix, ncc)
+    # store modified data
+    item.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+    item.data[:] = data
+    return item
 
 
 def apply_filter(item, kcenter_seg=73):
@@ -286,8 +309,8 @@ def process(connection, config, metadata):
     if nii_filename is not None and os.path.exists(os.path.join(debugFolder, nii_filename)):
         os.remove(os.path.join(debugFolder, nii_filename))
 
-    bart(0, 'version -V')
-    logging.info(f"bart version:\n{bart.stdout}")
+    # bart(0, 'version -V')
+    # logging.info(f"bart version:\n{bart.stdout}")
     # # Check for GPU availability
     # global use_gpu
     # if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all':
@@ -299,11 +322,6 @@ def process(connection, config, metadata):
     acqGroup = []
     noiseGroup = []
     waveformGroup = []
-
-    global sel_x
-    if reduce_fov_x and sel_x is None:
-        nx = metadata.encoding[0].encodedSpace.matrixSize.x//2
-        sel_x = slice((nx*3)//32, (nx*19)//32)  # half of matrix
 
     # hard-coded limit of 256 slices (better: use Nslice from protocol)
     max_no_of_slices = 256
@@ -353,7 +371,6 @@ def process(connection, config, metadata):
                     noiseGroup.append(item)
                     continue
                 elif apply_prewhitening and len(noiseGroup) > 0 and optmat is None:
-                    pass
                     noise_data = []
                     for acq in noiseGroup:
                         noise_data.append(acq.data)
@@ -363,14 +380,14 @@ def process(connection, config, metadata):
                     del noise_data
 
                 # resize & reslice colums; remove os; apply pre-whitening
-                apply_column_ops(item, optmat, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
+                apply_block_ops(item, optmat, None, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
 
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
-                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice])
+                    cc_matrix[item.idx.slice] = calibrate_cc(acsGroup[item.idx.slice], cc_mode=cc_mode)
 
                     # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
                     if use_multiprocessing:
@@ -378,8 +395,8 @@ def process(connection, config, metadata):
                     else:
                         sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
 
-                # apply coil-compression
-                apply_cc(item, cc_matrix[item.idx.slice])
+                if cc_mode == 'scc':
+                    apply_cc(item, cc_matrix[item.idx.slice], ncc)
 
                 apply_filter(item)
 
@@ -394,7 +411,7 @@ def process(connection, config, metadata):
                     # if use_multiprocessing:
                     #     pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
                     # else:
-                    process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
+                    process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice], cc_matrix[item.idx.slice])
                     acqGroup = []
 
                     # Measure processing time
@@ -454,7 +471,7 @@ def process(connection, config, metadata):
             # if use_multiprocessing:
             #     pool.apply_async(process_and_send, (connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice]))
             # else:
-            process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice])
+            process_and_send(connection, push_to_kspace.kspace, push_to_kspace.rawHead, config, metadata, sensmaps[item.idx.slice], cc_matrix[item.idx.slice])
             acqGroup = []
             del push_to_kspace.kspace
 
@@ -466,9 +483,9 @@ def process(connection, config, metadata):
 
 
 # wip: this may in the future help with multiprocessing
-def process_and_send(connection, kspace, rawHead, config, metadata, sensmap):
+def process_and_send(connection, kspace, rawHead, config, metadata, sensmap, cc_matrix):
     logging.info("Processing a group of k-space data")
-    images = process_raw(kspace, rawHead, connection, config, metadata, sensmap)
+    images = process_raw(kspace, rawHead, connection, config, metadata, sensmap, cc_matrix)
     logging.debug("Sending images to client:\n%s", images)
     connection.send_image(images)
 
@@ -563,7 +580,8 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
         chunk_sz = 2 * (chunk_sz//2)  # round down to multiple of 2
         chunk_sz = int(max(1, chunk_sz))
 
-    if cal_mode.lower() == 'espirit':
+    logging.debug(f'starting calibration using {cal_mode}')
+    if cal_mode == 'espirit':
         # ESPIRiT calibration
         if chunk_sz>0 and chunk_sz<nz:
             # espirit_econ: reduce memory footprint by chunking
@@ -610,11 +628,12 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
                 logging.debug(bart.stderr)
                 raise RuntimeError
     else:  # simple 'caldir mode
-        sensmaps = bart(1, f'caldir 32', acs)
+        sensmaps = bart(1, 'caldir 32', acs)
         logging.info(bart.stdout)
         if bart.ERR > 0:
             logging.debug(bart.stderr)
             raise RuntimeError
+    logging.debug('calibration done')
 
     # np.save(os.path.join(debugFolder, "acs.npy"), acs)
     # np.save(os.path.join(debugFolder, "sensmaps.npy"), sensmaps)
@@ -628,19 +647,23 @@ def pics_chunk(pics_str, chunk):
     cut = chunk[2]
 
     block = cfft(block, 0)
-    block = abs(bart(1, pics_str, block, sensmap))
-    logging.debug(bart.stdout)
-    if bart.ERR > 0:
-        logging.debug(bart.stderr)
-        raise RuntimeError
+    block = abs(newbart(1, pics_str, block, sensmap))
+    # logging.debug(bart.stdout)
+    # if bart.ERR > 0:
+    #     logging.debug(bart.stderr)
+    #     raise RuntimeError
     return block[cut]
 
 
 #def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=226, chunk_overlap=4, max_iter=30):
-def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
+def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, cc_matrix=None, chunk_sz=152, chunk_overlap=4, max_iter=30, threads=1):
 # def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chunk_sz=114, chunk_overlap=4, max_iter=30, threads=1):
 
     logging.info(f"Raw data is size {data.shape}")
+
+    if cc_mode == 'gcc' and cc_matrix is not None:
+        data = apply_gcc(data, cc_matrix, ncc)
+        logging.info(f"Compressed raw data is size {data.shape}")
 
     if threads is not None and threads > 1:
         chunk_sz = max(1, 128 // threads)
@@ -685,15 +708,6 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
 
     logging.info(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
 
-
-    # zero-fill up to full fov in case partial recon. in x
-    if reduce_fov_x and zf_to_orig_sz:
-        sz_x = metadata.encoding[0].reconSpace.matrixSize.x
-        if data.shape[0] < sz_x:
-            data_out = data_out = np.zeros((sz_x,) + data.shape[1:], dtype=np.float32)
-            data_out[sel_x] = data
-            data = data_out
-
     # Remove phase oversampling
     if data.shape[1] > metadata.encoding[0].reconSpace.matrixSize.y:
         offset = (data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)//2
@@ -727,6 +741,7 @@ def process_image(data, rawHead, config, metadata):
     # save one scaling in 'static' variable
     try:
         process_image.imascale
+        logging.debug(f'using previous scaling factor: {process_image.imascale}')
     except:
         empirical_factor = 5e-9
         resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
@@ -736,18 +751,23 @@ def process_image(data, rawHead, config, metadata):
 
         #test
         # process_image.imascale = int_max/np.max(data)
-        # not sure whether we need to account for chunksz or sel_x (probably)
+        # not sure whether we need to account for chunksz (probably)
         # failsafe scaling:
         max_voxel = data.max()
+        # TESTING: always use auto-scale for
         if max_voxel * process_image.imascale > 0.8 * int_max:
             new_scale = 0.8 * int_max / max_voxel
             logging.debug(f'WARNING: image scaling modified to avoid clipping.\n\
                 old scale: {process_image.imascale}, new_scale: {new_scale}')
             process_image.imascale = new_scale
+        else:
+            logging.debug(f'calculated scaling factor: {process_image.imascale}')
 
     data *= process_image.imascale
 
-    # export_nifti(data, metadata, os.path.join(debugFolder, nii_filename))
+    # np.save(os.path.join(debugFolder, "data.npy"), data)
+    export_nifti(data, metadata, os.path.join(debugFolder, nii_filename))
+    
 
     # convert to int
     data = np.minimum(int_max, np.floor(data))

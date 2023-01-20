@@ -5,6 +5,7 @@ import logging
 import importlib
 
 import powergrid_pulseq 
+import powergrid_pulseq_ho
 import powergrid_pulseq_dream
 from pulseq_helper import get_ismrmrd_arrays, check_signature
 
@@ -47,6 +48,10 @@ def process(connection, config, metadata):
         importlib.reload(powergrid_pulseq_dream)
         logging.info("Starting PowerGrid 3DREAM reconstruction.")
         powergrid_pulseq_dream.process(connection, config, metadata, prot_file)
+    elif len(metadata.userParameters.userParameterBase64) or len(prot_hdr.userParameters.userParameterBase64):
+        importlib.reload(powergrid_pulseq_ho)
+        logging.info("Starting PowerGrid spiral higher order reconstruction.")
+        powergrid_pulseq_ho.process(connection, config, metadata, prot_file)
     else:
         importlib.reload(powergrid_pulseq)
         logging.info("Starting PowerGrid spiral reconstruction.")

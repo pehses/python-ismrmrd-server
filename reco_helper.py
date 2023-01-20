@@ -221,8 +221,8 @@ def fov_shift(sig, shift):
     fac_x = np.exp(-1j*shift[0]*2*np.pi*np.arange(sig.shape[0])/sig.shape[0])
     fac_y = np.exp(-1j*shift[1]*2*np.pi*np.arange(sig.shape[1])/sig.shape[1])
 
-    sig *= fac_x[:,np.newaxis,np.newaxis,np.newaxis]
-    sig *= fac_y[:,np.newaxis,np.newaxis]
+    sig = (sig.T * fac_x).T
+    sig = (sig.T * fac_y[:,np.newaxis]).T
     return sig
 
 def fov_shift_spiral(sig, trj, shift, matr_sz):
@@ -252,7 +252,6 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
                of the scanner is lagging behind be one gradient raster time (10 us).
                For Pulseq sequences this is done in pulseq_helper.py
-               For the Connectome, the shift seemed to be +10us (see pulseq_helper.py)
 
     sig: signal data (dimensions as in ISMRMRD [coils, samples]) 
     pred_traj: predicted trajectory (dimensions as in ISMRMRD [samples, dims]) 

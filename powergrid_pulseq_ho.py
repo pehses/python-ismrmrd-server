@@ -296,12 +296,15 @@ def process(connection, config, metadata, prot_file):
                     last_item.data[:] *= np.exp(-1j*k0)
 
                     # invert trajectory sign (is necessary as field map and k0 also need sign change)
-                    # WIP: for some unknown reason, not inverting the sign for concomitant field terms yields better results in vivo
+                    # WIP: for some unknown reason, not inverting the sign for concomitant field terms (last_item.traj[:,:-4] *= -1) yields better results in vivo
                     # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
-                    if last_item.traj.shape[1] > 4:
-                        last_item.traj[:,:-4] *= -1
-                    else:
-                        last_item.traj[:] *= -1 # no concomitant fields
+                    last_item.traj[:] *= -1
+
+                    # below would be with not inverted sign for concomitant fields
+                    # if last_item.traj.shape[1] > 4:
+                    #     last_item.traj[:,:-4] *= -1
+                    # else:
+                    #     last_item.traj[:] *= -1 # no concomitant fields
 
                     # replace k0 with time vector
                     last_item.traj[:,3] = t_vec.copy()

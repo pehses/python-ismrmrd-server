@@ -19,6 +19,8 @@ from bart import bart as oldbart
 newbart = oldbart  # use oldbart for now
 bart = oldbart
 
+from reco_helper import interpolate
+
 import multiprocessing
 import multiprocessing.pool
 
@@ -58,17 +60,18 @@ use_multiprocessing = False  # multiprocessing is always used; this only activat
 use_gpu = True
 os_removal = True
 apply_prewhitening = True
-ncc = 16      # number of compressed coils
-cc_mode = 'gcc'
+ncc = 12      # number of compressed coils
+cc_mode = 'scc'
 n_maps = 1    # set to 2 in case of fold-over / too tight FoV
 save_unsigned = True
 filter_type = None
 nii_filename = 'img.nii.gz'
-# cal_mode = 'caldir'
-cal_mode = 'espirit'
+cal_mode = 'caldir'
+# cal_mode = 'espirit'
+# cal_mode = 'nlinv'  # wip
 
 # override defaults:
-# ncc = 32  # we have time...
+ncc = 32  # we have time...
 # filter_type = 'long_component'
 # filter_type = 'biexponential'
 use_multiprocessing = True
@@ -379,11 +382,13 @@ def process(connection, config, metadata):
                     optmat = calibrate_prewhitening(noise_data)
                     del noise_data
 
-                # resize & reslice colums; remove os; apply pre-whitening
-                apply_block_ops(item, optmat, None, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
-
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    nlinv_active = cc_mode == 'nlinv' and ncc > 0 or ncc < item.data.shape[0]
+                    if nlinv_active:
+                        apply_block_ops(item, optmat, None)
+                    else:
+                        apply_block_ops(item, optmat, None, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
                     acsGroup[item.idx.slice].append(item)
                     continue
                 elif sensmaps[item.idx.slice] is None:
@@ -395,6 +400,7 @@ def process(connection, config, metadata):
                     else:
                         sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], config, metadata)
 
+                apply_block_ops(item, optmat, None, nx=metadata.encoding[0].encodedSpace.matrixSize.x)
                 if cc_mode == 'scc':
                     apply_cc(item, cc_matrix[item.idx.slice], ncc)
 
@@ -503,11 +509,16 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             # initialize k-space
             nc = acq.active_channels
             nx = acq.number_of_samples
-            ny = metadata.encoding[0].encodedSpace.matrixSize.y
-            nz = metadata.encoding[0].encodedSpace.matrixSize.z
-
-            push_to_kspace.cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
-            push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
+            if metadata is None:
+                push_to_kspace.cenc1 = acq.idx.user[5]
+                push_to_kspace.cenc2 = acq.idx.user[6]
+                ny = 1 + max(enc1, push_to_kspace.cenc1)
+                nz = 1 + max(enc2, push_to_kspace.cenc2)
+            else:
+                ny = metadata.encoding[0].encodedSpace.matrixSize.y
+                nz = metadata.encoding[0].encodedSpace.matrixSize.z
+                push_to_kspace.cenc1 = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.center
+                push_to_kspace.cenc2 = metadata.encoding[0].encodingLimits.kspace_encoding_step_2.center
             push_to_kspace.kspace = np.zeros([ny, nz, nc, nx], dtype=acq.data.dtype)
             push_to_kspace.counter = np.zeros([ny, nz], dtype=np.uint16)
             push_to_kspace.rawHead = None
@@ -515,10 +526,19 @@ def push_to_kspace(acq=None, metadata=None, finalize=False):
             logging.debug('push_to_kspace: nx = %d; ny = %d; nz = %d; nc = %d'%(nx, ny, nz, nc))
 
         ## now sort acq into k-space ##
-        offset_enc1 = push_to_kspace.cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
-        offset_enc2 = push_to_kspace.cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
-        enc1 += offset_enc1
-        enc2 += offset_enc2
+        if metadata is None:
+            # we need to dynamically change array size
+            ny, nz = push_to_kspace.kspace.shape[:2]
+            if enc1>=ny or enc2>=nz:
+                pad_size = ((0, max(0, int(enc1+1-ny))), (0, max(0, int(enc2+1-nz))), (0,0), (0,0))
+                push_to_kspace.kspace = np.pad(push_to_kspace.kspace, pad_size)
+                push_to_kspace.counter = np.pad(push_to_kspace.counter, pad_size[:2])
+                logging.debug(f'push_to_kspace padding: new kspace size = {push_to_kspace.kspace.shape}')
+        else:
+            offset_enc1 = push_to_kspace.cenc1 - acq.idx.user[5]  # center line is encoded in user[5]
+            offset_enc2 = push_to_kspace.cenc2 - acq.idx.user[6]  # center partition is encoded in user[6]
+            enc1 += offset_enc1
+            enc2 += offset_enc2
 
         push_to_kspace.kspace[enc1, enc2] += acq.data
         push_to_kspace.counter[enc1, enc2] += 1
@@ -567,7 +587,10 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
 
     gpu_str = "-g" if use_gpu else ""
 
-    acs = sort_into_kspace(group, metadata)
+    if cal_mode == 'nlinv':
+        acs = sort_into_kspace(group, None)  # we do not want to pad to original image res.
+    else:
+        acs = sort_into_kspace(group, metadata)
     nx, ny, nz, nc = acs.shape
 
     if chunk_sz is None:
@@ -621,6 +644,18 @@ def process_acs(group, config, metadata, threads=8, chunk_sz=None):
             sensmaps = np.moveaxis(sensmaps, 0, 2)
 
             logging.debug(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
+        elif cal_mode == 'nlinv':
+            target_sz = list()
+            target_sz.append(metadata.encoding[0].encodedSpace.matrixSize.x)
+            if os_removal:
+                target_sz[0] //= 2
+            target_sz.append(metadata.encoding[0].encodedSpace.matrixSize.y)
+            target_sz.append(metadata.encoding[0].encodedSpace.matrixSize.z)
+            target_sz.append(acs.shape[-1])
+            # wip: add option to pad acs to minimum kspace size (e.g.(128,128,64) if possible)
+            _, sensmaps = bart(2, f'nlinv -S -i11 -g', acs)
+            # interpolate sensmaps
+            sensmaps = interpolate(sensmaps, target_sz)
         else:
             sensmaps = bart(1, f'ecalib {gpu_str} -m {n_maps}', acs)
             logging.info(bart.stdout)

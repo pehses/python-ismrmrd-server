@@ -111,9 +111,6 @@ def process(connection, config, metadata, prot_file):
     # Get additional arrays from protocol file for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
 
-    # number of ADC segments
-    nsegments = metadata.encoding[0].encodingLimits.segment.maximum + 1
-
     # parameters for B0 correction
     dwelltime = 1e-6*up_double["dwellTime_us"] # [s]
     t_min = up_double["t_min"] # [s]
@@ -206,7 +203,7 @@ def process(connection, config, metadata, prot_file):
                     noiseGroup.clear()
                                
                 # Skope sync scans
-                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
+                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
                     continue
 
                 # Process reference scans
@@ -219,37 +216,20 @@ def process(connection, config, metadata, prot_file):
                         acsGroup[item2.idx.slice].append(item2)
                     else:
                         acsGroup[item.idx.slice].append(item)
+                    if sensmaps[item.idx.slice] is None and item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and not process_acs.cc_cha < n_cha:
+                        process_refscan(acsGroup ,sensmaps, item.idx.slice, metadata, dmtx, half_refscan)
                     continue
 
                 # Coil Compression calibration
+                # run parallel imaging calibration after last calibration scan is acquired as we need to do coil compression first
                 if process_acs.cc_cha < n_cha and process_acs.cc_mat[item.idx.slice] is None:
                     cc_data = [acsGroup[item.idx.slice + n_slc//sms_factor*k] for k in range(sms_factor)]
                     cc_data = [item for sublist in cc_data for item in sublist] # flatten list
                     cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
                     for k in range(sms_factor):
-                        process_acs.cc_mat[item.idx.slice + n_slc//sms_factor*k] = cc_mat
-
-                for k in range(sms_factor):
-                    slc_ix = item.idx.slice + n_slc//sms_factor*k
-                    # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                    if sensmaps[slc_ix] is None:
-                        sensmaps[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx) # [nx,ny,nz,nc]
-                        acsGroup[slc_ix].clear()
-                        # copy data
-                        if half_refscan:
-                            if slc_ix%2==0:
-                                sensmaps[slc_ix+1] = sensmaps[slc_ix]
-                                process_acs.refimg[slc_ix+1] = process_acs.refimg[slc_ix]
-                                if process_acs.fmap is not None:
-                                    process_acs.fmap['fmap'][slc_ix+1] = process_acs.fmap['fmap'][slc_ix]
-                                    process_acs.fmap['mask'][slc_ix+1] = process_acs.fmap['mask'][slc_ix]
-                            if slc_ix%2==1:
-                                sensmaps[slc_ix-1] = sensmaps[slc_ix]
-                                process_acs.refimg[slc_ix-1] = process_acs.refimg[slc_ix]
-                                if process_acs.fmap is not None:
-                                    process_acs.fmap['fmap'][slc_ix-1] = process_acs.fmap['fmap'][slc_ix]
-                                    process_acs.fmap['mask'][slc_ix-1] = process_acs.fmap['mask'][slc_ix]
-                                
+                        slc_ix = item.idx.slice + n_slc//sms_factor*k
+                        process_acs.cc_mat[slc_ix] = cc_mat                        
+                        process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan)
 
                 # trigger recon early
                 if process_raw.reco_n_contr and item.idx.contrast > process_raw.reco_n_contr - 1:
@@ -257,69 +237,60 @@ def process(connection, config, metadata, prot_file):
                         process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord)
                     continue
 
-                # Process imaging scans - deal with ADC segments 
-                # (not needed in newer spiral sequence versions, but kept for compatibility also with other scanners)
-                if item.idx.segment == 0:
-                    nsamples = item.number_of_samples
-                    t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
-                    acqGroup[item.idx.slice][item.idx.contrast].append(item)
-                    img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item) # image coordinates in DCS
+                # Process Imaging Scans
+                # Calculate image coordinates in DCS
+                img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item) 
+
+                # Noise whitening
+                if dmtx is not None:
+                    item.data[:] = rh.apply_prewhitening(item.data[:], dmtx)
+
+                # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
+                if process_acs.cc_mat[item.idx.slice] is not None:
+                    rh.apply_cc(item, process_acs.cc_mat[item.idx.slice])
+
+                # Undo FOV Shift with base trajectory
+                shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
+                item.data[:] *= np.exp(1j*(shift*base_trj).sum(axis=-1)) # base_trj in [rad/m]
+
+                # filter signal to avoid Gibbs Ringing
+                traj = np.swapaxes(item.traj[:,:3],0,1) # traj to [dim, samples]
+                item.data[:] = rh.filt_ksp(item.data[:], traj, filt_fac=0.95)
+
+                # Correct the global phase
+                k0 = item.traj[:,3]
+                item.data[:] *= np.exp(-1j*k0)
+
+                # invert trajectory sign (is necessary as field map and k0 also need sign change)
+                # WIP: for some unknown reason, not inverting the sign for concomitant field terms (item.traj[:,:-4] *= -1) yields better results in vivo
+                # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
+                item.traj[:] *= -1
+
+                # below would be with not inverted sign for concomitant fields
+                # if item.traj.shape[1] > 4:
+                #     item.traj[:,:-4] *= -1
+                # else:
+                #     item.traj[:] *= -1 # no concomitant fields
+
+                # replace k0 with time vector
+                nsamples = item.number_of_samples
+                t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
+                item.traj[:,3] = t_vec.copy()
+
+                # T2* filter
+                if freq < 2e8:
+                    t2_star = 70e-3 # 3T
                 else:
-                    # append data to first segment of ADC group
-                    last_idx = acqGroup[item.idx.slice][item.idx.contrast][-1].number_of_samples - 1
-                    idx_lower = last_idx - (nsegments-item.idx.segment) * item.number_of_samples
-                    idx_upper = last_idx - (nsegments-item.idx.segment-1) * item.number_of_samples
-                    acqGroup[item.idx.slice][item.idx.contrast][-1].data[:,idx_lower:idx_upper] = item.data[:]
+                    t2_star = 40e-3 # 7T
+                item.data[:] *= 1/np.exp(-t_vec/t2_star)
 
-                if item.idx.segment == nsegments - 1:
+                # remove ADC oversampling
+                os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+                if os_factor == 2:
+                    rh.remove_os_spiral(item)
 
-                    last_item = acqGroup[item.idx.slice][item.idx.contrast][-1]
-
-                    # Noise whitening
-                    if dmtx is not None:
-                        last_item.data[:] = rh.apply_prewhitening(last_item.data[:], dmtx)
-
-                    # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
-                    if process_acs.cc_mat[last_item.idx.slice] is not None:
-                        rh.apply_cc(last_item, process_acs.cc_mat[last_item.idx.slice])
-
-                    # Undo FOV Shift with base trajectory
-                    shift = rh.pcs_to_dcs(np.asarray(last_item.position)) * 1e-3 # shift [m] in DCS
-                    last_item.data[:] *= np.exp(1j*(shift*base_trj).sum(axis=-1)) # base_trj in [rad/m]
-
-                    # filter signal to avoid Gibbs Ringing
-                    traj = np.swapaxes(last_item.traj[:,:3],0,1) # traj to [dim, samples]
-                    last_item.data[:] = rh.filt_ksp(last_item.data[:], traj, filt_fac=0.95)
-
-                    # Correct the global phase
-                    k0 = last_item.traj[:,3]
-                    last_item.data[:] *= np.exp(-1j*k0)
-
-                    # invert trajectory sign (is necessary as field map and k0 also need sign change)
-                    # WIP: for some unknown reason, not inverting the sign for concomitant field terms (last_item.traj[:,:-4] *= -1) yields better results in vivo
-                    # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
-                    last_item.traj[:] *= -1
-
-                    # below would be with not inverted sign for concomitant fields
-                    # if last_item.traj.shape[1] > 4:
-                    #     last_item.traj[:,:-4] *= -1
-                    # else:
-                    #     last_item.traj[:] *= -1 # no concomitant fields
-
-                    # replace k0 with time vector
-                    last_item.traj[:,3] = t_vec.copy()
-
-                    # T2* filter
-                    if freq < 2e8:
-                        t2_star = 70e-3 # 3T
-                    else:
-                        t2_star = 40e-3 # 7T
-                    last_item.data[:] *= 1/np.exp(-t_vec/t2_star)
-
-                    # remove ADC oversampling
-                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
-                    if os_factor == 2:
-                        rh.remove_os_spiral(last_item)
+                # append item
+                acqGroup[item.idx.slice][item.idx.contrast].append(item)
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
@@ -457,11 +428,6 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     bvals = np.asarray(bvals)
     dirs = np.asarray(dirs)
-
-    readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
-    ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
-    ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -653,8 +619,28 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     return images
 
+def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan):
+    """
+    Process reference scans
+    """
+
+    sensmaps[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx)
+    acsGroup[slc_ix].clear()
+    if half_refscan:
+        slc_ix_cp = slc_ix
+        if slc_ix%2==0:
+            slc_ix_cp = slc_ix + 1
+        if slc_ix%2==1:
+            slc_ix_cp = slc_ix - 1
+        sensmaps[slc_ix_cp] = sensmaps[slc_ix]
+        process_acs.refimg[slc_ix_cp] = process_acs.refimg[slc_ix]
+        if process_acs.fmap is not None:
+            process_acs.fmap['fmap'][slc_ix_cp] = process_acs.fmap['fmap'][slc_ix]
+            process_acs.fmap['mask'][slc_ix_cp] = process_acs.fmap['mask'][slc_ix]
+    
 def process_acs(group, metadata, dmtx=None):
-    """ Process reference scans for parallel imaging calibration
+    """ 
+    Do parallel imaging calibration and field map calculation
     """
 
     if len(group)==0:

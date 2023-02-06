@@ -58,7 +58,7 @@ def process(connection, config, metadata, prot_file):
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
         # however, it will still indicate, whether the recon is executed online
         logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
-        process_raw.reco_n_contr = 1 # reconstruct only first contrast, if data is processed online
+        process_raw.reco_n_contr = metadata.userParameters.userParameterLong # reconstruct n contrasts, if data is processed online
         global save_cmplx
         save_cmplx = False
         global online_recon
@@ -659,7 +659,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           str((uint_max+1)//2),
                         'WindowWidth':            str(uint_max+1),
-                        'Keep_image_geometry':    '1',
+                        'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
     # Set ISMRMRD Meta Attributes
@@ -667,7 +667,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           '0',
                         'WindowWidth':            '8192',
-                        'Keep_image_geometry':    '1',
+                        'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 

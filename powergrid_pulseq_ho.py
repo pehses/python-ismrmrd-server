@@ -548,7 +548,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           str((uint_max+1)//2),
                         'WindowWidth':            str(uint_max+1),
-                        'Keep_image_geometry':    '1',
+                        'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
     # Set ISMRMRD Meta Attributes
@@ -556,7 +556,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           '0',
                         'WindowWidth':            '8192',
-                        'Keep_image_geometry':    '1',
+                        'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 

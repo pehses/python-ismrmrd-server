@@ -457,7 +457,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           str((int_max+1)//2),
                         'WindowWidth':            str(int_max+1),
-                        'Keep_image_geometry':    '1',
+                        'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 
@@ -465,7 +465,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '512',
                          'WindowWidth':            '1024',
-                         'Keep_image_geometry':    '1'})
+                         'Keep_image_geometry':    1})
 
     series_ix = 0
     for data_ix,data in enumerate(dsets):

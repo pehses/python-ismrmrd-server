@@ -407,7 +407,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, prot_arrays=None, gpu
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
                          'WindowWidth':            '32768',
-                         'Keep_image_geometry':    '1'})
+                         'Keep_image_geometry':    1})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data

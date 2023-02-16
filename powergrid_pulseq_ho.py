@@ -38,6 +38,8 @@ import reco_helper as rh
     
     !!! This recon does not support multishot diffusion imaging !!!
 
+    The recon currently is meant for 2D spiral data (3D not tested), it supports 3D reference scans though.
+
 """
 
 # Folder for sharing data/debugging
@@ -526,6 +528,9 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     # Append reference image & field map
     np.save(debugFolder + "/refimg.npy", process_acs.refimg)
+    refimg = np.asarray(process_acs.refimg)
+    if refimg.shape[-1] > 1: # move z phase encode zo slice dimension for 3D refscan
+        refimg = np.transpose(refimg,[-1,0,1,2])
     dsets.append(np.asarray(process_acs.refimg))
     dsets.append(fmap["fmap"][:,np.newaxis] /2/np.pi) # add axis for [slc,z,y,x], save in [Hz]
 
@@ -542,7 +547,10 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
             dsets[k] = dsets[k].astype(np.uint16)
         else:
             dsets[k] = np.around(dsets[k])
-            dsets[k] = dsets[k].astype(np.int16)
+            dsets[k] = dsets[k].astype(np.int16) # field map
+        if online_recon: 
+            # FIRE will apply a wrong shift of one pixel on the images, this is corrected here
+            dsets[k] = np.roll(np.roll(dsets[k], shift=1, axis=-1), shift=1, axis=-2)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -715,7 +723,7 @@ def calc_fmap(imgs, echo_times, metadata):
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     n_slc = imgs.shape[0]
 
-    # from here on either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
+    # from [slices,nx,ny,nz,coils,echoes] to either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
     if nz == 1:
         imgs = imgs[:,:,:,0] # 2D field map acquisition
     elif nz > 1:

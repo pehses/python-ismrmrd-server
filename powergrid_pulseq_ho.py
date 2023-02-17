@@ -355,7 +355,10 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     if read_ecalib:
         sens = np.load(debugFolder + "/sensmaps.npy")
     else:
-        sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
+        if sensmaps[0].shape[-2] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+            sens = np.transpose(sensmaps[0][np.newaxis], [3,4,0,2,1]) # 3D refscan for 2D spirals: [nz,nc,slices=1,ny,nx]
+        else:
+            sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # 2D refscan: [slices,nc,nz=1,ny,nx]
         if sms_factor > 1:
             sens = reshape_sens_sms(sens, sms_factor)
     np.save(debugFolder + "/sensmaps.npy", sens)
@@ -365,7 +368,10 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     # process_acs.fmap = None # just for debugging
     if process_acs.fmap is not None:
         fmap = process_acs.fmap
-        refimgs = np.asarray(fmap['fmap'])
+        if fmap['fmap'][0].shape[2] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+            refimgs = np.swapaxes(fmap['fmap'][0][np.newaxis], 0, 3) # 3D refscan for 2D spirals: [nz,nx,ny,slices=1,coils,echoes]
+        else:
+            refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
         echo_times = fmap['TE']
         fmap['fmap'], fmap['mask'] = calc_fmap(refimgs, echo_times, metadata)
     else: # external field map
@@ -527,11 +533,11 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
             logging.debug("ADC map calculation failed.")
 
     # Append reference image & field map
-    np.save(debugFolder + "/refimg.npy", process_acs.refimg)
-    refimg = np.asarray(process_acs.refimg)
-    if refimg.shape[-1] > 1: # move z phase encode zo slice dimension for 3D refscan
-        refimg = np.transpose(refimg,[-1,0,1,2])
-    dsets.append(np.asarray(process_acs.refimg))
+    if process_acs.refimg[0].shape[0] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+        refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
+    else:
+        refimgs = np.asarray(process_acs.refimg)
+    dsets.append(refimgs)
     dsets.append(fmap["fmap"][:,np.newaxis] /2/np.pi) # add axis for [slc,z,y,x], save in [Hz]
 
     # Correct orientation, normalize and convert to int16 for online recon
@@ -564,7 +570,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     meta2 = ismrmrd.Meta({'DataRole':              'Quantitative',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'WindowCenter':           '0',
-                        'WindowWidth':            '8192',
+                        'WindowWidth':            '512',
                         'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
@@ -616,6 +622,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                     image.attribute_string = meta.serialize()
                 else:
                     image.attribute_string = meta2.serialize()
+                    image.image_type = ismrmrd.IMTYPE_REAL
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                        ctypes.c_float(slc_res))
@@ -663,6 +670,19 @@ def process_acs(group, metadata, dmtx=None):
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    if data.shape[2] > 1 and nz == 1:
+        # 3D refscan for 2D spiral data
+        nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
+        # shift by 1/2 voxel to match slice definition
+        data = np.swapaxes(np.swapaxes(data,2,-1)*np.exp(1j*np.pi*np.arange(data.shape[2])/data.shape[2]),2,-1)
+        if nz < data.shape[2]:
+            # remove slice oversampling
+            offset = (data.shape[2] - nz) // 2
+            data = cifftn(data, [0,1,2])
+            data = data[:,:,offset:-offset]
+            data = cfftn(data, [0,1,2])
+
+    # data for sensitivity calibration
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
 
     slc_ix = group[0].idx.slice

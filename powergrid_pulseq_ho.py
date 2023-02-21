@@ -699,7 +699,7 @@ def process_acs(group, metadata, dmtx=None):
             sensmaps = bart(1, 'caldir 40', data_sens[...,0])
         elif gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0])

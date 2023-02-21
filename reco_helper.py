@@ -331,6 +331,8 @@ def add_naxes(arr, n):
         arr = arr[...,np.newaxis]
     return arr
 
+# Image coordinates
+
 def calc_img_coord(metadata, acq):
     """
     Calculate voxel coordinates for a given slice for use in higher order reconstructions.
@@ -374,6 +376,43 @@ def calc_img_coord(metadata, acq):
 
     return grid_rot
 
+# WIP: Nifti affine from coordinates
+
+def calc_affine(res, coord, rotmat):
+    """
+    Calculate affine matrix from:
+    res: voxel size [mm]
+    coord: edge point at right, posterior, feet [mm] in patient (PCS) coordinate system
+    rotmat: rotation matrix
+    """
+    affine = np.eye(4)
+    
+    # voxel size [mm]
+    affine[0,0] = res[0]
+    affine[1,1] = res[1]
+    affine[2,2] = res[2]
+
+    # rotation - WIP: correct?
+    affine[:3,:3] *= rotmat
+
+    # reference point
+    refpt = pcs_to_ras(coord)
+    affine[:3,-1] = refpt
+
+    return affine
+
+def pcs_to_ras(coord):
+    """
+    Transform 3D coordinate from patient coordinate systen to RAS+/Nifti coordinate system
+    PCS: left+, anterior+, feet+
+    RAS: right+, anterior+, head+
+    """
+
+    coord[0] *= -1
+    coord[2] *= -1
+    return coord
+
+# DCF
 def calc_dcf(traj):
     """ Estimates the density compensation function for a given k-space trajectory
         taken from https://github.com/TardifLab/ESM_image_reconstruction/blob/main/general/cg_dcf_spiral.m
@@ -384,6 +423,7 @@ def calc_dcf(traj):
     dcf = np.append(dcf,dcf[-1]) * np.sqrt(traj[:,0]**2+traj[:,1]**2)
     return dcf
 
+# Unwrapping with ROME0
 def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
     """
         Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)

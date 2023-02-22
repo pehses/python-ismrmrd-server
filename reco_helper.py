@@ -378,34 +378,38 @@ def calc_img_coord(metadata, acq):
 
 # WIP: Nifti affine from coordinates
 
-def calc_affine(res, coord, rotmat):
+def calc_affine(res, rotmat, coord):
     """
     Calculate affine matrix from:
     res: voxel size [mm]
-    coord: edge point at right, posterior, feet [mm] in patient (PCS) coordinate system
     rotmat: rotation matrix
+    coord: reference point for nifti images at [right, posterior, feet] edge [mm] in device coordinate system (DCS)
     """
     affine = np.eye(4)
     
     # voxel size [mm]
-    affine[0,0] = res[0]
-    affine[1,1] = res[1]
+    affine[0,0] = -1*res[0]
+    affine[1,1] = -1*res[1]
     affine[2,2] = res[2]
 
-    # rotation - WIP: correct?
-    affine[:3,:3] *= rotmat
+    # rotation
+    affine[:3,:3] = np.matmul(rotmat, affine[:3,:3])
 
     # reference point
-    refpt = pcs_to_ras(coord)
-    affine[:3,-1] = refpt
+    affine[:3,-1] = coord
+
+    # to RAS+ system
+    affine = dcs_to_ras(affine)
 
     return affine
 
-def pcs_to_ras(coord):
+def dcs_to_ras(coord):
     """
-    Transform 3D coordinate from patient coordinate systen to RAS+/Nifti coordinate system
-    PCS: left+, anterior+, feet+
+    Transform 3D coordinate from device coordinate systen to RAS+/Nifti coordinate system
+    DCS: left+, anterior+, feet+
     RAS: right+, anterior+, head+
+
+    This is only valid for head first/supine (HFS) orientation
     """
 
     coord[0] *= -1

@@ -125,93 +125,121 @@ def calc_rotmat(acq):
         slice_dir = np.asarray(acq.slice_dir)
         return np.round(np.concatenate([phase_dir[:,np.newaxis], read_dir[:,np.newaxis], slice_dir[:,np.newaxis]], axis=1), 6)
 
-def pcs_to_dcs(grads, patient_position='HFS'):
+def pcs_to_dcs(coord, patient_position='HFS'):
     """ Convert from patient coordinate system (PCS, physical) 
         to device coordinate system (DCS, physical)
         this is valid for patient orientation head first/supine
     """
-    grads = grads.copy()
+    coord = coord.copy()
 
     # only valid for head first/supine - other orientations see IDEA UserGuide
     if patient_position.upper() == 'HFS':
-        grads[1] *= -1
-        grads[2] *= -1
+        coord[1] *= -1
+        coord[2] *= -1
     else:
         raise ValueError
 
-    return grads
+    return coord
 
-def dcs_to_pcs(grads, patient_position='HFS'):
+def dcs_to_pcs(coord, patient_position='HFS'):
     """ Convert from device coordinate system (DCS, physical) 
         to patient coordinate system (PCS, physical)
         this is valid for patient orientation head first/supine
     """
-    return pcs_to_dcs(grads, patient_position) # same sign switch
+    return pcs_to_dcs(coord, patient_position) # same sign switch
     
-def gcs_to_pcs(grads, rotmat):
+def gcs_to_pcs(coord, rotmat):
     """ Convert from gradient coordinate system (GCS, logical) 
         to patient coordinate system (DCS, physical)
     """
-    return np.matmul(rotmat, grads)
+    return np.matmul(rotmat, coord)
 
-def pcs_to_gcs(grads, rotmat):
+def pcs_to_gcs(coord, rotmat):
     """ Convert from patient coordinate system (PCS, physical) 
         to gradient coordinate system (GCS, logical) 
     """
-    return np.matmul(np.linalg.inv(rotmat), grads)
+    return np.matmul(np.linalg.inv(rotmat), coord)
 
-def gcs_to_dcs(grads, rotmat):
+def gcs_to_dcs(coord, rotmat):
     """ Convert from gradient coordinate system (GCS, logical) 
         to device coordinate system (DCS, physical)
         this is valid for patient orientation head first/supine
     Parameters
     ----------
-    grads : numpy array [3, samples]
+    coord : numpy array [3, samples]
             gradient to be converted
     rotmat: numpy array [3,3]
             rotation matrix from Siemens Raw Data header or ISMRMRD acquisition header
     Returns
     -------
-    grads_cv : numpy.ndarray
+    coord_cv : numpy.ndarray
                Converted gradient
     """
-    grads = grads.copy()
+    coord = coord.copy()
 
     # rotation from GCS (PHASE,READ,SLICE) to patient coordinate system (PCS)
-    grads = gcs_to_pcs(grads, rotmat)
+    coord = gcs_to_pcs(coord, rotmat)
     
     # PCS (SAG,COR,TRA) to DCS (X,Y,Z)
     # only valid for head first/supine - other orientations see IDEA UserGuide
-    grads = pcs_to_dcs(grads)
+    coord = pcs_to_dcs(coord)
     
-    return grads
+    return coord
 
 
-def dcs_to_gcs(grads, rotmat):
+def dcs_to_gcs(coord, rotmat):
     """ Convert from device coordinate system (DCS, logical) 
         to gradient coordinate system (GCS, physical)
         this is valid for patient orientation head first/supine
     Parameters
     ----------
-    grads : numpy array [3, samples]
+    coord : numpy array [3, samples]
             gradient to be converted
     rotmat: numpy array [3,3]
             rotation matrix from Siemens Raw Data header or ISMRMRD acquisition header
     Returns
     -------
-    grads_cv : numpy.ndarray
+    coord_cv : numpy.ndarray
                Converted gradient
     """
-    grads = grads.copy()
+    coord = coord.copy()
     
     # DCS (X,Y,Z) to PCS (SAG,COR,TRA)
     # only valid for head first/supine - other orientations see IDEA UserGuide
-    grads = dcs_to_pcs(grads)
+    coord = dcs_to_pcs(coord)
     
     # PCS (SAG,COR,TRA) to GCS (PHASE,READ,SLICE)
-    grads = pcs_to_gcs(grads, rotmat)
+    coord = pcs_to_gcs(coord, rotmat)
     
-    return grads
+    return coord
+
+def dcs_to_ras(coord, patient_position='HFS'):
+    """
+    Transform 3D coordinate from device coordinate systen to RAS+/Nifti coordinate system
+    DCS: left+, anterior+, feet+
+    RAS: right+, anterior+, head+
+
+    This is only valid for head first/supine (HFS) orientation
+    """
+
+    if patient_position.upper() == 'HFS':
+        coord[0] *= -1
+        coord[2] *= -1
+    else:
+        raise ValueError
+        
+    return coord
+
+def pcs_to_ras(coord, patient_position='HFS'):
+    """
+    Transform 3D coordinate from patient coordinate systen to RAS+/Nifti coordinate system
+    PCS: left+, posterior+, head+
+    RAS: right+, anterior+, head+
+
+    This is only valid for head first/supine (HFS) orientation
+    """
+    coord = pcs_to_dcs(coord, patient_position)
+    return  dcs_to_ras(coord, patient_position)
 
 ## FOV shifts
 
@@ -378,43 +406,33 @@ def calc_img_coord(metadata, acq):
 
 # WIP: Nifti affine from coordinates
 
-def calc_affine(res, rotmat, coord):
+def calc_affine(res, rotmat, refpt):
     """
     Calculate affine matrix from:
     res: voxel size [mm]
-    rotmat: rotation matrix
-    coord: reference point for nifti images at [right, posterior, feet] edge [mm] in device coordinate system (DCS)
+    rotmat: rotation matrix from logical (GCS) to patient coordinate system (PCS)
+    refpt: reference point for nifti images at [right, posterior, feet] edge in transversal orientation [mm] in device coordinate system (DCS)
+
+    refpt can be taken from image coordinates used for recon (see function "calc_img_coord")
+
+    IMPORTANT: EXPERIMENTAL! The affine was only tested to be correct for base orientation transversal! In other orientation it might need to be shifted/sign-switched
     """
     affine = np.eye(4)
     
     # voxel size [mm]
     affine[0,0] = -1*res[0]
-    affine[1,1] = -1*res[1]
-    affine[2,2] = res[2]
+    affine[1,1] = res[1]
+    affine[2,2] = -1*res[2]
 
     # rotation
-    affine[:3,:3] = np.matmul(rotmat, affine[:3,:3])
+    affine[:3,:3] = np.matmul(rotmat, affine[:3,:3]) # GCS to PCS
+    affine[:3,:3] = pcs_to_ras(affine[:3,:3]) # PCS to RAS+
 
     # reference point
-    affine[:3,-1] = coord
-
-    # to RAS+ system
-    affine = dcs_to_ras(affine)
+    refpt = dcs_to_ras(refpt) # DCS to RAS+
+    affine[:3,-1] = refpt
 
     return affine
-
-def dcs_to_ras(coord):
-    """
-    Transform 3D coordinate from device coordinate systen to RAS+/Nifti coordinate system
-    DCS: left+, anterior+, feet+
-    RAS: right+, anterior+, head+
-
-    This is only valid for head first/supine (HFS) orientation
-    """
-
-    coord[0] *= -1
-    coord[2] *= -1
-    return coord
 
 # DCF
 def calc_dcf(traj):

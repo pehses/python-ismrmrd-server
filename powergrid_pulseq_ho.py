@@ -575,13 +575,13 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 
-    # Calculate affine matrix
+    # Calculate affine matrix - experimental, only works for transversal base orientations
     res_x = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
     res_y = metadata.encoding[0].encodedSpace.fieldOfView_mm.y / metadata.encoding[0].encodedSpace.matrixSize.y
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     res = [res_x, res_y, slc_res]
     rotmat = rh.calc_rotmat(acqGroup[0][0][0])
-    edge_coord = 1e3 * np.array([img_coord[0,-1,-1,0,-1], img_coord[1,-1,-1,0,-1], img_coord[2,-1,-1,0,-1]]) # [slc=-1,nz=-1,nx=0,ny=-1] for edge at right/posterior/feet
+    edge_coord = 1e3 * np.array([img_coord[0,-1,-1,0,-1], img_coord[1,-1,-1,0,-1], img_coord[2,-1,-1,0,-1]]) # [slc=-1,nz=-1,nx=0,ny=-1] for edge at right/posterior/feet in transversal orientation
     affine = rh.calc_affine(res, rotmat, edge_coord)
     np.save(debugFolder+"/affine.npy", affine)
 

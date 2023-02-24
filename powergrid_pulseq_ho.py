@@ -679,17 +679,13 @@ def process_acs(group, metadata, dmtx=None):
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    ref_3d = False
     if data.shape[2] > 1 and nz == 1:
         # 3D refscan for 2D spiral data
-        nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
+        nz = data.shape[2]
         # shift by 1/2 voxel to match slice definition
         data = np.swapaxes(np.swapaxes(data,2,-1)*np.exp(1j*np.pi*np.arange(data.shape[2])/data.shape[2]),2,-1)
-        if nz < data.shape[2]:
-            # remove slice oversampling
-            offset = (data.shape[2] - nz) // 2
-            data = cifftn(data, [0,1,2])
-            data = data[:,:,offset:-offset]
-            data = cfftn(data, [0,1,2])
+        ref_3d = True
 
     # data for sensitivity calibration
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
@@ -708,15 +704,28 @@ def process_acs(group, metadata, dmtx=None):
             sensmaps = bart(1, 'caldir 40', data_sens[...,0])
         elif gpu and data_sens.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
         else:
             logging.debug("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I -c 0.92 -t 0.003', data_sens[...,0])
 
+    # calculate reference image
+    refimg = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1) # save at spiral matrix size
+    fmap_ref = cifftn(data, [0,1,2]) # save at refscan matrix size (will get interpolated in fmap calculation)
+
+    if ref_3d:
+        # 3D refscan for 2D spiral data
+        # remove slice oversampling - this currently only works if the slice resolution is the same as in the spiral scan
+        nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
+        offset = (sensmaps.shape[2] - nz) // 2
+        sensmaps = sensmaps[:,:,offset:-offset]
+        refimg = refimg[:,:,offset:-offset]
+        fmap_ref = fmap_ref[:,:,offset:-offset]
+
     # Save reference data for masking and field mapping
-    process_acs.refimg[slc_ix] = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1).T # save at spiral matrix size
+    process_acs.refimg[slc_ix] = refimg.T
     if data.shape[-1] > 1 and process_acs.fmap is not None:
-        process_acs.fmap['fmap'][slc_ix] = cifftn(data, [0,1,2]) # save at refscan matrix size (will get interpolated in fmap calculation)
+        process_acs.fmap['fmap'][slc_ix] = fmap_ref 
 
     np.save(debugFolder + "/" + "acs.npy", data)
 

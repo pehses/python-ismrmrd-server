@@ -162,7 +162,7 @@ def process(connection, config, metadata, prot_file):
     img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     base_trj = None
-    process_acs.cc_mat = [None] * n_slc # compression matrix
+    process_acs.cc_mat = None # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
 
     # field map, if it was acquired - needs at least 2 reference contrasts
@@ -225,14 +225,14 @@ def process(connection, config, metadata, prot_file):
 
                 # Coil Compression calibration
                 # run parallel imaging calibration after last calibration scan is acquired as we need to do coil compression first
-                if process_acs.cc_cha < n_cha and process_acs.cc_mat[item.idx.slice] is None:
-                    cc_data = [acsGroup[item.idx.slice + n_slc//sms_factor*k] for k in range(sms_factor)]
-                    cc_data = [item for sublist in cc_data for item in sublist] # flatten list
-                    cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
-                    for k in range(sms_factor):
-                        slc_ix = item.idx.slice + n_slc//sms_factor*k
-                        process_acs.cc_mat[slc_ix] = cc_mat                        
-                        process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan)
+                if process_acs.cc_cha < n_cha:
+                    if process_acs.cc_mat is None:
+                        cc_data = [item for sublist in acsGroup for item in sublist] # flatten list
+                        process_acs.cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
+                    if sensmaps[item.idx.slice] is None:
+                        for k in range(sms_factor):
+                            slc_ix = item.idx.slice + n_slc//sms_factor*k
+                            process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan)
 
                 # trigger recon early
                 if process_raw.reco_n_contr and item.idx.contrast > process_raw.reco_n_contr - 1:
@@ -249,8 +249,8 @@ def process(connection, config, metadata, prot_file):
                     item.data[:] = rh.apply_prewhitening(item.data[:], dmtx)
 
                 # Apply coil compression to spiral data (CC for ACS data in sort_into_kspace)
-                if process_acs.cc_mat[item.idx.slice] is not None:
-                    rh.apply_cc(item, process_acs.cc_mat[item.idx.slice])
+                if process_acs.cc_mat is not None:
+                    rh.apply_cc(item, process_acs.cc_mat)
 
                 # Undo FOV Shift with base trajectory
                 shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
@@ -644,7 +644,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     return images
 
-def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan):
+def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=False):
     """
     Process reference scans
     """
@@ -669,7 +669,7 @@ def process_acs(group, metadata, dmtx=None):
     """
 
     if len(group)==0:
-        raise ValueError("Process ACS was triggered for empty acquisition group.")
+        return None
 
     data = sort_into_kspace(group, metadata, dmtx)
     data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
@@ -975,8 +975,8 @@ def sort_into_kspace(group, metadata, dmtx=None):
             acq.data[:] = rh.apply_prewhitening(acq.data, dmtx)
         
         # Apply coil compression
-        if process_acs.cc_mat[acq.idx.slice] is not None:
-            rh.apply_cc(acq, process_acs.cc_mat[acq.idx.slice])
+        if process_acs.cc_mat is not None:
+            rh.apply_cc(acq, process_acs.cc_mat)
 
         kspace[enc1, enc2, :, col, contr] += acq.data   
         

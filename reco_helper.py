@@ -59,7 +59,11 @@ def calibrate_cc(items, ncc, apply_cc=True):
 
     data = np.asarray([acq.data for acq in items])
     nc = data.shape[1]
-    cc_matrix, s = calibrate_scc(np.moveaxis(data, 1, 0).reshape([nc, -1]))
+    cc_data = np.moveaxis(data, 1, 0).reshape([nc, -1])
+    subsamples = min(32768, cc_data.shape[1])
+    choice = np.random.choice(cc_data.shape[1], subsamples)
+    cc_data = cc_data[:,choice]
+    cc_matrix, s = calibrate_scc(cc_data)
     cc_matrix = cc_matrix[:ncc, :]
 
     # apply coil compression

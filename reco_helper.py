@@ -509,12 +509,12 @@ def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
 
 ## Ecalib (3D is done in chunks)
 
-def ecaltwo(gpu_str, n_maps, nx, ny, sig, cutoff=1):
+def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     from bart import bart
-    maps = bart(1, f'ecaltwo {gpu_str} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
+    maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, cutoff=1, threshold=0, threads=8, chunk_sz=None, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, chunk_sz=None, use_gpu=False):
 
     from multiprocessing import Pool
     from functools import partial
@@ -535,13 +535,13 @@ def ecalib(acs, n_maps=1, cutoff=1, threshold=0, threads=8, chunk_sz=None, use_g
 
     if chunk_sz <= 0 or chunk_sz >= nz:
         # espirit in one run:
-        sensmaps = bart(1, f'ecalib -k 6 -I {gpu_str} -m{n_maps} -c{cutoff} -t {threshold}', acs)
+        sensmaps = bart(1, f'ecalib -k 6 -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}', acs)
     else:
         # espirit_econ: reduce memory footprint by chunking
-        tic = time.perf_counter()
-        eon = bart(1, f'ecalib -k 6 -I {gpu_str} -m {n_maps} -1', acs)  # currently, gpu doesn't help here but try anyway
+        eon = bart(1, f'ecalib -k 6 -I {gpu_str} -m {n_maps} -t {threshold} -1', acs)  # currently, gpu doesn't help here but try anyway
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
+        tic = time.perf_counter()
         eon = np.fft.ifft(eon, axis=2, norm='forward')
         tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
         cutpos = eon.shape[2]//2
@@ -550,16 +550,16 @@ def ecalib(acs, n_maps=1, cutoff=1, threshold=0, threads=8, chunk_sz=None, use_g
         logging.info("FFT interpolation processing time: %.2f s" % (time.perf_counter()-tic))
 
         tic = time.perf_counter()
-        logging.info(f"loop: 'bart ecaltwo {gpu_str} -c {cutoff} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
+        logging.info(f"loop: 'bart ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
 
         slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
         chunks = (eon[:, :, sl] for sl in slcs)
 
         if threads is None or threads < 2:
-            sensmaps = [ecaltwo(gpu_str, n_maps, nx, ny, sig, cutoff=cutoff) for sig in chunks]
+            sensmaps = [ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=crop) for sig in chunks]
         else:
             with Pool(threads) as p:
-                sensmaps = p.map(partial(ecaltwo, gpu_str, n_maps, nx, ny), chunks)
+                sensmaps = p.map(partial(ecaltwo, gpu_str, n_maps, nx, ny, crop=crop), chunks)
 
         sensmaps = np.concatenate(sensmaps, axis=0)
         sensmaps = np.moveaxis(sensmaps, 0, 2)

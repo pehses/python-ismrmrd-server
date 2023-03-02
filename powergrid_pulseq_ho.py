@@ -706,7 +706,7 @@ def process_acs(group, metadata, dmtx=None):
         if online_recon:
             sensmaps = bart(1, 'caldir 40', data_sens[...,0])
         else:
-            sensmaps = rh.ecalib(data_sens[...,0], chunk_sz=chunk_sz, n_maps=1, cutoff=0.92, threshold=0.003, use_gpu=gpu)
+            sensmaps = rh.ecalib(data_sens[...,0], chunk_sz=chunk_sz, n_maps=1, crop=0.92, threshold=0.003, use_gpu=gpu)
 
     # calculate reference image
     refimg = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1) # save at spiral matrix size
@@ -738,7 +738,7 @@ def calc_fmap(imgs, echo_times, metadata):
     """
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
-    std_filter = True # apply standard deviation filter (only if mc_fmap selected) - recommended
+    std_filter = True # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.1 # factor for standard deviation denoising (see below)
     romeo_fmap = False # use the ROMEO toolbox for field map calculation
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)

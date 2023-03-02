@@ -269,11 +269,9 @@ def process(connection, config, metadata, prot_file):
                 # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
                 item.traj[:] *= -1
 
-                # below would be with not inverted sign for concomitant fields
-                # if item.traj.shape[1] > 4:
-                #     item.traj[:,:-4] *= -1
-                # else:
-                #     item.traj[:] *= -1 # no concomitant fields
+                # below is undoing the inverted sign for concomitant fields (works better in vivo)
+                if item.traj.shape[1] > 4:
+                    item.traj[:,-4:] *= -1
 
                 # replace k0 with time vector
                 nsamples = item.number_of_samples

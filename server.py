@@ -145,6 +145,8 @@ class Server:
                     logging.info("Starting config %s", config)
                     module.process(connection, config, metadata)
                 except ImportError:
+                    import invertcontrast
+                    importlib.reload(invertcontrast)
                     logging.info("Unknown config '%s'.  Falling back to 'invertcontrast'", config)
                     invertcontrast.process(connection, config, metadata)
 

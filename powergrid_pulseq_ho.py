@@ -611,6 +611,9 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                                     image.user_int[0] = bvals[contr]
                                 if 'Directions' in prot_arrays:
                                     image.user_float[:3] = dirs[contr]
+                                if img_ix < 5:
+                                    image.user_int[2] = 1 # indicate affine is set
+                                    image.user_float[3:7] = affine[img_ix-1]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 

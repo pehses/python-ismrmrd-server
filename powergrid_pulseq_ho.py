@@ -736,6 +736,8 @@ def calc_fmap(imgs, echo_times, metadata):
 
         imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
         echo_times: list of echo times [s]
+
+        always returns field map in dimensions [slices/nz, nx, ny]
     """
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
@@ -1015,12 +1017,13 @@ def load_external_fmap(path, shape):
         fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
         logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
     else:
-        fmap = np.load(path, allow_pickle=True)
+        fmap = dict(np.load(path, allow_pickle=True))
         if 'name' not in fmap:
             fmap['name'] = 'No name.'
     if shape != list(fmap['fmap'].shape):
-        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Dont use field map in recon.")
-        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Try interpolating the field map.")
+        fmap['fmap'] = resize(fmap['fmap'], shape, anti_aliasing=True)
+        logging.debug(f"Field Map shape after interpolation: {list(fmap['fmap'].shape)}.")
     if 'params' in fmap:
         logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
 

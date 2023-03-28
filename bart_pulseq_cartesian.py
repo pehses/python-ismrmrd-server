@@ -380,7 +380,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
         images.append(image)
 
     else:
-        for ix, _ in enumerate(fmap): # send as 2D volume
+        for ix in range(fmap.shape[-1]): # send as 2D volume
             offset = [0, 0, -1*slc_res*(ix-(n_slc-1)/2)] # slice offset in GCS
             pos_offset = rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
 

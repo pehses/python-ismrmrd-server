@@ -691,6 +691,7 @@ def process_acs(group, metadata, dmtx=None):
 
     # data for sensitivity calibration
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
+    data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimenstion
 
     slc_ix = group[0].idx.slice
 

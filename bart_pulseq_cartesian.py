@@ -82,13 +82,11 @@ def process_cartesian(connection, config, metadata, prot_file):
     sensmaps = [None] * 256
     dmtx = None
 
-    # different contrasts need different scaling
-    process_raw.imascale = [None] * 256
-
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
     acqs = read_acqs(prot_file)
 
+    image_list = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     try:
         for item in connection:
             # ----------------------------------------------------------
@@ -131,18 +129,20 @@ def process_cartesian(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    image, img_uncmb = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
-                    logging.debug("Sending image to client:\n%s", image)
-                    connection.send_image(image)
+                    img, img_uncmb = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    image_list[item.idx.contrast][item.idx.slice] = img
                     if fmap_scan and img_uncmb is not None:
                         phs_imgs[item.idx.contrast][item.idx.slice] = img_uncmb # save data for field map calculation
                     else:
                         fmap_scan = False
                 
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) and fmap_scan:
-                    phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]
-                    image = calc_fieldmap(phs_imgs, ismrmrd_arr['echo_times'], metadata, acqGroup[0][0])
-                    connection.send_image(image)
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
+                    images = send_images(image_list, metadata, acqGroup[0][0])
+                    connection.send_image(images)
+                    if fmap_scan:
+                        phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]
+                        images = calc_fieldmap(phs_imgs, ismrmrd_arr['echo_times'], metadata, acqGroup[0][0])
+                        connection.send_image(images)
 
         # Process any remaining groups of raw or image data.  This can 
         # happen if the trigger condition for these groups are not met.
@@ -271,17 +271,20 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     logging.debug("Image data is size %s" % (data.shape,))
 
+    return data, data_uncmb
+
+def send_images(imgs, metadata, group):
+
     # Normalize and convert to int16
     # save one scaling in 'static' variable
+    scale = np.max(imgs)
+    for k,contr in enumerate(imgs):
+        for j,slc in enumerate(contr):
+            imgs[k][j] *= 32767 / scale
+            imgs[k][j] = np.around(imgs[k][j])
+            imgs[k][j] = imgs[k][j].astype(np.int16)
 
-    contr = group[0].idx.contrast
-    if process_raw.imascale[contr] is None:
-        process_raw.imascale[contr] = 0.8 / data.max()
-    data *= 32767 * process_raw.imascale[contr]
-    data = np.around(data)
-    data = data.astype(np.int16)
-
-    np.save(debugFolder + "/" + "img.npy", data)
+    np.save(debugFolder + "/" + "img.npy", imgs)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -292,43 +295,42 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_par = data.shape[-1]
+    n_par = imgs[0][0].shape[-1]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(group[0])
     offset = [0, 0, -1*slc_res*(group[0].idx.slice-(n_slc-1)/2)] # slice offset in GCS
-    pos_offset = rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
     
     images = []
-    if n_par > 1:
-        image = ismrmrd.Image.from_array(data, acquisition=group[0])
-        image.image_index = 1 # contains image index
-        image.image_series_index = 1
-        image.slice = 1
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
+    for k,contr in enumerate(imgs):
+        for j,data in enumerate(contr):
+            if n_par > 1:
+                image = ismrmrd.Image.from_array(data, acquisition=group[0])
+                image.image_index = j
+                image.image_series_index = k
+                image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
 
-    else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = (n_contr*n_slc) - (group[0].idx.contrast * n_slc + group[0].idx.slice) # contains image index (slices/partitions)
-        image.image_series_index = 1
-        image.slice = group[0].idx.slice
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        image.position[:] += pos_offset
-        images.append(image)
+            else:
+                offset = [0, 0, -1*slc_res*(j-(n_slc-1)/2)] # slice offset in GCS
+                pos_offset = rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
+                image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+                image.image_index = j # slice
+                image.image_series_index = k # contrast
+                image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                image.position[:] += pos_offset
+                images.append(image)
 
     logging.debug("Image MetaAttributes: %s", xml)
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
-    return images, data_uncmb
-
+    return images
 
 def calc_fieldmap(imgs, echo_times, metadata, group):
     """ Calculate field maps from reference images with two different contrasts
@@ -336,7 +338,6 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
         imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
         echo_times: list of echo times [s]
 
-        always saves field map in dimensions [slices/nz, nx, ny]
     """
     
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -349,7 +350,10 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])
-    fmap = np.flip(fmap, (0,1,2))
+    if nz > 1:
+        fmap = np.flip(fmap, (0,1,2))
+    else:
+        fmap = np.flip(fmap, (0,1)) # do not flip slice dimension in 2D case
 
     # Convert to int16
     fmap = np.around(fmap)

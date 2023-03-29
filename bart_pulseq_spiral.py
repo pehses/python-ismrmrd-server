@@ -11,7 +11,7 @@ from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os, remove_os_spiral
-from reco_helper import fov_shift_spiral_reapply #, fov_shift_spiral, fov_shift 
+from reco_helper import fov_shift_spiral_reapply
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox
@@ -256,7 +256,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     rNy = metadata.encoding[0].reconSpace.matrixSize.y
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, metadata, dmtx)
+    data, trj = sort_spiral_data(group, dmtx)
     
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     slc = group[0].idx.slice
@@ -337,16 +337,15 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
     # Format as ISMRMRD image data
     if n_par > 1:
-        for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par
-            image.image_series_index = 1 + group[0].idx.repetition
-            image.slice = group[0].idx.slice
-            image.attribute_string = xml
-            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-            images.append(image)
+        image = ismrmrd.Image.from_array(data, acquisition=group[0])
+        image.image_index =group[0].idx.contrast
+        image.image_series_index = 1 + group[0].idx.repetition
+        image.slice = group[0].idx.slice
+        image.attribute_string = xml
+        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
@@ -363,15 +362,6 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
-
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # rotmat = calc_rotmat(group[0])
-        # if not rotmat.any(): rotmat = -1*np.eye(3) # compatibility if refscan rotmat is not in protocol, this is the standard Pulseq rotation matrix
-        # res = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-        # shift = pcs_to_gcs(np.asarray(group[0].position), rotmat) / res
-        # data = fov_shift(data, shift)
 
         n_cha = metadata.acquisitionSystemInformation.receiverChannels
         slc = group[0].idx.slice
@@ -401,13 +391,8 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
 # Sort Data
 #########################
 
-def sort_spiral_data(group, metadata, dmtx=None):
+def sort_spiral_data(group, dmtx=None):
     
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    res = metadata.encoding[0].reconSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
-    rot_mat = calc_rotmat(group[0])
-
     sig = list()
     trj = list()
     enc = list()
@@ -415,7 +400,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
-        kz = enc2 - nz//2
         enc.append([enc1, enc2])
         
         # append data after optional prewhitening
@@ -427,12 +411,6 @@ def sort_spiral_data(group, metadata, dmtx=None):
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj)
-
-        #--- FOV shift is done in the Pulseq sequence by tuning the ADC frequency   ---#
-        #--- However leave this code to fall back to reco shifts, if problems occur ---#
-        #--- and for reconstruction of old data                                     ---#
-        # shift = pcs_to_gcs(np.asarray(acq.position), rot_mat) / res
-        # sig[-1] = fov_shift_spiral(sig[-1], traj, shift, nx)
 
     np.save(debugFolder + "/" + "enc.npy", enc)
     

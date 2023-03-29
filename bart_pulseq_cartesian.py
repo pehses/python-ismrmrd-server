@@ -284,7 +284,11 @@ def send_images(imgs, metadata, group):
             imgs[k][j] = np.around(imgs[k][j])
             imgs[k][j] = imgs[k][j].astype(np.int16)
 
-    np.save(debugFolder + "/" + "img.npy", imgs)
+    # flip slice dimension if necessary
+    imgs = np.asarray(imgs)
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    if n_slc > 1:
+        imgs = np.flip(imgs,1)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -295,11 +299,9 @@ def send_images(imgs, metadata, group):
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_par = imgs[0][0].shape[-1]
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
     rotmat = rh.calc_rotmat(group[0])
-    offset = [0, 0, -1*slc_res*(group[0].idx.slice-(n_slc-1)/2)] # slice offset in GCS
     
     images = []
     for k,contr in enumerate(imgs):
@@ -350,10 +352,10 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])
-    if nz > 1:
-        fmap = np.flip(fmap, (0,1,2))
-    else:
-        fmap = np.flip(fmap, (0,1)) # do not flip slice dimension in 2D case
+    fmap = np.flip(fmap, (0,1,2))
+
+    # send in Hz
+    fmap /= (2*np.pi)
 
     # Convert to int16
     fmap = np.around(fmap)

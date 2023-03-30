@@ -100,9 +100,8 @@ def process_spiral(connection, config, metadata, prot_file):
     sensmaps = [None] * n_slc
     dmtx = None
 
-    # different contrasts need different scaling
-    process_raw.imascale = [None] * 256
-
+    process_raw.imascale = None
+    
     # compression matrix
     process_raw.cc_mat = [None] * n_slc
 
@@ -298,9 +297,6 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         while np.ndim(data) < 3:
             data = data[..., np.newaxis]
     
-    if group[0].idx.slice == 0 and sensmaps is not None:
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
-
     if nz > rNz:
         # remove oversampling in slice direction
         data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
@@ -315,10 +311,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
     # Normalize and convert to int16
     # save one scaling in 'static' variable
-    contr = group[0].idx.contrast
-    if process_raw.imascale[contr] is None:
-        process_raw.imascale[contr] = 0.8 / data.max()
-    data *= 32767 * process_raw.imascale[contr]
+    if process_raw.imascale is None:
+        process_raw.imascale = 0.8 / data.max()
+    data *= 32767 * process_raw.imascale
     data = np.around(data)
     data = data.astype(np.int16)
 

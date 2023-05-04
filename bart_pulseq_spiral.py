@@ -277,16 +277,24 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
     force_pics = True
+    adjoint_nufft = False
     if sensmaps is None and force_pics:
         sensmaps = bart(1, nufft_config, trj, data) # nufft
         sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
         sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
 
-    if sensmaps is None:
-        logging.debug("no pics necessary, do nufft recon")
-            
-        # bart nufft
-        data = bart(1, nufft_config, trj, data) # nufft
+    if sensmaps is None:       
+        if adjoint_nufft:
+            logging.debug("Do adjoint nufft")
+            # calculate and apply dcf
+            dcf = rh.calc_dcf(np.swapaxes(trj[...,0],0,1))
+            dcf /= np.max(abs(dcf))
+            data *= dcf[np.newaxis,:,np.newaxis,np.newaxis]
+
+            data = bart(1, 'nufft -a', trj, data) # adjoint nufft
+        else:
+            logging.debug("Do inverse nufft")
+            data = bart(1, nufft_config, trj, data) # iterative inverse nufft
 
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))

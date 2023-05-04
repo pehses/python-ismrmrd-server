@@ -10,8 +10,7 @@ import ctypes
 from bart import bart
 from cfft import cfftn, cifftn
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
-from reco_helper import calculate_prewhitening, apply_prewhitening, calc_rotmat, fov_shift_spiral_reapply, pcs_to_gcs, remove_os, remove_os_spiral
-from reco_helper import fov_shift_spiral_reapply
+import reco_helper as rh
 
 """ Reconstruction of imaging data acquired with the Pulseq Sequence via the FIRE framework
     Reconstruction is done with the BART toolbox
@@ -142,7 +141,7 @@ def process_spiral(connection, config, metadata, prot_file):
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
-                    dmtx = calculate_prewhitening(noise_data)
+                    dmtx = rh.calculate_prewhitening(noise_data)
                     del(noise_data)
                     noiseGroup.clear()
                     
@@ -169,8 +168,8 @@ def process_spiral(connection, config, metadata, prot_file):
 
                     # for reapplying FOV shift (see below)
                     pred_trj = item.traj[:]
-                    rotmat = calc_rotmat(item)
-                    shift = pcs_to_gcs(np.asarray(item.position), rotmat) / res
+                    rotmat = rh.calc_rotmat(item)
+                    shift = rh.pcs_to_gcs(np.asarray(item.position), rotmat) / res
                 else:
                     # append data to first segment of ADC group
                     idx_lower = item.idx.segment * item.number_of_samples
@@ -179,12 +178,12 @@ def process_spiral(connection, config, metadata, prot_file):
                 if item.idx.segment == nsegments - 1:
                     # Reapply FOV Shift with predicted trajectory
                     last_item = acqGroup[item.idx.contrast][item.idx.slice][-1]
-                    last_item.data[:] = fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
+                    last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
 
                     # remove oversampling
                     os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                     if os_factor == 2:
-                        remove_os_spiral(last_item)
+                        rh.remove_os_spiral(last_item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
@@ -423,7 +422,7 @@ def sort_spiral_data(group, dmtx=None):
         if dmtx is None:
             sig.append(acq.data)
         else:
-            sig.append(apply_prewhitening(acq.data, dmtx))
+            sig.append(rh.apply_prewhitening(acq.data, dmtx))
 
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
@@ -462,14 +461,14 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2_max = enc2
 
         # Oversampling removal - WIP: assumes 2x oversampling at the moment
-        data = remove_os(acq.data[:], axis=-1)
+        data = rh.remove_os(acq.data[:], axis=-1)
         acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
         acq.data[:] = data
 
     nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = group[0].data.shape[-1]
+    ny = enc1_max + 1
+    nz = enc2_max + 1
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
@@ -500,7 +499,7 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         if dmtx is None:
             kspace[enc1, enc2, :, col] += acq.data
         else:
-            kspace[enc1, enc2, :, col] += apply_prewhitening(acq.data, dmtx)
+            kspace[enc1, enc2, :, col] += rh.apply_prewhitening(acq.data, dmtx)
         counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
@@ -508,5 +507,11 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
     # rearrange kspace for bart - target size: (nx, ny, nz, nc)
     kspace = np.transpose(kspace, [3, 0, 1, 2])
+
+    # resize to spiral data size
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    kspace = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', kspace)
 
     return kspace

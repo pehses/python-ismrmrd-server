@@ -239,7 +239,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     if noncartesian and dset_acq.idx.segment == 0:
         
         use_girf = False
-        if metadata.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+        girf_support = ['Investigational_Device_7T_Plus', 'Skyra']
+        if metadata.acquisitionSystemInformation.systemModel in girf_support:
             use_girf = True
 
         # calculate full number of samples - for segmented ADCs
@@ -333,7 +334,11 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     ##############################
     if use_girf:
         dependencyFolder = "/tmp/share/dependency"
-        girf = np.load(os.path.join(dependencyFolder, "girf_10us.npy"))
+        if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+            girf_name = "girf_10us.npy"
+        else:
+            girf_name = "girf_10us_skyra.npy"
+        girf = np.load(os.path.join(dependencyFolder, girf_name))
 
         # rotation to phys coord system
         grad_phys = gcs_to_dcs(grad, rotmat)

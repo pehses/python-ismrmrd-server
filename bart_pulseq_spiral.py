@@ -301,10 +301,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     else:
         data = bart(1, pics_config , trj, data, sensmaps)
         data = np.abs(data)
-        # make sure that data is at least 3d:
-        while np.ndim(data) < 3:
-            data = data[..., np.newaxis]
     
+    # make sure that data is 3d
+    while np.ndim(data) < 3:
+        data = data[..., np.newaxis]
+    data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
+
     if nz > rNz:
         # remove oversampling in slice direction
         data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]

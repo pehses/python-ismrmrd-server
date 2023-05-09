@@ -270,6 +270,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
             dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
 
         # remove first ADCs of spirals as they can be corrupted
+        # WIP: in the case of a GIRF predicted trajectory this is only working, if there is no prephaser used in the trajectory prediction
+        #      as in that case the delay will be negative
         delay = metadata.userParameters.userParameterDouble[1].value
         trajtype = metadata.encoding[0].trajectory.value
         if delay > 0 and trajtype=='spiral': # only do this if trajectory was sufficiently delayed

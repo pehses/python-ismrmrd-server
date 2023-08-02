@@ -48,7 +48,7 @@ def process(connection, config, metadata):
         importlib.reload(powergrid_pulseq_dream)
         logging.info("Starting PowerGrid 3DREAM reconstruction.")
         powergrid_pulseq_dream.process(connection, config, metadata, prot_file)
-    elif len(metadata.userParameters.userParameterBase64) or len(prot_hdr.userParameters.userParameterBase64):
+    elif (len(metadata.userParameters.userParameterBase64) or len(prot_hdr.userParameters.userParameterBase64)) and (prot_hdr.encoding[0].encodingLimits.kspace_encoding_step_1.maximum == 0):
         importlib.reload(powergrid_pulseq_ho)
         logging.info("Starting PowerGrid spiral higher order reconstruction.")
         powergrid_pulseq_ho.process(connection, config, metadata, prot_file)

@@ -415,6 +415,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     avg_ix = 0
     bvals = []
     dirs = []
+    bDeltas = []
     contr_ctr = -1
     for slc in acqGroup:
         for contr in slc:
@@ -431,11 +432,14 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                     contr_ctr += 1
                     bvals.append(acq.user_int[0])
                     dirs.append(acq.user_float[:3])
+                    if 'bDeltas' in prot_arrays:
+                        bDeltas.append(acq.user_int[1])
 
                 dset_tmp.append_acquisition(acq)
 
     bvals = np.asarray(bvals)
     dirs = np.asarray(dirs)
+    bDeltas = np.asarray(bDeltas)
     dset_tmp.close()
 
     # Define in- and output for PowerGrid
@@ -612,6 +616,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                                     image.user_int[0] = bvals[contr]
                                 if 'Directions' in prot_arrays:
                                     image.user_float[:3] = dirs[contr]
+                                if 'bDeltas' in prot_arrays:
+                                    image.user_int[3] = bDeltas[contr]
                                 if img_ix < 5:
                                     image.user_int[2] = 1 # indicate affine is set
                                     image.user_float[3:7] = affine[img_ix-1]

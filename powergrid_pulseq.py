@@ -58,7 +58,7 @@ def process(connection, config, metadata, prot_file):
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
         # however, it will still indicate, whether the recon is executed online
         logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
-        n_vol = metadata.userParameters.userParameterLong
+        n_vol = metadata.userParameters.userParameterLong[0].value
         process_raw.reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
         global save_cmplx
         save_cmplx = False
@@ -217,7 +217,7 @@ def process(connection, config, metadata, prot_file):
                     noiseGroup.clear()
                                
                 # Skope sync scans
-                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA): # skope sync scans
+                elif item.is_flag_set(ismrmrd.ACQ_IS_DUMMYSCAN_DATA):
                     continue
 
                 # Process reference scans

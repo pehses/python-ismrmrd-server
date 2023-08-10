@@ -186,7 +186,7 @@ COPY --from=mrd_converter /opt/code/bart/python/* /opt/code/pythonpath/
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules \
+        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules libpugixml-dev libxml2-utils \
      && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image psutil ismrmrd
 
 RUN  mkdir -p /opt/code

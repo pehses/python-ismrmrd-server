@@ -8,7 +8,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
        wget ca-certificates libhdf5-serial-dev build-essential libxml2-dev libxslt1-dev\
-       libfftw3-dev git liblapacke-dev libopenblas-dev curl openmpi-bin apt-utils
+       libfftw3-dev git liblapacke-dev libopenblas-dev curl openmpi-bin apt-utils libpugixml-dev libxml2-utils
 
 # Install Latest CMake
 RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
@@ -26,6 +26,7 @@ RUN  cd /opt/code \
 RUN cd /opt/code \
     && git clone https://github.com/ismrmrd/ismrmrd.git \
     && cd ismrmrd \
+    && git checkout v1.13.6 \
     && mkdir build \
     && cd build \
     && cmake ../ \

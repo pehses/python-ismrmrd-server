@@ -9,7 +9,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
        wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils cmake cmake-curses-gui \
-        libboost-all-dev libfftw3-dev git build-essential gfortran libpng-dev liblapacke-dev libpng-dev libopenblas-dev libxml2-dev libxslt1-dev 
+        libboost-all-dev libfftw3-dev git build-essential gfortran libpng-dev liblapacke-dev libpng-dev libopenblas-dev libxml2-dev libxslt1-dev libpugixml-dev libxml2-utils
 
 
 # install mkl
@@ -32,6 +32,7 @@ RUN  cd /opt/code \
 RUN cd /opt/code \
     && git clone https://github.com/ismrmrd/ismrmrd.git \
     && cd ismrmrd \
+    && git checkout v1.13.6 \
     && mkdir build \
     && cd build \
     && cmake ../ \

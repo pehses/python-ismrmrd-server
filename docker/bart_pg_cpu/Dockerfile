@@ -8,7 +8,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
        wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils \
-       libfftw3-dev git build-essential gfortran liblapacke-dev libpng-dev libopenblas-dev libboost-all-dev libxml2-dev libxslt1-dev libssl-dev curl
+       libfftw3-dev git build-essential gfortran liblapacke-dev libpng-dev libopenblas-dev libboost-all-dev libxml2-dev libxslt1-dev libssl-dev curl libpugixml-dev libxml2-utils
 
 # Install Latest CMake
 RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
@@ -36,6 +36,7 @@ RUN  cd /opt/code \
 RUN cd /opt/code \
     && git clone https://github.com/ismrmrd/ismrmrd.git \
     && cd ismrmrd \
+    && git checkout v1.13.6 \
     && mkdir build \
     && cd build \
     && cmake ../ \

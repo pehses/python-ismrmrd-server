@@ -243,7 +243,8 @@ def process(connection, config, metadata, prot_file):
 
                 # Process Imaging Scans
                 # Calculate image coordinates in DCS
-                img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item) 
+                if img_coord[item.idx.slice] is None:
+                    img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item) 
 
                 # Noise whitening
                 if dmtx is not None:

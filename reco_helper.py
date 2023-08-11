@@ -8,8 +8,10 @@ import os
 
 from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
 from skimage.transform import resize
-from skimage.restoration import unwrap_phase
+from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 from dipy.segment.mask import median_otsu
+from multiprocessing import Pool
+import psutil
 
 # Root sum of squares
 
@@ -537,6 +539,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     romeo_fmap = False # use the ROMEO toolbox for field map calculation
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
     filtering = False # apply Gaussian and median filtering (not recommended for mc_fmap)
+    nlm_filter = False # apply non-local means filter to field map in the end
 
     logging.info("Starting field map calculation.")
 
@@ -576,8 +579,12 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
             phasediff_uw = romeo_unwrap(phasediff,[], result_path, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
-            for k in range(phasediff.shape[-1]):
-                phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k])) # unwrap phase for each coil
+            cores = psutil.cpu_count(logical = False)
+            pool = Pool(processes=cores)
+            results = [pool.apply_async(do_unwrap_phase, [phasediff[...,k]]) for k in range(phasediff.shape[-1])]
+            for k, val in enumerate(results):
+                phasediff_uw[...,k] = val.get()
+            pool.close()
 
         nc = phasediff_uw.shape[-1]
         phasediff_uw_rs = phasediff_uw.reshape([-1,nc])
@@ -625,9 +632,11 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
         median_std = np.median(std[std!=0])
         idx = np.argwhere(std>std_fac*median_std)
         n_cb = [2,2,1]
+        fmap2 = fmap.copy()
         for ix in idx:
             voxel_cb = tuple([slice(max(0,ix[k]-n_cb[k]), ix[k]+n_cb[k]+1) for k in range(3)])
-            fmap[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
+            fmap2[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
+        fmap = fmap2
 
     # Gauss/median filter
     if filtering:
@@ -645,11 +654,18 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     mask[mask>0] = 1 # fix interpolation artifacts in binary mask
 
     fmap *= mask
+    
+    if nlm_filter:
+        sigma_est = np.mean(estimate_sigma(fmap))
+        patch_kw = dict(patch_size=3, patch_distance=6)
+        fmap = denoise_nl_means(fmap, h=0.4*sigma_est, sigma=sigma_est, fast_mode=True, **patch_kw)
 
     logging.info("Field map calculation finished.")
 
     return fmap, mask
 
+def do_unwrap_phase(phasediff):
+    return unwrap_phase(np.angle(phasediff))
 
 # Unwrapping with ROME0
 def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):

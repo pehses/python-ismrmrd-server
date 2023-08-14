@@ -47,9 +47,12 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
-read_ecalib = False
+read_ecalib = True
 save_cmplx = True # save images as complex data
 online_recon = False
+
+snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
+n_replica = 50 # number of replicas used for SNR map calculation
 
 ########################
 # Main Function
@@ -61,6 +64,10 @@ def process(connection, config, metadata, prot_file):
 
     # if >0 only the volumes up to the specified number will be reconstructed
     process_raw.reco_n_contr = 0
+    global snr_map
+    if snr_map:
+        logging.debug("Calculate SNR maps for first contrast.")
+        process_raw.reco_n_contr = 1
     if len(metadata.userParameters.userParameterLong) > 0:
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
         # however, it will still indicate, whether the recon is executed online
@@ -71,6 +78,7 @@ def process(connection, config, metadata, prot_file):
         save_cmplx = False
         global online_recon
         online_recon = True
+        snr_map = False
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -199,7 +207,7 @@ def process(connection, config, metadata, prot_file):
                 elif len(noiseGroup) > 0 and dmtx is None:
                     noise_data = []
                     for acq in noiseGroup:
-                        noise_data.append(acq.data)
+                        noise_data.append(rh.remove_os(acq.data, axis=1)) # remove os to have NoiseReceiverBandwidthRatio=1 (removes filtered area in ADC, see Kellman(2005))
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
                     dmtx = rh.calculate_prewhitening(noise_data)
@@ -517,8 +525,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     logging.debug("Image data is size %s" % (data.shape,))
    
     images = []
-    dsets = []
-    dsets.append(data.copy())
+    dsets = {}
+    dsets['data'] = data.copy()
 
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
@@ -533,7 +541,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
-            dsets.append(adc_maps)
+            dsets['adc'] = adc_maps
         except:
             logging.debug("ADC map calculation failed.")
 
@@ -542,26 +550,63 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
         refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
     else:
         refimgs = np.asarray(process_acs.refimg)
-    dsets.append(refimgs)
-    dsets.append(fmap["fmap"][:,np.newaxis] /2/np.pi) # add axis for [slc,z,y,x], save in [Hz]
+    dsets['refimg'] = refimgs
+    dsets['fmap'] = fmap["fmap"][:,np.newaxis] /2/np.pi # add axis for [slc,z,y,x], save in [Hz]
+
+    # Calculate SNR maps based on pseudo-replicas
+    # based on https://github.com/hansenms/ismrm_sunrise_matlab/blob/master/ismrm_pseudo_replica.m
+    if snr_map:
+        # save acquisitions
+        acqs_save = []
+        dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=False)
+        for j in range(dset_tmp.number_of_acquisitions()):
+            acqs_save.append(dset_tmp.read_acquisition(j).data[:].copy())
+        dset_tmp.close()
+        data_snr_list = []
+
+        # reconstruct replicas by adding gaussian noise with sigma=1
+        for k in range(n_replica):
+            logging.debug(f"Reconstruct replica volume {k+1} of {n_replica}")
+            dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=False)
+            acq = dset_tmp.read_acquisition(0)
+            noise = np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape) + 1j* np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape)
+            for j in range(dset_tmp.number_of_acquisitions()):
+                acq = dset_tmp.read_acquisition(j)
+                acq.data[:] = acqs_save[j] + noise
+                dset_tmp.write_acquisition(acq, j)
+            dset_tmp.close()
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            data_snr = abs(np.load(pg_dir + "/images_pg.npy"))
+            data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
+            data_snr_list.append(data_snr.reshape(newshape, order='f'))
+        data_snr = np.array(data_snr_list)
+
+        # calculate SNR maps
+        std_dev = np.std(data_snr + np.max(data_snr), axis=0)
+        snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
+        snr = snr[0,0,0]
+        dsets['snr_map'] = snr
 
     # Correct orientation, normalize and convert to int16 for online recon
     uint_max = np.iinfo(np.uint16).max
-    for k in range(len(dsets)):
-        dsets[k] = np.swapaxes(dsets[k], -1, -2)
-        dsets[k] = np.flip(dsets[k], (-4,-3,-2,-1))
-        if k==0 and save_cmplx:
-            dsets[k] /= abs(dsets[k]).max()
-        elif k<len(dsets)-1:
-            dsets[k] *= uint_max / abs(dsets[k]).max()
-            dsets[k] = np.around(dsets[k])
-            dsets[k] = dsets[k].astype(np.uint16)
+    for key in dsets:
+        dsets[key] = np.swapaxes(dsets[key], -1, -2)
+        dsets[key] = np.flip(dsets[key], (-4,-3,-2,-1))
+        if key == 'data' and save_cmplx:
+            dsets[key] /= abs(dsets[key]).max()
+        elif key == 'fmap':
+            dsets[key] = np.around(dsets[key])
+            dsets[key] = dsets[key].astype(np.int16) # field map
+        elif key == 'snr_map':
+            pass # SNR map will not be calculated online
         else:
-            dsets[k] = np.around(dsets[k])
-            dsets[k] = dsets[k].astype(np.int16) # field map
+            dsets[key] *= uint_max / abs(dsets[key]).max()
+            dsets[key] = np.around(dsets[key])
+            dsets[key] = dsets[key].astype(np.uint16)
+
         if online_recon: 
             # FIRE will apply a wrong shift of one pixel on the images, this is corrected here
-            dsets[k] = np.roll(np.roll(dsets[k], shift=1, axis=-1), shift=1, axis=-2)
+            dsets[key] = np.roll(np.roll(dsets[key], shift=1, axis=-1), shift=1, axis=-2)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -593,16 +638,17 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     # Send images
     img_ix = 0
     n_slc = data.shape[3]
-    for series_ix, imgs in enumerate(dsets):
+    for series_ix, key in enumerate(dsets):
         # Format as 2D ISMRMRD image data [nx,ny]
-        if imgs.ndim > 4:
-            for contr in range(imgs.shape[1]):
-                for phs in range(imgs.shape[2]):
-                    for rep in range(imgs.shape[0]): # save one repetition after another
-                        for slc in range(imgs.shape[3]):
+        if key == 'data':
+            meta['ImgType'] = 'Imgdata'
+            for contr in range(dsets[key].shape[1]):
+                for phs in range(dsets[key].shape[2]):
+                    for rep in range(dsets[key].shape[0]): # save one repetition after another
+                        for slc in range(dsets[key].shape[3]):
                             img_ix += 1
-                            for nz in range(imgs.shape[4]):
-                                image = ismrmrd.Image.from_array(imgs[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                            for nz in range(dsets[key].shape[4]):
+                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
                                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 image.image_index = img_ix
@@ -631,15 +677,17 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                                 image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                                 images.append(image)
         else:
-            # ADC maps, Refimg & Fmap
-            for slc, img in enumerate(imgs):
+            # ADC maps, Refimg, Fmap & SNR maps
+            for slc, img in enumerate(dsets[key]):
                 image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc
                 if series_ix != len(dsets) - 1:
+                    meta['ImgType'] = key
                     image.attribute_string = meta.serialize()
                 else:
+                    meta2['ImgType'] = key
                     image.attribute_string = meta2.serialize()
                     image.image_type = ismrmrd.IMTYPE_REAL
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 

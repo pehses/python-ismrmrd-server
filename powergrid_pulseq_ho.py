@@ -47,12 +47,15 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
-read_ecalib = True
+read_ecalib = False # read sensitivity maps from file (requires previous recon)
+read_fmap = False # read field map from file (requires previous recon)
 save_cmplx = True # save images as complex data
-online_recon = False
 
 snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
 n_replica = 50 # number of replicas used for SNR map calculation
+
+reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
+first_vol = 0 # index of first volume, that is reconstructed
 
 ########################
 # Main Function
@@ -62,23 +65,28 @@ def process(connection, config, metadata, prot_file):
     
     # -- Some manual parameters --- #
 
-    # if >0 only the volumes up to the specified number will be reconstructed
-    process_raw.reco_n_contr = 0
     global snr_map
+    global read_ecalib
+    global read_fmap
+    global reco_n_contr
     if snr_map:
         logging.debug("Calculate SNR maps for first contrast.")
-        process_raw.reco_n_contr = 1
+        reco_n_contr = 1
+    
+    # check if images reconstructed at scanner
+    online_recon = False
     if len(metadata.userParameters.userParameterLong) > 0:
         # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
         # however, it will still indicate, whether the recon is executed online
         logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
         n_vol = metadata.userParameters.userParameterLong[0].value
-        process_raw.reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
+        reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
         global save_cmplx
         save_cmplx = False
-        global online_recon
         online_recon = True
         snr_map = False
+        read_ecalib = False
+        read_fmap = False
 
     # Coil Compression: Compress number of coils by n_compr coils
     n_compr = 0
@@ -106,10 +114,11 @@ def process(connection, config, metadata, prot_file):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    # Check if ecalib maps calculated
-    global read_ecalib
+    # Check if ecalib/field maps calculated
     if read_ecalib and not os.path.isfile(debugFolder + "/sensmaps.npy"):
         read_ecalib = False
+    if read_fmap and not os.path.isfile(debugFolder+"/fmap.npz"):
+        read_fmap = False
 
     # Insert protocol header
     insert_hdr(prot_file, metadata)
@@ -158,7 +167,7 @@ def process(connection, config, metadata, prot_file):
 
     # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
-    n_contr = process_raw.reco_n_contr if process_raw.reco_n_contr else metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_contr = reco_n_contr if reco_n_contr else metadata.encoding[0].encodingLimits.contrast.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
     if half_refscan and n_slc%2:
         raise ValueError("Odd number of slices with halved number of refscan slices is invalid.")
@@ -229,7 +238,7 @@ def process(connection, config, metadata, prot_file):
                     else:
                         acsGroup[item.idx.slice].append(item)
                     if sensmaps[item.idx.slice] is None and item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and not process_acs.cc_cha < n_cha:
-                        process_refscan(acsGroup ,sensmaps, item.idx.slice, metadata, dmtx, half_refscan)
+                        process_refscan(acsGroup ,sensmaps, item.idx.slice, metadata, dmtx, half_refscan, online_recon=online_recon)
                     continue
 
                 # Coil Compression calibration
@@ -241,13 +250,17 @@ def process(connection, config, metadata, prot_file):
                     if sensmaps[item.idx.slice] is None:
                         for k in range(sms_factor):
                             slc_ix = item.idx.slice + n_slc//sms_factor*k
-                            process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan)
+                            process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan, online_recon=online_recon)
 
                 # trigger recon early
-                if process_raw.reco_n_contr and item.idx.contrast > process_raw.reco_n_contr - 1:
+                if reco_n_contr and item.idx.contrast > reco_n_contr + first_vol - 1:
                     if len(acqGroup) > 0:
-                        process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord)
+                        process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=online_recon)
                     continue
+                if item.idx.contrast < first_vol:
+                    continue # skip until first volume index
+                else:
+                    item.idx.contrast -= first_vol
 
                 # Process Imaging Scans
                 # Calculate image coordinates in DCS
@@ -305,7 +318,7 @@ def process(connection, config, metadata, prot_file):
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=online_recon)
 
         # Process any remaining groups of raw or image data.  This can 
         # happen if the trigger condition for these groups are not met.
@@ -323,15 +336,15 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord):
+def process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=False):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord)
+    images = process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
+def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=False):
 
     # Multiband factor
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
@@ -374,24 +387,26 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     # Insert Field Map
     # process_acs.fmap = None # just for debugging
-    if process_acs.fmap is not None:
-        fmap = process_acs.fmap
-        if fmap['fmap'][0].shape[2] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
-            refimgs = np.swapaxes(fmap['fmap'][0][np.newaxis], 0, 3) # 3D refscan for 2D spirals: [nz,nx,ny,slices=1,coils,echoes]
-        else:
-            refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
-        echo_times = fmap['TE']
-        fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon, dependencyFolder)
-    else: # external field map
-        fmap_path = dependencyFolder+"/fmap.npz"
-        fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
-        fmap = load_external_fmap(fmap_path, fmap_shape)
+    if not read_fmap:
+        if process_acs.fmap is not None:
+            fmap = process_acs.fmap
+            if fmap['fmap'][0].shape[2] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+                refimgs = np.swapaxes(fmap['fmap'][0][np.newaxis], 0, 3) # 3D refscan for 2D spirals: [nz,nx,ny,slices=1,coils,echoes]
+            else:
+                refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
+            echo_times = fmap['TE']
+            fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon, dependencyFolder)
+        else: # external field map
+            fmap_path = dependencyFolder+"/fmap.npz"
+            fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
+            fmap = load_external_fmap(fmap_path, fmap_shape)
+        np.savez(debugFolder+"/fmap.npz", fmap=fmap['fmap'], mask=fmap['mask'], name=fmap['name'])
+    else:
+        fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)
 
     fmap_data = fmap['fmap']
     fmap_mask = fmap['mask']
     fmap_name = fmap['name']
-    np.save(debugFolder+"/fmap_data.npy", fmap_data)
-    np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
@@ -402,8 +417,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     if sms_factor > 1:
         metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
         metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
-    if process_raw.reco_n_contr:
-        metadata.encoding[0].encodingLimits.contrast.maximum = process_raw.reco_n_contr - 1
+    if reco_n_contr:
+        metadata.encoding[0].encodingLimits.contrast.maximum = reco_n_contr - 1
         metadata.encoding[0].encodingLimits.repetition.maximum = 0
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
@@ -435,7 +450,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
                         avg_ix += 1
                     else:
                         continue
-                if process_raw.reco_n_contr and acq.idx.repetition > 0:
+                if reco_n_contr and acq.idx.repetition > 0:
                     continue
                 if acq.idx.contrast > contr_ctr:
                     contr_ctr += 1
@@ -531,7 +546,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
     # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
     # as otherwise we run into problems with the PowerGrid acquisition tracking.
     # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
-    if "b_values" in prot_arrays and not process_raw.reco_n_contr:
+    if "b_values" in prot_arrays and not reco_n_contr:
         try:
             data_eval = abs(data)
 
@@ -569,8 +584,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
             logging.debug(f"Reconstruct replica volume {k+1} of {n_replica}")
             dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=False)
             acq = dset_tmp.read_acquisition(0)
-            noise = np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape) + 1j* np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape)
             for j in range(dset_tmp.number_of_acquisitions()):
+                noise = np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape) + 1j* np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape)
                 acq = dset_tmp.read_acquisition(j)
                 acq.data[:] = acqs_save[j] + noise
                 dset_tmp.write_acquisition(acq, j)
@@ -702,12 +717,12 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord):
 
     return images
 
-def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=False):
+def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=False, online_recon=False):
     """
     Process reference scans
     """
 
-    sensmaps[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx)
+    sensmaps[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, online_recon=online_recon)
     acsGroup[slc_ix].clear()
     if half_refscan:
         slc_ix_cp = slc_ix
@@ -721,7 +736,7 @@ def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=Fal
             process_acs.fmap['fmap'][slc_ix_cp] = process_acs.fmap['fmap'][slc_ix]
             process_acs.fmap['mask'][slc_ix_cp] = process_acs.fmap['mask'][slc_ix]
     
-def process_acs(group, metadata, dmtx=None):
+def process_acs(group, metadata, dmtx=None, online_recon=False):
     """ 
     Do parallel imaging calibration and field map calculation
     """

@@ -65,6 +65,8 @@ filter_type = None
 nii_filename = 'img.nii.gz'
 cal_mode = 'espirit'
 #cal_mode = 'caldir'
+reg_value = 0.002
+autoscale = False
 
 # override defaults:
 # reduce_fov_x = True
@@ -653,7 +655,7 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         data = cifft(data, 0)
 
     gpu_str = "-g" if use_gpu else ""
-    pics_str = f'pics -l1 -r0.002 -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
+    pics_str = f'pics -l1 -r{reg_value} -S -i {max_iter} -d5 {gpu_str} -w 615'  # hard-code scale (-w) for consistency in chunks
 
     if isinstance(sensmaps, multiprocessing.pool.AsyncResult):
         sensmaps = sensmaps.get()
@@ -673,14 +675,14 @@ def process_raw(data, rawHead, connection, config, metadata, sensmaps=None, chun
         slcs = [slice(0 if i<chunk_overlap else i-chunk_overlap, i+chunk_sz+chunk_overlap) for i in range(0, nx, chunk_sz)]
         blocks = (data[sl] for sl in slcs)
         sensblocks = (sensmaps[sl] for sl in slcs)
-        
+
         if threads is not None and threads > 1:
             with Pool(threads) as p:
                 data = p.map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts))
         else:
-            data = list(map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts)))
-        
-    data = np.concatenate(data, axis=0)
+            data = list(map(partial(pics_chunk, pics_str), zip(blocks, sensblocks, cuts))) 
+        data = np.concatenate(data, axis=0)
+
     data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
 
     logging.info(f"pics with chunk_sz={chunk_sz} and {threads} thread(s): {perf_counter()-tic} s")
@@ -728,11 +730,14 @@ def process_image(data, rawHead, config, metadata):
     try:
         process_image.imascale
     except:
-        empirical_factor = 5e-9
-        resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
-        process_image.imascale = int_max * empirical_factor
-        process_image.imascale *= np.sqrt(np.prod(data.shape))
-        process_image.imascale /= np.prod(resolution)
+        if autoscale:
+            process_image.imascale = 0.4 * int_max / abs(data).max()
+        else:
+            empirical_factor = 5e-9
+            resolution = tuple(fov/mat for fov, mat in zip(field_of_view, recon_matrix))
+            process_image.imascale = int_max * empirical_factor
+            process_image.imascale *= np.sqrt(np.prod(data.shape))
+            process_image.imascale /= np.prod(resolution)
 
         #test
         # process_image.imascale = int_max/np.max(data)

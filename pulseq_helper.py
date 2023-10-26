@@ -381,13 +381,15 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     pred_trj = intp_axis(adctime, gradtime, pred_trj, axis=1) # align trajectory to scanner ADC
     pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]
 
-    # shift base_trj by 10us for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
+    # shift base_trj for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
     if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
         extra_gradshift = -1 * 1e-5 # validated for 7T plus
     elif hdr.acquisitionSystemInformation.systemModel == 'ConnectomA':
         extra_gradshift = 1e-5 # for some reason this is different for the connectom
+    elif hdr.acquisitionSystemInformation.systemModel == 'Skyra':
+        extra_gradshift = 0 # and for the Skyra it seems to be again different - fantastic
     else:
-        extra_gradshift = -1 * 1e-5
+        extra_gradshift = 0
     base_trj = intp_axis(adctime, gradtime+extra_gradshift, base_trj, axis=1) 
     base_trj = np.swapaxes(base_trj,0,1)
 

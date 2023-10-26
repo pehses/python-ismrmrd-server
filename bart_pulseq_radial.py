@@ -1,10 +1,8 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
 import numpy as np
-import base64
 import ctypes
 
 from bart import bart

@@ -4,11 +4,9 @@
 
 import ismrmrd
 import os
-import itertools
 import logging
 import numpy as np
 from cfft import cfftn, cifftn
-import base64
 import ctypes
 
 import importlib

@@ -330,7 +330,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
                          'WindowWidth':            '32768',
-                         'Keep_image_geometry':    1})
+                         'Keep_image_geometry':    1,
+                         'ImgType':                'Imgdata'})
     xml = meta.serialize()
     
     images = []
@@ -342,7 +343,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     if n_par > 1:
         image = ismrmrd.Image.from_array(data, acquisition=group[0])
         image.image_index =group[0].idx.contrast
-        image.image_series_index = 1 + group[0].idx.repetition
+        image.image_series_index = 1
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -352,7 +353,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-        image.image_series_index = 1 + group[0].idx.repetition
+        image.image_series_index = 1
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -362,6 +363,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
     # send reference image if available
     if process_raw.refimg is not None and group[0].idx.contrast == 0:
+        meta['ImgType'] = 'refimg'
         refimg = np.swapaxes(process_raw.refimg, 0, 1)
         refimg = np.flip(refimg, (0,1,2))
         refimg *= 32767 / np.max(refimg)

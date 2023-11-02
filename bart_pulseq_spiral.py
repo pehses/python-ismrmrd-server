@@ -364,6 +364,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     # send reference image if available
     if process_raw.refimg is not None and group[0].idx.contrast == 0:
         meta['ImgType'] = 'refimg'
+        xml = meta.serialize()
         refimg = np.swapaxes(process_raw.refimg, 0, 1)
         refimg = np.flip(refimg, (0,1,2))
         refimg *= 32767 / np.max(refimg)

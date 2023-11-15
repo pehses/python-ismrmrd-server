@@ -809,36 +809,7 @@
                     </userParameterLong>
                 </xsl:if>
 
-                <!-- Dummy parameters - not used anymore (see pulseq_helper.py -> insert_hdr) -->
-                <userParameterDouble>
-                    <name>dwellTime_us</name>
-                    <value>0</value>
-                </userParameterDouble>
-
-                <userParameterDouble>
-                    <name>traj_delay</name>
-                    <value>0</value>
-                </userParameterDouble>
-
-                <userParameterDouble>
-                    <name>nsegments</name>
-                    <value>1</value>
-                </userParameterDouble>
-                
-                <userParameterDouble>
-                    <name>t_min</name>
-                    <value>0</value>
-                </userParameterDouble>
-
-                <userParameterDouble>
-                    <name>os_region</name>
-                    <value>0</value>
-                </userParameterDouble>
-
-                <userParameterDouble>
-                    <name>os_factor</name>
-                    <value>1</value>
-                </userParameterDouble>
+                <!-- Reference voltage and shim currents-->
 
                 <xsl:if test="siemens/MEAS/sTXSPEC/asNucleusInfo/flReferenceAmplitude">
                 <userParameterDouble>

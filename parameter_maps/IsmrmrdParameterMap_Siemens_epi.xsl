@@ -729,7 +729,7 @@
                       </userParameterLong> -->
                     <!-- /xsl:if -->
                 <!-- </xsl:for-each> -->
-<!-- 
+
 		<xsl:if test="siemens/MEAS/sAngio/sFlowArray/lSize">
                     <userParameterLong>
                         <name>VENC_0</name>
@@ -808,13 +808,19 @@
                         </value>
                     </userParameterLong>
                 </xsl:if>
-                 -->
-                <userParameterLong>
-                    <name>recon_slice</name>
+
+                <!-- Dwelltime -->
+
+                <xsl:if test="siemens/MEAS/sRXSPEC/alDwellTime">
+                <userParameterDouble>
+                    <name>dwellTime_us</name>
                     <value>
-                        <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[63]"/>
+                        <xsl:value-of select="siemens/MEAS/sRXSPEC/alDwellTime div 1000.0"/>
                     </value>
-                </userParameterLong>
+                </userParameterDouble>
+                </xsl:if>
+
+                <!-- Reference voltage and shim currents-->
 
                 <xsl:if test="siemens/MEAS/sTXSPEC/asNucleusInfo/flReferenceAmplitude">
                 <userParameterDouble>

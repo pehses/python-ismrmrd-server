@@ -142,10 +142,12 @@ def check_signature(metadata, prot_hdr):
 
     """
     try:
-        hdr_signature = metadata.userParameters.userParameterString[1].value
+        hdr_up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+        hdr_signature = hdr_up_string['seq_signature']
         if hdr_signature != 'NONE':
             try:
-                prot_signature = prot_hdr.userParameters.userParameterString[0].value
+                prot_up_string = {item.name: item.value for item in prot_hdr.userParameters.userParameterString}
+                prot_signature = prot_up_string['seq_signature']
                 if prot_signature in hdr_signature:
                     logging.debug(f"Signature check passed with signature {hdr_signature}.")
                 else:
@@ -272,10 +274,11 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # remove first ADCs of spirals as they can be corrupted
         # WIP: in the case of a GIRF predicted trajectory this is only working, if there is no prephaser used in the trajectory prediction
         #      as in that case the delay will be negative
-        delay = metadata.userParameters.userParameterDouble[1].value
+        up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+        delay = up_double["traj_delay"] if "traj_delay" in up_double else 0
         trajtype = metadata.encoding[0].trajectory.value
         if delay > 0 and trajtype=='spiral': # only do this if trajectory was sufficiently delayed
-            dwelltime = 1e-6 * metadata.userParameters.userParameterDouble[0].value
+            dwelltime = 1e-6 * up_double["dwellTime_us"]
             rm_ix = int(delay/dwelltime)
             if rm_ix%2: rm_ix -= 1 # stay at even number of samples
             data_tmp = dset_acq.data[:,rm_ix:]
@@ -310,10 +313,12 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
                     hdr.encoding[0].reconSpace.fieldOfView_mm.y,
                     hdr.encoding[0].reconSpace.fieldOfView_mm.z])
 
-    dwelltime = 1e-6 * hdr.userParameters.userParameterDouble[0].value
+    # get user parameters and dwelltime
+    up_double = {item.name: item.value for item in hdr.userParameters.userParameterDouble}
+    dwelltime = 1e-6 * up_double["dwellTime_us"]
     
     # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI
-    gradshift = hdr.userParameters.userParameterDouble[1].value
+    gradshift = up_double["traj_delay"]
 
     # ADC sampling time
     adctime = dwelltime * np.arange(0.5, ncol)

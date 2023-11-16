@@ -34,8 +34,9 @@ def process_radial(connection, config, metadata, prot_file):
     
     # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
     slc_sel = None
-    if len(metadata.userParameters.userParameterLong) > 0:
-        online_slc = metadata.userParameters.userParameterLong[0].value # Only online reco can send single slice number (different xml)
+    up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
+    if 'recon_slice' in up_long:
+        online_slc = up_long['recon_slice'] # Only online reco can send single slice number (different xml)
         if online_slc >= 0:
             slc_sel = int(online_slc)
 

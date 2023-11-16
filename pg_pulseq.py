@@ -23,7 +23,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 def process(connection, config, metadata):
   
     prot_folder = os.path.join(dependencyFolder, "metadata")
-    prot_filename = os.path.splitext(metadata.userParameters.userParameterString[0].value)[0] # protocol filename from Siemens protocol parameter tFree
+    up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+    prot_filename = os.path.splitext(up_string['protfile'])[0] # protocol filename from Siemens protocol parameter tFree
     prot_file = prot_folder + "/" + prot_filename + ".h5"
 
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder

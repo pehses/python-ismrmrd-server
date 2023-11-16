@@ -75,11 +75,11 @@ def process(connection, config, metadata, prot_file):
     
     # check if images reconstructed at scanner
     online_recon = False
-    if len(metadata.userParameters.userParameterLong) > 0:
-        # The user parameter long was used for selecting a slice, but thats not used anymore in this recon
-        # however, it will still indicate, whether the recon is executed online
+    up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
+    if 'recon_slice' in up_long:
         logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
-        n_vol = metadata.userParameters.userParameterLong[0].value
+        # parameter recon_slice defined in "IsmrmrdParameterMap_Siemens_pulseq_online.xsl"
+        n_vol = up_long['recon_slice'] # number of volumes to be reconstructed
         reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
         global save_cmplx
         save_cmplx = False
@@ -107,7 +107,8 @@ def process(connection, config, metadata, prot_file):
 
     # Create folder, if necessary
     if len(metadata.userParameters.userParameterString) > 1:
-        seq_signature = metadata.userParameters.userParameterString[1].value
+        up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+        seq_signature = up_string['seq_signature']
         global debugFolder 
         debugFolder += f"/{seq_signature}"
     if not os.path.exists(debugFolder):

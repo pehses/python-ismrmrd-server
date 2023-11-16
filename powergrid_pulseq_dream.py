@@ -60,7 +60,8 @@ def process(connection, config, metadata, prot_file):
 
     # Create folder, if necessary
     if len(metadata.userParameters.userParameterString) > 1:
-        seq_signature = metadata.userParameters.userParameterString[1].value
+        up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+        seq_signature = up_string['seq_signature']
         global debugFolder 
         debugFolder += f"/{seq_signature}"
     if not os.path.exists(debugFolder):

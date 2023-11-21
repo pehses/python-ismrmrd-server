@@ -809,7 +809,34 @@
                     </userParameterLong>
                 </xsl:if>
 
-                <!-- Dwelltime -->
+                <!-- Long parameters for Skope trajectory calculation -->
+
+                <xsl:if test="siemens/MEAS/aulServicePara[1]">
+                <userParameterLong>
+                    <name>n_dynamics</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/aulServicePara[1]"/>
+                    </value>
+                </userParameterLong>
+                </xsl:if>
+                <xsl:if test="siemens/MEAS/aulServicePara[2]">
+                <userParameterLong>
+                    <name>n_volumes</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/aulServicePara[2]"/>
+                    </value>
+                </userParameterLong>
+                </xsl:if>
+                <xsl:if test="siemens/MEAS/aulServicePara[3]">
+                <userParameterLong>
+                    <name>n_reduced_slices</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/aulServicePara[3]"/>
+                    </value>
+                </userParameterLong>
+                </xsl:if>
+
+                <!-- Double parameters for Skope trajectory calculation -->
 
                 <xsl:if test="siemens/MEAS/sRXSPEC/alDwellTime">
                 <userParameterDouble>

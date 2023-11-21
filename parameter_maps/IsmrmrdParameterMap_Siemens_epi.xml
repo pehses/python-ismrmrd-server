@@ -57,6 +57,9 @@
         <p><s>MEAS.sInlineCardioEval.lNoOfPreps</s>                             <d>siemens.MEAS.sInlineCardioEval.lNoOfPreps</d></p>
         <p><s>MEAS.sInlineCardioEval.lInlineEvaMode</s>                         <d>siemens.MEAS.sInlineCardioEval.lInlineEvaMode</d></p>
 
+        <!-- add aulServicePara for total number of volumes -->
+        <p><s>MEAS.aulServicePara</s>                                           <d>siemens.MEAS.aulServicePara</d></p>
+
         <p><s>IRIS.DERIVED.phaseOversampling</s>                                <d>siemens.IRIS.DERIVED.phaseOversampling</d></p>
         <p><s>IRIS.DERIVED.ImageColumns</s>                                     <d>siemens.IRIS.DERIVED.imageColumns</d></p>
         <p><s>IRIS.DERIVED.ImageLines</s>                                       <d>siemens.IRIS.DERIVED.imageLines</d></p>

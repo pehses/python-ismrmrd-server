@@ -109,9 +109,10 @@ class Server:
                 import pg_pulseq
                 importlib.reload(pg_pulseq)
                 logging.info("Starting powergrid_pulseq processing based on config")
-                with cProfile.Profile() as pr:
-                    pg_pulseq.process(connection, config, metadata)
-                pr.dump_stats("/tmp/share/debug/powergrid_pulseq.prof")
+                pg_pulseq.process(connection, config, metadata)
+                # with cProfile.Profile() as pr:
+                #     pg_pulseq.process(connection, config, metadata)
+                # pr.dump_stats("/tmp/share/debug/powergrid_pulseq.prof")
             elif (config == "invertcontrast"):
                 import invertcontrast
                 importlib.reload(invertcontrast)

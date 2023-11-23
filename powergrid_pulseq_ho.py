@@ -841,28 +841,6 @@ def process_diffusion_images(data, bvals, mask):
 # Sort Data
 #########################
 
-def sort_spiral_data(group):
-
-    sig = list()
-    trj = list()
-    for acq in group:
-        # signal
-        sig.append(acq.data)
-
-        # trajectory
-        traj = np.swapaxes(acq.traj,0,1)[:3] # [dims, samples]
-        trj.append(traj)
-  
-    # convert lists to numpy arrays
-    trj = np.asarray(trj) # current size: (nacq, 3, ncol)
-    sig = np.asarray(sig) # current size: (nacq, ncha, ncol)
-
-    # rearrange trj & sig for bart
-    trj = np.transpose(trj, [1, 2, 0]) # [3, ncol, nacq]
-    sig = np.transpose(sig, [2, 0, 1])[np.newaxis]
-   
-    return sig, trj
-
 def sort_into_kspace(group, metadata, dmtx=None):
     # initialize k-space
     enc1_min, enc1_max = int(999), int(0)

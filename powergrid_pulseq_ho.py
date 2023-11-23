@@ -280,10 +280,6 @@ def process(connection, config, metadata, prot_file):
                 shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
                 item.data[:] *= np.exp(1j*(shift*base_trj).sum(axis=-1)) # base_trj in [rad/m]
 
-                # filter signal to avoid Gibbs Ringing
-                traj = np.swapaxes(item.traj[:,:3],0,1) # traj to [dim, samples]
-                item.data[:] = rh.filt_ksp(item.data[:], traj, filt_fac=0.95)
-
                 # Correct the global phase
                 k0 = item.traj[:,3]
                 item.data[:] *= np.exp(-1j*k0)

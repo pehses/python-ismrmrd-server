@@ -113,6 +113,11 @@ class Server:
                 # with cProfile.Profile() as pr:
                 #     pg_pulseq.process(connection, config, metadata)
                 # pr.dump_stats("/tmp/share/debug/powergrid_pulseq.prof")
+            elif (config == "powergrid_epi"):
+                import powergrid_epi_ho
+                importlib.reload(powergrid_epi_ho)
+                logging.info("Starting powergrid_epi processing based on config")
+                powergrid_epi_ho.process(connection, config, metadata)
             elif (config == "invertcontrast"):
                 import invertcontrast
                 importlib.reload(invertcontrast)

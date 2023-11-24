@@ -374,7 +374,7 @@ def add_naxes(arr, n):
 
 # Image coordinates
 
-def calc_img_coord(metadata, acq):
+def calc_img_coord(metadata, acq, pulseq=True):
     """
     Calculate voxel coordinates for a given slice for use in higher order reconstructions.
     The coordinate system is the Siemens device coordinate system (DCS), as the Skope data is also acquired in that coordinate system:
@@ -392,25 +392,33 @@ def calc_img_coord(metadata, acq):
     # scaling
     res = 1e-3 * metadata.encoding[0].encodedSpace.fieldOfView_mm.x / nx
     slc_res = 1e-3 * metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+
+    # Slice separation for multiband imaging
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_slc_red = n_slc // nz # number of reduced slices
+    n_slc_red = n_slc // nz
     slc_sep = n_slc_red * slc_res
+    # calculate slice offsets, this has to be done differently for the Pulseq sequence and the Siemens EPI sequence
+    # as in the Siemens EPI, the center position of the respective slice is stored in the position field, 
+    # whereas in Pulseq only the center of the whole volume (global offset is stored)
+    if pulseq:
+        slice_offset_gcs = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
+    else:
+        slice_offset_gcs = 0 # put the slice center at (0,0,0) in GCS, as slice offsets will be applied later
 
     # Make grid in GCS (logical)
     ix = np.linspace(nx/2*res,-(nx/2-1)*res, nx)
     iy = np.linspace(ny/2*res,-(ny/2-1)*res, ny)
-    slice_offset = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
-    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset
+    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset_gcs
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
     # Coordinates to DCS (physical)
     grid_rot = gcs_to_dcs(grid, rotmat) # [dims, coords]
 
-    # Add global offset in DCS
-    global_offset = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [m] -> [mm]
-    grid_rot[0] += global_offset[0]
-    grid_rot[1] += global_offset[1]
-    grid_rot[2] += global_offset[2]
+    # Add slice offset in DCS
+    slice_offset_pcs = 1e-3 * pcs_to_dcs(np.asarray(acq.position)) # [mm] -> [m]
+    grid_rot[0] += slice_offset_pcs[0]
+    grid_rot[1] += slice_offset_pcs[1]
+    grid_rot[2] += slice_offset_pcs[2]
 
     # reshape back
     grid_rot = grid_rot.reshape([3,len(ix),len(iy),len(iz)])

@@ -678,7 +678,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
                                     image.user_float[:3] = dirs[contr]
                                 if 'bDeltas' in prot_arrays:
                                     image.user_int[3] = bDeltas[contr]
-                                if img_ix < 5:
+                                if img_ix <= len(affine):
                                     image.user_int[2] = 1 # indicate affine is set
                                     image.user_float[3:7] = affine[img_ix-1]
                                 image.attribute_string = meta.serialize()

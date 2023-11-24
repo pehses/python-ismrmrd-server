@@ -1251,6 +1251,13 @@
                     </userParameterDouble>
                 </xsl:if>
 
+                <userParameterString>
+                    <name>seq_signature</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/sWipMemBlock/tFree"/>
+                    </value>
+                </userParameterString>
+
                 <xsl:if test="not(siemens/MEAS/sPhysioImaging/lSignal1 = 1) and not(siemens/MEAS/sPhysioImaging/lSignal1 = 16) and (siemens/MEAS/sPhysioImaging/lMethod1 = 8)">
                     <xsl:if test="siemens/MEAS/sPhysioImaging/lSignal1 = 2">
                         <userParameterString>

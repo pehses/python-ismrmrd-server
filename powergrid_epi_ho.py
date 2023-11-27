@@ -81,6 +81,7 @@ def process(connection, config, metadata):
 
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+    up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
 
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
@@ -119,6 +120,25 @@ def process(connection, config, metadata):
     img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
 
+    # chronological slice order
+    if "chronSliceIndex1" in up_long:
+        slc_ix1 = up_long["chronSliceIndex1"]
+        slc_ix2 = up_long["chronSliceIndex2"]
+        if slc_ix2 - slc_ix1 == 2:
+            # interleaved
+            slc_chron_tmp = np.arange(0,n_slc,1)
+            slc_chron = np.concatenate([slc_chron_tmp[slc_ix1::2], slc_chron_tmp[::2]])
+        elif slc_ix1 == 0:
+            # ascending
+            slc_chron = np.arange(0,n_slc,1)
+        else:
+            # descending
+            slc_chron = np.arange(0,n_slc,1)[::-1]
+    else:
+        # assume interleaved
+        slc_chron_tmp = np.arange(0,n_slc,1)
+        slc_chron = np.concatenate([slc_chron_tmp[1::2], slc_chron_tmp[::2]])
+
     try:
         for item in connection:
 
@@ -126,6 +146,8 @@ def process(connection, config, metadata):
             # Raw k-space data messages
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
+
+                item.idx.slice = slc_chron[item.idx.slice]
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):

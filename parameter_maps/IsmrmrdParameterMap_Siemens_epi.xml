@@ -63,6 +63,7 @@
         <p><s>IRIS.DERIVED.phaseOversampling</s>                                <d>siemens.IRIS.DERIVED.phaseOversampling</d></p>
         <p><s>IRIS.DERIVED.ImageColumns</s>                                     <d>siemens.IRIS.DERIVED.imageColumns</d></p>
         <p><s>IRIS.DERIVED.ImageLines</s>                                       <d>siemens.IRIS.DERIVED.imageLines</d></p>
+        <p><s>IRIS.DERIVED.chronSliceIndices</s>                                <d>siemens.IRIS.DERIVED.chronSliceIndices</d></p>
 
         <p><s>YAPS.iNoOfFourierColumns</s>                                      <d>siemens.YAPS.iNoOfFourierColumns</d></p>
         <p><s>YAPS.iNoOfFourierLines</s>                                        <d>siemens.YAPS.iNoOfFourierLines</d></p>

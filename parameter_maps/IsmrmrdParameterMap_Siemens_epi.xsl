@@ -836,6 +836,21 @@
                 </userParameterLong>
                 </xsl:if>
 
+                <xsl:if test="siemens/IRIS/DERIVED/chronSliceIndices">
+                <userParameterLong>
+                    <name>chronSliceIndex1</name>
+                    <value>
+                        <xsl:value-of select="siemens/IRIS/DERIVED/chronSliceIndices[1]"/>
+                    </value>
+                </userParameterLong>
+                <userParameterLong>
+                    <name>chronSliceIndex2</name>
+                    <value>
+                        <xsl:value-of select="siemens/IRIS/DERIVED/chronSliceIndices[2]"/>
+                    </value>
+                </userParameterLong>
+                </xsl:if>
+
                 <!-- Double parameters for Skope trajectory calculation -->
 
                 <xsl:if test="siemens/MEAS/sRXSPEC/alDwellTime">

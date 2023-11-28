@@ -113,11 +113,12 @@ def process(connection, config, metadata):
 
     # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
+    n_slc_red = n_slc//sms_factor
     n_contr = reco_n_contr if reco_n_contr else metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
-    acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
+    acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc_red)]
     noiseGroup = []
-    img_coord = [None] * (n_slc//sms_factor)
+    img_coord = [None] * (n_slc_red)
     dmtx = None
 
     # chronological slice order
@@ -126,17 +127,17 @@ def process(connection, config, metadata):
         slc_ix2 = up_long["chronSliceIndex2"]
         if slc_ix2 - slc_ix1 == 2:
             # interleaved
-            slc_chron_tmp = np.arange(0,n_slc,1)
+            slc_chron_tmp = np.arange(0,n_slc_red,1)
             slc_chron = np.concatenate([slc_chron_tmp[slc_ix1::2], slc_chron_tmp[::2]])
         elif slc_ix1 == 0:
             # ascending
-            slc_chron = np.arange(0,n_slc,1)
+            slc_chron = np.arange(0,n_slc_red,1)
         else:
             # descending
-            slc_chron = np.arange(0,n_slc,1)[::-1]
+            slc_chron = np.arange(0,n_slc_red,1)[::-1]
     else:
         # assume interleaved
-        slc_chron_tmp = np.arange(0,n_slc,1)
+        slc_chron_tmp = np.arange(0,n_slc_red,1)
         slc_chron = np.concatenate([slc_chron_tmp[1::2], slc_chron_tmp[::2]])
 
     try:

@@ -4,17 +4,17 @@ import os
 import logging
 import numpy as np
 import ctypes
-import copy
 import xml.dom.minidom
-import tempfile
 import psutil
 from time import perf_counter
 import importlib
 
 import subprocess
 import reco_helper as rh
+from bart import bart
+from skimage.transform import resize
 
-""" Higher order reconstruction of imaging data acquired with the dzne_ep2d_diff sequence via the FIRE framework
+""" Higher order reconstruction of imaging data acquired with the dzne_ep2d_diff sequence
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
 
     The higher order reconstruction is done in the physical coordinate system (DCS) and currently only possible, when Skope data is already inserted.
@@ -22,16 +22,11 @@ import reco_helper as rh
     Units are: 1st order: [rad/m], 2nd order: [rad/m^2], ...
 
     The MRD trajectory field should have the following trajectory dimensions
-    0: kx, 1: ky, 2: kz, 3: k0, 4-8: 2nd order, 9-15: 3rd order, 16-19: concomitant fields
+    0: kx, 1: ky, 2: kz, 3: t-vec, 4-8: 2nd order, 9-15: 3rd order, 16-19: concomitant fields
 
     If 2nd or 3rd order was not measured, the concomitant field terms move to lower dimensions (no zero-filling), to reduce the required space
-
-    The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
-    
-    !!! This recon does not support multishot diffusion imaging !!!
-
-    The recon currently is meant for 2D spiral data (3D not tested), it supports 3D reference scans though.
-
+    t-vec is the time vector of the readout regarding the echo time
+        
 """
 
 # Folder for sharing data/debugging
@@ -39,8 +34,7 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-# tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
-
+read_ecalib = True # read sensitivity maps from file (requires previous recon)
 save_cmplx = True # save images as complex data
 
 snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
@@ -73,11 +67,11 @@ def process(connection, config, metadata):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    # Check if ecalib/field maps calculated - WIP
-    # if not os.path.isfile(debugFolder + "/sensmaps.npy"):
-    #     raise ValueError("No sensitivity maps available.")
-    # if not os.path.isfile(debugFolder+"/fmap.npz"):
-    #     raise ValueError("No field map available.")
+    # Check if ACS and field map available
+    if not os.path.isfile(os.path.join(dependencyFolder, "acs.npy")):
+        raise ValueError("No reference data for coil sensitivity mapping available.")
+    if not os.path.isfile(os.path.join(dependencyFolder, "fmap.npz")):
+        raise ValueError("No field map available.")
 
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
@@ -180,7 +174,6 @@ def process(connection, config, metadata):
 
                 # Process Imaging Scans
                 # Calculate image coordinates in DCS
-                # WIP: Are coordinates correct in case of multiband & slice rotation?
                 if img_coord[item.idx.slice] is None:
                     img_coord[item.idx.slice] = rh.calc_img_coord(metadata, item, pulseq=False) 
 
@@ -192,6 +185,7 @@ def process(connection, config, metadata):
                 # WIP: for some unknown reason, not inverting the sign for concomitant field terms (item.traj[:,:-4] *= -1) yields better results in vivo
                 # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
                 item.traj[:] *= -1
+                item.traj[:,3] *= -1 # dont invert time vector
 
                 # below is undoing the inverted sign for concomitant fields (works better in vivo)
                 if item.traj.shape[1] > 4:
@@ -238,8 +232,10 @@ def process_and_send(connection, acqGroup, metadata, img_coord):
 
 def process_raw(acqGroup, metadata, img_coord):
 
-    # Multiband factor
+    # Get some header info
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    nx = metadata.encoding[0].reconSpace.matrixSize.x
+    ny = metadata.encoding[0].reconSpace.matrixSize.y
 
     # Write ISMRMRD file for PowerGrid
     tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
@@ -252,28 +248,37 @@ def process_raw(acqGroup, metadata, img_coord):
     img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
-    # Calculate and insert DCF
-    traj = acqGroup[0][0][0].traj[:,:2]
-    dcf = rh.calc_dcf(traj)
-    dcf /= np.max(dcf)
-    dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)
-    dset_tmp.append_array("DCF", dcf2.astype(np.float64))
-
-    # Insert Sensitivity Maps - WIP: read from GRE sequence and check shape
-    # sens = np.load(debugFolder + "/sensmaps.npy") # [slices,nc,nz=1,ny,nx]
-    # if sms_factor > 1:
-    #     sens = reshape_sens_sms(sens, sms_factor)
-    sens = np.ones([10,32,1,210,210]) + 1j * np.ones([10,32,1,210,210])
+    # Calculate and insert Sensitivity Maps
+    sens_path = os.path.join(dependencyFolder, "sensmaps.npy")
+    if read_ecalib and os.path.exists(sens_path):
+        sens = np.load(sens_path)
+    else:
+        acs = np.load(os.path.join(dependencyFolder, "acs.npy")) # [slices,nx,ny,nz,nc]
+        if acs.shape[-2] != 1:
+            raise ValueError("3D reference scan not supported.")
+        sensmaps = []
+        for acs_slc in acs:
+            acs_slc = bart(1,f'resize -c 0 {nx} 1 {ny} ', acs_slc)
+            sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, crop=0.92, kernel_size=6, threshold=0.003, use_gpu=False))
+            # sensmaps.append(bart(1, 'caldir 40', acs_slc))
+        sens = np.transpose(np.array(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
+        sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation
+        if sms_factor > 1:
+            sens = reshape_sens_sms(sens, sms_factor)
+    
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
+    np.save(sens_path, sens)
 
-    # Insert Field Map - WIP: read from GRE sequence and check shape
-    # fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)
-    # fmap_data = fmap['fmap']
-    # if sms_factor > 1:
-    #     fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
-    fmap_data = np.zeros([10,1,210,210])
-    fmap_name = 'abc'
-    dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64)) # [slices,nz,ny,nx]
+    # Insert Field Map
+    fmap = np.load(os.path.join(dependencyFolder, "fmap.npz"), allow_pickle=True)
+    fmap_data = fmap['fmap']
+    fmap_name = fmap['name']
+    shape = [fmap_data.shape[0], ny, nx] # [slices,ny,nx]
+    fmap_data = resize(fmap_data, shape, anti_aliasing=True) # interpolate to correct raster
+    fmap_data = np.swapaxes(fmap_data, -1, -2)[::-1,::-1] # refscan is with Pulseq and has different orientation
+    if sms_factor > 1:
+        fmap_data = reshape_fmap_sms(fmap_data, sms_factor)  # [slices,nz,ny,nx], nz=sms factor
+    dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64))
 
     # Write header
     if sms_factor > 1:
@@ -405,8 +410,7 @@ def process_raw(acqGroup, metadata, img_coord):
         snr = snr[0,0,0]
         dsets['snr_map'] = snr
 
-    # Correct orientation, normalize and convert to int16 for online recon
-    uint_max = np.iinfo(np.uint16).max
+    # Correct orientation, normalize and convert to int16 for online recon - WIP: correct for EPI?
     for key in dsets:
         dsets[key] = np.swapaxes(dsets[key], -1, -2)
         dsets[key] = np.flip(dsets[key], (-4,-3,-2,-1))
@@ -415,26 +419,16 @@ def process_raw(acqGroup, metadata, img_coord):
         elif key == 'fmap':
             dsets[key] = np.around(dsets[key])
             dsets[key] = dsets[key].astype(np.int16) # field map
-        elif key == 'snr_map':
-            pass # SNR map will not be calculated online
-        else:
-            dsets[key] *= uint_max / abs(dsets[key]).max()
-            dsets[key] = np.around(dsets[key])
-            dsets[key] = dsets[key].astype(np.uint16)
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           str((uint_max+1)//2),
-                        'WindowWidth':            str(uint_max+1),
                         'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
     # Set ISMRMRD Meta Attributes
     meta2 = ismrmrd.Meta({'DataRole':              'Quantitative',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                        'WindowCenter':           '0',
-                        'WindowWidth':            '512',
                         'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
@@ -470,7 +464,7 @@ def process_raw(acqGroup, metadata, img_coord):
                                                        ctypes.c_float(slc_res))
                                 images.append(image)
         else:
-            # ADC maps, Refimg, Fmap & SNR maps
+            # Fmap & SNR maps
             for slc, img in enumerate(dsets[key]):
                 image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[slc][0][0])
                 image.image_index = slc + 1
@@ -515,4 +509,3 @@ def reshape_fmap_sms(fmap, sms_factor):
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
     return fmap
-

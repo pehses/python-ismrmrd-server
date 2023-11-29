@@ -80,6 +80,9 @@ def process_cartesian(connection, config, metadata, prot_file):
     sensmaps = [None] * 256
     dmtx = None
 
+    # Save k-space data for calculating sensitivity maps in following accelerated scans (e.g. EPI/spiral)
+    acs_ref = [[] for _ in range(n_slc)]
+
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
     acqs = read_acqs(prot_file)
@@ -127,12 +130,14 @@ def process_cartesian(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
                     logging.info("Processing a group of k-space data")
-                    img, img_uncmb = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    img, img_uncmb, refdata = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
                     image_list[item.idx.contrast][item.idx.slice] = img
                     if fmap_scan and img_uncmb is not None:
                         phs_imgs[item.idx.contrast][item.idx.slice] = img_uncmb # save data for field map calculation
                     else:
                         fmap_scan = False
+                    if item.idx.contrast == 0 and refdata is not None:
+                        acs_ref[item.idx.slice] = refdata
                 
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
                     images = send_images(image_list, metadata, acqGroup[0][0])
@@ -141,6 +146,8 @@ def process_cartesian(connection, config, metadata, prot_file):
                         phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]
                         images = calc_fieldmap(phs_imgs, ismrmrd_arr['echo_times'], metadata, acqGroup[0][0])
                         connection.send_image(images)
+                    if acs_ref[0] is not None:
+                        np.save(os.path.join(dependencyFolder, "acs.npy"), np.array(acs_ref))
 
         # Process any remaining groups of raw or image data.  This can 
         # happen if the trigger condition for these groups are not met.
@@ -152,7 +159,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                 if sensmaps[item.idx.slice] is None:
                     # run parallel imaging calibration
                     sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx)
-                image, _ = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
+                image, _, __ = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
                 logging.debug("Sending image to client:\n%s", image)
                 connection.send_image(image)
                 acqGroup = []
@@ -253,23 +260,25 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
 
     if sensmaps is None:
         logging.debug("no pics necessary, just do standard FFT")
-        data_uncmb = cifftn(data, axes=(0, 1, 2))
-        data = np.sqrt(np.sum(np.abs(data_uncmb)**2, axis=-1)) # Sum of squares coil combination
+        img_uncmb = cifftn(data, axes=(0, 1, 2))
+        img = np.sqrt(np.sum(np.abs(img_uncmb)**2, axis=-1)) # Sum of squares coil combination
+        refdata = data
     else:
-        data_uncmb = None
+        img_uncmb = None
         if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-            data = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
+            img = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
         else:
-            data = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
-        data = np.abs(data)
+            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
+        img = np.abs(img)
+        refdata = None
 
     # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 0, 1)
-    data = np.flip(data, (0,1,2))
+    img = np.swapaxes(img, 0, 1)
+    img = np.flip(img, (0,1,2))
 
-    logging.debug("Image data is size %s" % (data.shape,))
+    logging.debug("Image data is size %s" % (img.shape,))
 
-    return data, data_uncmb
+    return img, img_uncmb, refdata
 
 def send_images(imgs, metadata, group):
 
@@ -346,7 +355,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     fmap, mask = rh.calc_fmap(imgs, echo_times, metadata, dep_folder=dependencyFolder)
 
     # save in dependency - swap x/y axes for correct orientation in PowerGrid
-    np.savez(dependencyFolder+"/fmap.npz", fmap=np.swapaxes(fmap,1,2), mask=mask, name='Field map from external scan.')
+    np.savez(os.path.join(dependencyFolder, "fmap.npz"), fmap=np.swapaxes(fmap,1,2), mask=mask, name='Field map from external scan.')
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])

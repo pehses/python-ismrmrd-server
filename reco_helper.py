@@ -475,7 +475,7 @@ def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, chunk_sz=None, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, chunk_sz=None, use_gpu=False):
 
     from multiprocessing import Pool
     from functools import partial
@@ -496,10 +496,10 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, chunk_sz=None, u
 
     if chunk_sz <= 0 or chunk_sz >= nz:
         # espirit in one run:
-        sensmaps = bart(1, f'ecalib -k 6 -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}', acs)
+        sensmaps = bart(1, f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}', acs)
     else:
         # espirit_econ: reduce memory footprint by chunking
-        eon = bart(1, f'ecalib -k 6 -I {gpu_str} -m {n_maps} -t {threshold} -1', acs)  # currently, gpu doesn't help here but try anyway
+        eon = bart(1, f'ecalib -k {kernel_size} -I {gpu_str} -m {n_maps} -t {threshold} -1', acs)  # currently, gpu doesn't help here but try anyway
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
         tic = time.perf_counter()

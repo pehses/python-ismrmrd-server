@@ -337,14 +337,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     
     images = []
     n_par = data.shape[-1]
-    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
     # Format as ISMRMRD image data
     if n_par > 1:
         image = ismrmrd.Image.from_array(data, acquisition=group[0])
-        image.image_index =group[0].idx.contrast
-        image.image_series_index = 1
+        image.image_index = 1
+        image.image_series_index = group[0].idx.contrast
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -353,8 +351,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         images.append(image)
     else:
         image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
-        image.image_series_index = 1
+        image.image_index = group[0].idx.slice
+        image.image_series_index = group[0].idx.contrast
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 

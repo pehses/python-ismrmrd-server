@@ -302,7 +302,8 @@ def send_images(imgs, metadata, group):
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                          'WindowCenter':           '16384',
                          'WindowWidth':            '32768',
-                         'Keep_image_geometry':    1})
+                         'Keep_image_geometry':    1,
+                         'ImgType':                'Imgdata'})
     xml = meta.serialize()
 
     # Format as ISMRMRD image data
@@ -351,6 +352,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     n_slc = imgs.shape[0]
+    n_contr = imgs.shape[-1]
 
     fmap, mask = rh.calc_fmap(imgs, echo_times, metadata, dep_folder=dependencyFolder)
 
@@ -373,7 +375,8 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
                     'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                     'WindowCenter':           '0',
                     'WindowWidth':            '512',
-                    'Keep_image_geometry':    1})
+                    'Keep_image_geometry':    1,
+                    'ImgType':                'fmap'})
 
     # for position offset
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
@@ -384,8 +387,8 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     if nz > 1: # send as 3D volume
         image = ismrmrd.Image.from_array(fmap, acquisition=group[0])
         image.image_index = 1 # contains image index
-        image.image_series_index = 1
-        image.slice = 1
+        image.image_series_index = n_contr
+        image.slice = 0
         image.attribute_string = meta.serialize()
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -399,7 +402,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
 
             image = ismrmrd.Image.from_array(fmap[...,ix], acquisition=group[0])
             image.image_index = ix
-            image.image_series_index = 2
+            image.image_series_index = n_contr
             image.slice = 0
             image.attribute_string = meta.serialize()
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 

@@ -34,7 +34,7 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-read_ecalib = True # read sensitivity maps from file (requires previous recon)
+read_ecalib = False # read sensitivity maps from file (requires previous recon)
 save_cmplx = True # save images as complex data
 
 snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
@@ -257,10 +257,12 @@ def process_raw(acqGroup, metadata, img_coord):
         if acs.shape[-2] != 1:
             raise ValueError("3D reference scan not supported.")
         sensmaps = []
-        for acs_slc in acs:
+        logging.debug("Start sensitivity map calculation.")
+        for slc, acs_slc in enumerate(acs):
             acs_slc = bart(1,f'resize -c 0 {nx} 1 {ny} ', acs_slc)
             sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, crop=0.92, kernel_size=6, threshold=0.003, use_gpu=False))
             # sensmaps.append(bart(1, 'caldir 40', acs_slc))
+            logging.debug(f"Finished sensitivity map calculation for slice {slc}.")
         sens = np.transpose(np.array(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
         sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation
         if sms_factor > 1:

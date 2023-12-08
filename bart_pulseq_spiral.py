@@ -337,6 +337,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     
     images = []
     n_par = data.shape[-1]
+    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
     # Format as ISMRMRD image data
     if n_par > 1:
@@ -372,8 +373,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         
         image = ismrmrd.Image.from_array(refimg, acquisition=group[0])
         image.image_index = 1
-        image.image_series_index = 2
-        image.slice = group[0].idx.slice
+        image.image_series_index = n_contr
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 

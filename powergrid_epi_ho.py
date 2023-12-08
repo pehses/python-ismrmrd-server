@@ -414,8 +414,6 @@ def process_raw(acqGroup, metadata, img_coord):
 
     # Correct orientation, normalize and convert to int16 for online recon - WIP: correct for EPI?
     for key in dsets:
-        dsets[key] = np.swapaxes(dsets[key], -1, -2)
-        dsets[key] = np.flip(dsets[key], (-4,-3,-2,-1))
         if key == 'data' and save_cmplx:
             dsets[key] /= abs(dsets[key]).max()
         elif key == 'fmap':

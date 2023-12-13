@@ -150,10 +150,10 @@ def process_radial(connection, config, metadata, prot_file):
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     if item.idx.contrast == 0: # if B0 mapping refscan was done, use only 1st contrast
                         acsGroup[item.idx.slice].append(item)
-                        if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
-                            # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                            sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
-                            acsGroup[item.idx.slice].clear()
+                    if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                        # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
+                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
+                        acsGroup[item.idx.slice].clear()
                     continue
 
                 if item.idx.segment == 0:

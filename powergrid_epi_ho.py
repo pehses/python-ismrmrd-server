@@ -13,6 +13,7 @@ import subprocess
 import reco_helper as rh
 from bart import bart
 from skimage.transform import resize
+from cfft import cfftn, cifftn
 
 """ Higher order reconstruction of imaging data acquired with the dzne_ep2d_diff sequence
     Reconstruction is done with the BART toolbox and the PowerGrid toolbox
@@ -181,6 +182,10 @@ def process(connection, config, metadata):
                 if dmtx is not None:
                     item.data[:] = rh.apply_prewhitening(item.data[:], dmtx)
 
+                # Undo FOV shift - this is only necessary, if the FOV shift was not disabled in the sequence
+                # shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
+                # item.data[:] *= np.exp(1j*(shift*item.traj[:,:3]).sum(axis=-1)) # base_trj in [rad/m]
+
                 # invert trajectory sign (is necessary as field map and k0 also need sign change)
                 # WIP: for some unknown reason, not inverting the sign for concomitant field terms (item.traj[:,:-4] *= -1) yields better results in vivo
                 # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
@@ -248,28 +253,32 @@ def process_raw(acqGroup, metadata, img_coord):
     img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
-    # Calculate and insert Sensitivity Maps
+    # Load ACS and calculate reference image
+    acs = np.load(os.path.join(dependencyFolder, "acs.npy")) # [slices,nx,ny,nz,nc]
+    if acs.shape[-2] != 1:
+        raise ValueError("3D reference scan not supported.")
+    acs = bart(1,f'resize -c 1 {nx} 2 {ny} ', acs)
+    refimg = rh.rss(cifftn(acs, [1,2]), axis=-1) # save at spiral matrix size
+    refimg = np.transpose(refimg, [0,3,2,1])[::-1,:,::-1]
+
+    # Calculate and insert Sensitivity Maps from ACS data
     sens_path = os.path.join(dependencyFolder, "sensmaps.npy")
     if read_ecalib and os.path.exists(sens_path):
         sens = np.load(sens_path)
     else:
-        acs = np.load(os.path.join(dependencyFolder, "acs.npy")) # [slices,nx,ny,nz,nc]
-        if acs.shape[-2] != 1:
-            raise ValueError("3D reference scan not supported.")
-        sensmaps = []
         logging.debug("Start sensitivity map calculation.")
+        sensmaps = []
         for slc, acs_slc in enumerate(acs):
-            acs_slc = bart(1,f'resize -c 0 {nx} 1 {ny} ', acs_slc)
             sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, crop=0.92, kernel_size=6, threshold=0.003, use_gpu=False))
-            # sensmaps.append(bart(1, 'caldir 40', acs_slc))
+            # sensmaps.append(bart(1, 'caldir 32', acs_slc))
             logging.debug(f"Finished sensitivity map calculation for slice {slc}.")
         sens = np.transpose(np.array(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
         sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation
-        if sms_factor > 1:
-            sens = reshape_sens_sms(sens, sms_factor)
-    
-    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
+
     np.save(sens_path, sens)
+    if sms_factor > 1:
+        sens = reshape_sens_sms(sens, sms_factor)
+    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
     fmap = np.load(os.path.join(dependencyFolder, "fmap.npz"), allow_pickle=True)
@@ -278,6 +287,7 @@ def process_raw(acqGroup, metadata, img_coord):
     shape = [fmap_data.shape[0], ny, nx] # [slices,ny,nx]
     fmap_data = resize(fmap_data, shape, anti_aliasing=True) # interpolate to correct raster
     fmap_data = np.swapaxes(fmap_data, -1, -2)[::-1,::-1] # refscan is with Pulseq and has different orientation
+    fmap_data_sv = fmap_data.copy()
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor)  # [slices,nz,ny,nx], nz=sms factor
     dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64))
@@ -375,8 +385,11 @@ def process_raw(acqGroup, metadata, img_coord):
     dsets = {}
     dsets['data'] = data.copy()
 
+    # Append refscan
+    dsets['refimg'] = refimg.copy()
+
     # Append field map
-    dsets['fmap'] = fmap_data[:,np.newaxis] /2/np.pi # add axis for [slc,z,y,x], save in [Hz]
+    dsets['fmap'] = fmap_data_sv[:,np.newaxis] /2/np.pi # add axis for [slc,z,y,x], save in [Hz]
 
     # Calculate SNR maps based on pseudo-replicas
     # based on https://github.com/hansenms/ismrm_sunrise_matlab/blob/master/ismrm_pseudo_replica.m
@@ -466,7 +479,7 @@ def process_raw(acqGroup, metadata, img_coord):
         else:
             # Fmap & SNR maps
             for slc, img in enumerate(dsets[key]):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[slc][0][0])
+                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc

@@ -427,6 +427,7 @@ def process_raw(acqGroup, metadata, img_coord):
 
     # Correct orientation, normalize and convert to int16 for online recon - WIP: correct for EPI?
     for key in dsets:
+        dsets[key] = np.flip(dsets[key], -1)
         if key == 'data' and save_cmplx:
             dsets[key] /= abs(dsets[key]).max()
         elif key == 'fmap':
@@ -446,7 +447,15 @@ def process_raw(acqGroup, metadata, img_coord):
                         'PG_Options':              subproc,
                         'Field Map':               fmap_name})
 
+    # Calculate affine matrix - WIP: currently only pure transversal orientation supported
+    res_x = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+    res_y = metadata.encoding[0].encodedSpace.fieldOfView_mm.y / metadata.encoding[0].encodedSpace.matrixSize.y
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    res = [-1*res_x, res_y, slc_res, 0]
+    edge_coord = 1e3 * np.array([img_coord[0,0,0,0,0], img_coord[1,0,0,0,0], img_coord[2,0,0,0,0]]) # [slc=0,nz=0,nx=0,ny=0] for edge at right/posterior/feet in transversal orientation
+    affine = np.diag(res)
+    affine[:3,-1] = rh.dcs_to_ras(edge_coord)
+    np.save(debugFolder+"/affine.npy", affine)
 
     # Send images
     img_ix = 0
@@ -470,7 +479,9 @@ def process_raw(acqGroup, metadata, img_coord):
                                 image.phase = phs
                                 image.contrast = contr
                                 image.user_int[1] = sms_factor
-                                image.user_int[2] = 0
+                                if img_ix <= len(affine):
+                                    image.user_int[2] = 1 # indicate affine is set
+                                    image.user_float[3:7] = affine[img_ix-1]
                                 image.attribute_string = meta.serialize()
                                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 

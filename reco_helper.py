@@ -397,18 +397,22 @@ def calc_img_coord(metadata, acq, pulseq=True):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_slc_red = n_slc // nz
     slc_sep = n_slc_red * slc_res
-    # calculate slice offsets, this has to be done differently for the Pulseq sequence and the Siemens EPI sequence
+
+    # slice offsets have to be calculated differently for the Pulseq sequence and the Siemens EPI sequence
     # as in the Siemens EPI, the center position of the respective slice is stored in the position field, 
     # whereas in Pulseq only the center of the whole volume (global offset is stored)
     if pulseq:
         slice_offset_gcs = slc_res*(acq.idx.slice-(n_slc-1)/2) # this is the offset of the first slice in a stack from the volumes center
+        ix = np.linspace(nx/2*res,-(nx/2-1)*res, nx)
+        iy = np.linspace(ny/2*res,-(ny/2-1)*res, ny)
+        iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset_gcs
     else:
         slice_offset_gcs = 0 # put the slice center at (0,0,0) in GCS, as slice offsets will be applied later
-
+        ix = np.linspace((nx/2-1)*res,-nx/2*res, nx) # ix is shifted by 1 voxel in the EPI (confirmed with affine from scanner)
+        iy = np.linspace(ny/2*res,-(ny/2-1)*res, ny)
+        iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset_gcs
+    
     # Make grid in GCS (logical)
-    ix = np.linspace(nx/2*res,-(nx/2-1)*res, nx)
-    iy = np.linspace(ny/2*res,-(ny/2-1)*res, ny)
-    iz = np.linspace(0, (nz-1)*slc_sep, nz) + slice_offset_gcs
     grid = np.asarray(np.meshgrid(ix,iy,iz)).reshape([3,-1])
 
     # Coordinates to DCS (physical)
@@ -446,8 +450,8 @@ def calc_affine(res, rotmat, refpt):
     affine[2,2] = -1*res[2]
 
     # rotation
-    affine[:3,:3] = np.matmul(rotmat, affine[:3,:3]) # GCS to PCS
-    affine[:3,:3] = pcs_to_ras(affine[:3,:3]) # PCS to RAS+
+    affine[:3,:3] = gcs_to_pcs(affine[:3,:3], rotmat)
+    affine[:3,:3] = pcs_to_ras(affine[:3,:3])
 
     # reference point
     refpt = dcs_to_ras(refpt) # DCS to RAS+

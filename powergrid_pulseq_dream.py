@@ -344,7 +344,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
             dset_tmp.append_acquisition(acq)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
-    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3) # 1 time segment per ms readout
+    ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()

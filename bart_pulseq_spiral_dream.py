@@ -246,11 +246,11 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         # pics_config = 'pics -g -S -e -R T:7:0:.0001 -i 50 -t'
-        pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
+        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
     else:
         nufft_config = 'nufft -i -m 20 -l 0.005 -c -t -d %d:%d:%d'%(nx, nx, nz)
         # pics_config = 'pics -S -e -R T:7:0:.0001 -i 50 -t'
-        pics_config = 'pics -g -S -e -l1 0.0005  -i 50 -t'
+        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
 
     # dream array : [ste_contr,flip_angle_ste,TR,flip_angle,prepscans,t1]
     dream = prot_arrays['dream']
@@ -395,8 +395,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     if n_par > 1:
         for par in range(n_par):
             image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
-            image.image_index = 1 + group[0].idx.contrast * n_par + par
-            image.image_series_index = 1
+            image.image_index = 1 + par
+            image.image_series_index = 1 + group[0].idx.contrast
             image.slice = 0
             image.contrast = group[0].idx.contrast
             image.attribute_string = xml
@@ -409,7 +409,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             for par in range(n_par):
                 image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
                 image.image_index = 1 + par
-                image.image_series_index = 2
+                image.image_series_index = 3
                 image.slice = 0
                 image.attribute_string = xml2
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -421,7 +421,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             for par in range(n_par):
                 image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
                 image.image_index = 1 + par
-                image.image_series_index = 3
+                image.image_series_index = 4
                 image.slice = 0
                 image.attribute_string = xml3
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
@@ -472,6 +472,7 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
     
         if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            # sensmaps = bart(1, 'caldir 32', data)
         else:
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
         np.save(debugFolder + "/" + "acs.npy", data)

@@ -159,7 +159,6 @@ def process(connection, config, metadata, prot_file):
     acsGroup = [[] for _ in range(n_slc)]
     sensmaps = [None] * n_slc
     sensmaps_shots = [None] * n_slc
-    img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     shotimgs = None
     sens_shots = False
@@ -268,7 +267,7 @@ def process(connection, config, metadata, prot_file):
                 # trigger recon early
                 if process_raw.reco_n_contr and item.idx.contrast > process_raw.reco_n_contr - 1:
                     if len(acqGroup) > 0:
-                        process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
+                        process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
                     continue
 
                 # Process imaging scans - deal with ADC segments 
@@ -338,7 +337,7 @@ def process(connection, config, metadata, prot_file):
 
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
+                    process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -384,15 +383,15 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
+def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord)
+    images = process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays, img_coord):
+def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
     # Multiband factor
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1

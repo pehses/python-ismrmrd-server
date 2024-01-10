@@ -139,12 +139,10 @@ def process(connection, config, metadata, prot_file):
 
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
-        process_acs.fmap = {'fmap': None , 'mask': None, 'name': 'Field Map from reference scan'}
         echo_times = prot_arrays['echo_times']
-        te_diff = echo_times[1] - echo_times[0] # [s]
+        process_acs.fmap = {'fmap': None, 'mask': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
-        te_diff = None
 
     # read protocol acquisitions - faster than using read_acquisition
     logging.debug("Reading in protocol acquisitions.")
@@ -191,7 +189,7 @@ def process(connection, config, metadata, prot_file):
                         if process_acs.cc_cha < n_cha and process_acs.cc_mat is None:
                             process_acs.cc_mat = rh.calibrate_cc(acsGroup, process_acs.cc_cha, apply_cc=False)
                         # run parallel imaging calibration
-                        sensmaps = process_acs(acsGroup, metadata, dmtx, te_diff) # [nx,ny,nz,nc]
+                        sensmaps = process_acs(acsGroup, metadata, dmtx) # [nx,ny,nz,nc]
                         acsGroup.clear()
                     continue                       
 
@@ -504,7 +502,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
 
     return images
 
-def process_acs(group, metadata, dmtx=None, te_diff=None):
+def process_acs(group, metadata, dmtx=None):
     """ Process reference scans for parallel imaging calibration
     """
 
@@ -532,8 +530,10 @@ def process_acs(group, metadata, dmtx=None, te_diff=None):
     # Field Map calculation - if acquired
     refimg = cifftn(data, [0,1,2])
     np.save(debugFolder + "/refimg.npy", refimg)
-    if te_diff is not None and data.shape[-1] > 1:
-        process_acs.fmap['fmap'], _ = rh.calc_fmap(refimg, te_diff, metadata)
+    if process_acs.fmap is not None:
+        echo_times = process_acs.fmap['TE']
+        refimg = refimg[np.newaxis] # add slice axis
+        process_acs.fmap['fmap'], _ = rh.calc_fmap(refimg, echo_times, metadata)
 
     np.save(debugFolder + "/" + "acs.npy", data)
 

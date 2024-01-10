@@ -14,10 +14,9 @@ from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
 
-from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
+from scipy.ndimage import  median_filter
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase
-from dipy.segment.mask import median_otsu
 
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 import reco_helper as rh

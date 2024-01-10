@@ -423,11 +423,11 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap = process_acs.fmap
         refimgs = np.asarray(fmap['fmap'])
         echo_times = fmap['TE']
-        fmap['fmap'], fmap['mask'] = calc_fmap(refimgs, echo_times, metadata)
+        fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata)
     else: # external field map
         fmap_path = dependencyFolder+"/fmap.npz"
         fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
-        fmap = load_external_fmap(fmap_path, fmap_shape)
+        fmap = rh.load_external_fmap(fmap_path, fmap_shape)
 
     fmap_data = fmap['fmap']
     fmap_mask = fmap['mask']
@@ -747,6 +747,7 @@ def process_acs(group, metadata, dmtx=None, sens_shots=False):
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
+    data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimension
 
     slc_ix = group[0].idx.slice
 
@@ -790,126 +791,6 @@ def process_acs(group, metadata, dmtx=None, sens_shots=False):
     np.save(debugFolder + "/" + "acs.npy", data)
 
     return sensmaps, sensmaps_shots
-
-def calc_fmap(imgs, echo_times, metadata):
-    """ Calculate field maps from reference images with two different contrasts
-
-        imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
-        echo_times: list of echo times [s]
-    """
-    
-    mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
-    std_filter = True # apply standard deviation filter (only if mc_fmap selected) - recommended
-    std_fac = 1.1 # factor for standard deviation denoising (see below)
-    romeo_fmap = False # use the ROMEO toolbox for field map calculation
-    romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
-    filtering = False # apply Gaussian and median filtering (not recommended for mc_fmap)
-
-    if online_recon:
-        std_filter = False
-
-    if len(echo_times) > 2:
-        romeo_fmap = True # more than one echo time only possible with ROMEO
-
-    if romeo_fmap or romeo_uw:
-        result_path = dependencyFolder+"/romeo_results"
-        if not os.path.exists(result_path):
-            os.makedirs(result_path)
-
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    n_slc = imgs.shape[0]
-
-    # from here on either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
-    if nz == 1:
-        imgs = imgs[:,:,:,0] # 2D field map acquisition
-    elif nz > 1:
-        imgs = np.moveaxis(imgs[0],2,0) # 3D field map acquisition
-    elif nz > 1 and n_slc > 1:
-        raise ValueError("Multi-slab is not supported.")
-
-    if romeo_fmap:
-        # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        fmap = rh.romeo_unwrap(imgs, echo_times, result_path, mc_unwrap=False, return_b0=True)
-    elif mc_fmap:
-        # Multi-coil field map calculation (Robinson, MRM, 2011)
-        phasediff = imgs[...,1] * np.conj(imgs[...,0])
-        if romeo_uw:
-            phasediff_uw = rh.romeo_unwrap(phasediff,[], result_path, mc_unwrap=True, return_b0=False)
-        else:
-            phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
-            for k in range(phasediff.shape[-1]):
-                phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k])) # unwrap phase for each coil
-
-        nc = phasediff_uw.shape[-1]
-        phasediff_uw_rs = phasediff_uw.reshape([-1,nc])
-        img_mag = abs(imgs[...,0]).reshape([-1,nc])
-        ix = np.argsort(phasediff_uw_rs, axis=-1)[:,nc//4:-nc//4] # remove lowest & highest quartile
-        weights = np.take_along_axis(img_mag, ix, axis=-1) / np.sum(np.take_along_axis(img_mag, ix, axis=-1), axis=-1)[:,np.newaxis]
-        fmap = np.sum(weights * np.take_along_axis(phasediff_uw_rs, ix, axis=-1), axis=-1)
-        fmap = fmap.reshape(imgs.shape[:3])
-        te_diff = echo_times[1] - echo_times[0]
-        fmap = -1 * fmap/te_diff # the sign in Powergrid is inverted
-    else:
-        # Standard field mapping approach (Hermitian product & SOS coil combination)
-        phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
-        phasediff = np.sum(phasediff, axis=-1) # coil combination
-        if romeo_uw:
-            phasediff_uw = rh.romeo_unwrap(phasediff, [], result_path, mc_unwrap=False, return_b0=False)
-        else:
-            phasediff_uw = unwrap_phase(np.angle(phasediff))
-        te_diff = echo_times[1] - echo_times[0]
-        fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
-
-    # mask with threshold and median otsu from dipy
-    # do it in 2D as it works better and hole filling is easier
-    img_mask = rh.rss(imgs[...,0], axis=-1)
-    mask = np.zeros_like(img_mask)
-    for k,img in enumerate(img_mask):
-        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
-
-        # simple threshold mask
-        thresh = 0.13
-        mask_thresh = img/np.max(img)
-        mask_thresh[mask_thresh<thresh] = 0
-        mask_thresh[mask_thresh>=thresh] = 1
-
-        # combine masks
-        mask[k] = mask_thresh + mask_otsu
-        mask[k][mask[k]>0] = 1
-        mask[k] = binary_fill_holes(mask[k])
-        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
-
-    # Standard deviation filter (Robinson, MRM, 2011)
-    if std_filter and mc_fmap:
-        phasediff_uw *= mask[...,np.newaxis]
-        std = phasediff_uw.std(axis=-1)
-        median_std = np.median(std[std!=0])
-        idx = np.argwhere(std>std_fac*median_std)
-        n_cb = [2,2,1]
-        for ix in idx:
-            voxel_cb = tuple([slice(max(0,ix[k]-n_cb[k]), ix[k]+n_cb[k]+1) for k in range(3)])
-            fmap[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
-
-    # Gauss/median filter
-    if filtering:
-        fmap *= mask
-        fmap = gaussian_filter(fmap, sigma=0.5)
-        fmap = median_filter(fmap, size=2)
-
-    # interpolate to correct matrix size
-    if nz == 1:
-        newshape = [n_slc,ny,nx]
-    else:
-        newshape = [nz,ny,nx]
-    fmap = resize(np.transpose(fmap,[0,2,1]), newshape, anti_aliasing=True)
-    mask = resize(np.transpose(mask,[0,2,1]), newshape, anti_aliasing=False)
-    mask[mask>0] = 1 # fix interpolation artifacts in binary mask
-
-    fmap *= mask
-
-    return fmap, mask
 
 def process_shots(group, metadata, sensmaps_shots):
     """ Reconstruct images from single shots for calculation of phase maps
@@ -1148,21 +1029,4 @@ def reshape_fmap_sms(fmap, sms_factor):
     fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype) # [slices, ny, nx] to [slices, nz, ny, nx]
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
-    return fmap
-
-def load_external_fmap(path, shape):
-    # Load an external field map (has to be a .npz file)
-    if not os.path.exists(path):
-        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
-        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
-    else:
-        fmap = np.load(path, allow_pickle=True)
-        if 'name' not in fmap:
-            fmap['name'] = 'No name.'
-    if shape != list(fmap['fmap'].shape):
-        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Dont use field map in recon.")
-        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
-    if 'params' in fmap:
-        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-
     return fmap

@@ -396,7 +396,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
         else: # external field map
             fmap_path = dependencyFolder+"/fmap.npz"
             fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
-            fmap = load_external_fmap(fmap_path, fmap_shape)
+            fmap = rh.load_external_fmap(fmap_path, fmap_shape)
         np.savez(debugFolder+"/fmap.npz", fmap=fmap['fmap'], mask=fmap['mask'], name=fmap['name'])
     else:
         fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)
@@ -759,7 +759,7 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
 
     # data for sensitivity calibration
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
-    data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimenstion
+    data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimension
 
     slc_ix = group[0].idx.slice
 
@@ -935,22 +935,4 @@ def reshape_fmap_sms(fmap, sms_factor):
     fmap = np.zeros([slices_eff, sms_factor, fmap_cpy.shape[1], fmap_cpy.shape[2]], dtype=fmap_cpy.dtype) # [slices, ny, nx] to [slices, nz, ny, nx]
     for slc in range(fmap_cpy.shape[0]):
         fmap[slc%slices_eff, slc//slices_eff] = fmap_cpy[slc] 
-    return fmap
-
-def load_external_fmap(path, shape):
-    # Load an external field map (has to be a .npz file)
-    if not os.path.exists(path):
-        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
-        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
-    else:
-        fmap = dict(np.load(path, allow_pickle=True))
-        if 'name' not in fmap:
-            fmap['name'] = 'No name.'
-    if shape != list(fmap['fmap'].shape):
-        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Try interpolating the field map.")
-        fmap['fmap'] = resize(fmap['fmap'], shape, anti_aliasing=True)
-        logging.debug(f"Field Map shape after interpolation: {list(fmap['fmap'].shape)}.")
-    if 'params' in fmap:
-        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
-
     return fmap

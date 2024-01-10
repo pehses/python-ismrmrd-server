@@ -679,6 +679,30 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
 
     return fmap, mask
 
+def load_external_fmap(path, shape):
+    # Load an external field map (has to be a .npz file)
+    if not os.path.exists(path):
+        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+        logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
+    else:
+        fmap = dict(np.load(path, allow_pickle=True))
+        if 'name' not in fmap:
+            fmap['name'] = 'No name.'
+        if 'mask' not in fmap:
+            logging.debug(f"No mask data found in external field map. Set to ones.")
+            fmap['mask'] = np.ones(shape)
+        if 'fmap' not in fmap:
+            logging.debug(f"No field map data found in external field map. Set field map to zero.")
+            fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+    if shape != list(fmap['fmap'].shape):
+        logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Try interpolating the field map.")
+        fmap['fmap'] = resize(fmap['fmap'], shape, anti_aliasing=True)
+        logging.debug(f"Field Map shape after interpolation: {list(fmap['fmap'].shape)}.")
+    if 'params' in fmap:
+        logging.debug("Field Map regularisation parameters: %s",  fmap['params'].item())
+
+    return fmap
+
 def do_unwrap_phase(phasediff):
     return unwrap_phase(np.angle(phasediff))
 

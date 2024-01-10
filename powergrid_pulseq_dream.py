@@ -524,6 +524,7 @@ def process_acs(group, metadata, dmtx=None, te_diff=None):
         if gpu and data.shape[2] > 1: # only for 3D data, otherwise the overhead makes it slower than CPU
             logging.debug("Run Espirit on GPU.")
             sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data[...,0]) # c: crop value ~0.9, t: threshold ~0.005, r: radius (default is 24)
+            # sensmaps = bart(1, 'caldir 32', data[...,0])
         else:
             logging.debug("Run Espirit on CPU.")
             sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data[...,0])
@@ -532,81 +533,11 @@ def process_acs(group, metadata, dmtx=None, te_diff=None):
     refimg = cifftn(data, [0,1,2])
     np.save(debugFolder + "/refimg.npy", refimg)
     if te_diff is not None and data.shape[-1] > 1:
-        process_acs.fmap['fmap'] = calc_fmap(refimg, te_diff, metadata)
+        process_acs.fmap['fmap'], _ = rh.calc_fmap(refimg, te_diff, metadata)
 
     np.save(debugFolder + "/" + "acs.npy", data)
 
     return sensmaps
-
-def calc_fmap(imgs, te_diff, metadata):
-    """ Calculate field maps from reference images with two different contrasts
-
-        imgs: [nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
-        te_diff: TE difference [s]
-    """
-    
-    mc_fmaps = True # calculate multi-coil field maps to remove outliers
-    filtering = True # apply Gaussian and median filtering
-
-    phasediff = imgs[...,1] * np.conj(imgs[...,0]) # phase difference
-    if phasediff.shape[2] == 1:
-        phasediff = phasediff[:,:,0]
-
-    if mc_fmaps:
-        fmap_shape = imgs.shape[:3]
-        phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
-        for k in range(phasediff.shape[-1]):
-            phasediff_uw[...,k] = unwrap_phase(np.angle(phasediff[...,k]))
-        nc = phasediff_uw.shape[-1]
-        phasediff_uw = phasediff_uw.reshape([-1,nc])
-        img_mag = abs(imgs[...,0]).reshape([-1,nc])
-        fmap = np.zeros([phasediff_uw.shape[0]])
-        for i in range(phasediff_uw.shape[0]):
-            ix = np.argsort(phasediff_uw[i])[nc//4:-nc//4] # remove lowest & highest quartile
-            weights = img_mag[i,ix] / np.sum(img_mag[i,ix])
-            fmap[i] = np.sum(weights * phasediff_uw[i,ix])
-        fmap = fmap.reshape(fmap_shape)
-    else:
-        fmap = np.sum(phasediff, axis=-1) # coil combination
-        fmap = unwrap_phase(np.angle(fmap))
-        
-    fmap = np.atleast_3d(fmap)
-    fmap = -1 * fmap/te_diff # for some reason the sign in Powergrid is different
-
-    # mask image with median otsu from dipy
-    img = rh.rss(imgs[...,0], axis=-1)
-    img_masked, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
-
-    # simple threshold mask
-    thresh = 0.13
-    mask_thresh = img/np.max(img)
-    mask_thresh[mask_thresh<thresh] = 0
-    mask_thresh[mask_thresh>=thresh] = 1
-
-    # combine masks
-    mask = mask_thresh + mask_otsu
-    mask[mask>0] = 1
-    if mask.shape[-1] == 1:
-        mask = binary_fill_holes(mask[...,0])[...,np.newaxis]
-    else:
-        mask = binary_fill_holes(mask)
-    mask = binary_dilation(mask, iterations=2) # some extrapolation
-
-    # apply masking and some regularization
-    fmap *= mask
-    if filtering:
-        # WIP: standard deviation denoising - s. Paper Robinson 2009
-        fmap = gaussian_filter(fmap, sigma=0.5)
-        fmap = median_filter(fmap, size=2)
-
-    # interpolate if necessary
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    newshape = [nx,ny,nz]
-    fmap = resize(fmap, newshape, anti_aliasing=True)
-
-    return fmap.T # to [nz,ny,nx]
     
 # %%
 #########################

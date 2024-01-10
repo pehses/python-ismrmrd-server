@@ -258,18 +258,29 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         # rotation matrix
         rotmat = calc_rotmat(dset_acq)
 
+        # trajectory
+        data_tmp = dset_acq.data[:].copy()
+        traj_tmp = dset_acq.traj[:].copy()
         if dset_acq.traj.size > 0:
             # trajectory already inserted from Skope system
             base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False, traj_phys=traj_phys)[0] # for FOV shift reapply
             if dset_acq.traj.shape[1] < 4:
+                dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
+                dset_acq.data[:] = data_tmp
+                dset_acq.traj[:,:3] = traj_tmp
                 dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj[:])) # add zeros, if k0 from Skope not inserted
         else:
-            # gradients from protocol file - calculate trajectory with girf
-            data_tmp = dset_acq.data[:].copy() # save data as it gets corrupted by the resizing [nc, samples]
-            traj_tmp = dset_acq.traj[:].copy()
             dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
-            base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf, traj_phys=traj_phys) # [samples, dims]        
-            dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
+            if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
+                # trajectory in protocol file
+                dset_acq.traj[:,:3] = prot_acq.traj[:,:3]
+                dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj))
+                base_trj = dset_acq.traj[:].copy()
+                dset_acq.data[:] = data_tmp
+            else:
+                # gradients in protocol file - calculate trajectory with girf
+                base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf, traj_phys=traj_phys) # [samples, dims]        
+                dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
 
         # remove first ADCs of spirals as they can be corrupted
         # WIP: in the case of a GIRF predicted trajectory this is only working, if there is no prephaser used in the trajectory prediction

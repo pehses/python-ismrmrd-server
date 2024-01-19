@@ -45,11 +45,15 @@ def process(connection, config, metadata):
     check_signature(metadata, prot_hdr) # check MD5 signature
     prot.close()
 
+    # load user parameters to check for higher order recon
+    up_base_raw = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+    up_base_prot = {item.name: item.value for item in prot_hdr.userParameters.userParameterBase64}
+
     if "dream" in prot_arrays:
         importlib.reload(powergrid_pulseq_dream)
         logging.info("Starting PowerGrid 3DREAM reconstruction.")
         powergrid_pulseq_dream.process(connection, config, metadata, prot_file)
-    elif (len(metadata.userParameters.userParameterBase64) or len(prot_hdr.userParameters.userParameterBase64)) and (prot_hdr.encoding[0].encodingLimits.kspace_encoding_step_1.maximum == 0):
+    elif ("higher_order" in up_base_raw or "higher_order" in up_base_prot) and (prot_hdr.encoding[0].encodingLimits.kspace_encoding_step_1.maximum == 0):
         importlib.reload(powergrid_pulseq_ho)
         logging.info("Starting PowerGrid spiral higher order reconstruction.")
         powergrid_pulseq_ho.process(connection, config, metadata, prot_file)

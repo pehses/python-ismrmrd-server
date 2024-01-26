@@ -439,7 +439,8 @@ def process_raw(acqGroup, metadata, img_coord):
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
                         'Keep_image_geometry':    1,
                         'PG_Options':              subproc,
-                        'Field Map':               fmap_name})
+                        'Field Map':               fmap_name,
+                        'Sequence':               'epi'})
     # Set ISMRMRD Meta Attributes
     meta2 = ismrmrd.Meta({'DataRole':              'Quantitative',
                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],

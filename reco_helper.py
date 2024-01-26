@@ -546,10 +546,10 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     """
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
-    median_filtering = True # apply median filtering
+    median_filtering = False # apply median filtering
     gaussian_filtering = False # apply Gaussian filtering
     nlm_filter = False # apply non-local means filter to field map in the end
-    std_filter = False # apply standard deviation filter (only if mc_fmap selected)
+    std_filter = True # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
     romeo_fmap = False # use the ROMEO toolbox for field map calculation
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)

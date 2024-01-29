@@ -788,8 +788,9 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
         # 3D refscan for 2D spiral data
         # remove slice oversampling - this currently only works if the slice resolution is the same as in the spiral scan
         nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
-        offset = (sensmaps.shape[2] - nz) // 2
-        sensmaps = sensmaps[:,:,offset:-offset]
+        offset = (refimg.shape[2] - nz) // 2
+        if not read_ecalib:
+            sensmaps = sensmaps[:,:,offset:-offset]
         refimg = refimg[:,:,offset:-offset]
         fmap_ref = fmap_ref[:,:,offset:-offset]
 

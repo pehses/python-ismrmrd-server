@@ -558,11 +558,12 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
             logging.debug("ADC map calculation failed.")
 
     # Append reference image & field map
-    if process_acs.refimg[0].shape[0] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
-        refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
-    else:
-        refimgs = np.asarray(process_acs.refimg)
-    dsets['refimg'] = refimgs
+    if process_acs.refimg[0] is not None:
+        if process_acs.refimg[0].shape[0] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+            refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
+        else:
+            refimgs = np.asarray(process_acs.refimg)
+        dsets['refimg'] = refimgs
     dsets['fmap'] = fmap["fmap"][:,np.newaxis] /2/np.pi # add axis for [slc,z,y,x], save in [Hz]
 
     # Calculate SNR maps based on pseudo-replicas
@@ -742,6 +743,13 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
     if len(group)==0:
         return None
 
+    slc_ix = group[0].idx.slice
+
+    if read_ecalib and read_fmap:
+        process_acs.fmap = None
+        process_acs.refimg[slc_ix] = None
+        return np.zeros(1)
+
     data = sort_into_kspace(group, metadata, dmtx)
     data = np.swapaxes(data,0,1) # for correct orientation in PowerGrid
 
@@ -761,8 +769,6 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
     # data for sensitivity calibration
     data_sens = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', data)
     data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimension
-
-    slc_ix = group[0].idx.slice
 
     # ESPIRiT calibration - use only first contrast
     gpu = False

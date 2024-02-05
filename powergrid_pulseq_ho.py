@@ -15,8 +15,6 @@ from bart import bart
 import subprocess
 from cfft import cfftn, cifftn
 
-from skimage.transform import resize
-
 from pulseq_helper import insert_hdr, insert_acq, get_ismrmrd_arrays, read_acqs
 import reco_helper as rh
 
@@ -558,12 +556,17 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
             logging.debug("ADC map calculation failed.")
 
     # Append reference image & field map
-    if process_acs.refimg[0] is not None:
-        if process_acs.refimg[0].shape[0] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
-            refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
-        else:
-            refimgs = np.asarray(process_acs.refimg)
-        dsets['refimg'] = refimgs
+    if process_acs.refimg[0] is None:
+        refimg_path = debugFolder + "/refimg.npy"
+        if not os.path.exists(refimg_path):
+            raise ValueError(f"Reference image at {refimg_path} does not exist.")
+        refimgs = np.load(debugFolder + "/refimg.npy")
+    elif process_acs.refimg[0].shape[0] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
+        refimgs = np.swapaxes(process_acs.refimg[0][np.newaxis],0,1) # 3D refscan for 2D spirals - switch nz/slices
+    else:
+        refimgs = np.asarray(process_acs.refimg)
+    np.save(debugFolder + "/refimg.npy", refimgs)
+    dsets['refimg'] = refimgs
     dsets['fmap'] = fmap["fmap"][:,np.newaxis] /2/np.pi # add axis for [slc,z,y,x], save in [Hz]
 
     # Calculate SNR maps based on pseudo-replicas

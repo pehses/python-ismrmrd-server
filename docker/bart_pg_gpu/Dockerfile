@@ -211,11 +211,11 @@ RUN  cd /opt/code \
 
 # Romeo Unwrapping tool
 RUN  cd /opt/code \
-     && wget -c https://github.com/korbinian90/CompileMRI.jl/releases/download/v3.6.2/mritools_Linux_3.6.2.tar.gz \
-     && tar xvf mritools_Linux_3.6.2.tar.gz \
-     && rm mritools_Linux_3.6.2.tar.gz
+     && wget -c https://github.com/korbinian90/CompileMRI.jl/releases/download/v4.0.6/mritools_ubuntu-20.04_4.0.6.tar.gz  \
+     && tar xvf mritools_ubuntu-20.04_4.0.6.tar.gz  \
+     && rm mritools_ubuntu-20.04_4.0.6.tar.gz 
 
-ENV PATH=${PATH}:"/opt/code/mritools_Linux_3.6.2/bin"
+ENV PATH=${PATH}:"/opt/code/mritools_ubuntu-20.04_4.0.6/bin"
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip wget

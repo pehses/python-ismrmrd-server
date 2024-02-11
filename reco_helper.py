@@ -582,6 +582,25 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     elif nz > 1 and n_slc > 1:
         raise ValueError("Multi-slab is not supported.")
 
+    # mask with threshold and median otsu from dipy
+    # do it in 2D as it works better and hole filling is easier
+    img_mask = rss(imgs[...,0], axis=-1)
+    mask = np.zeros_like(img_mask)
+    for k,img in enumerate(img_mask):
+        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
+
+        # simple threshold mask
+        thresh = 0.13
+        mask_thresh = img/np.max(img)
+        mask_thresh[mask_thresh<thresh] = 0
+        mask_thresh[mask_thresh>=thresh] = 1
+
+        # combine masks
+        mask[k] = mask_thresh + mask_otsu
+        mask[k][mask[k]>0] = 1
+        mask[k] = binary_fill_holes(mask[k])
+        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
+
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
         fmap = romeo_unwrap(imgs, echo_times, result_path, mc_unwrap=False, return_b0=True)
@@ -608,6 +627,19 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
         fmap = fmap.reshape(imgs.shape[:3])
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * fmap/te_diff # the sign in Powergrid is inverted
+
+        # Standard deviation filter (Robinson, MRM, 2011)
+        if std_filter:
+            phasediff_uw *= mask[...,np.newaxis]
+            std = phasediff_uw.std(axis=-1)
+            median_std = np.median(std[std!=0])
+            idx = np.argwhere(std>std_fac*median_std)
+            n_cb = [2,2,1]
+            fmap2 = fmap.copy()
+            for ix in idx:
+                voxel_cb = tuple([slice(max(0,ix[k]-n_cb[k]), ix[k]+n_cb[k]+1) for k in range(3)])
+                fmap2[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
+            fmap = fmap2
     else:
         # Standard field mapping approach (Hermitian product & SOS coil combination)
         phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
@@ -618,38 +650,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
-
-    # mask with threshold and median otsu from dipy
-    # do it in 2D as it works better and hole filling is easier
-    img_mask = rss(imgs[...,0], axis=-1)
-    mask = np.zeros_like(img_mask)
-    for k,img in enumerate(img_mask):
-        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
-
-        # simple threshold mask
-        thresh = 0.13
-        mask_thresh = img/np.max(img)
-        mask_thresh[mask_thresh<thresh] = 0
-        mask_thresh[mask_thresh>=thresh] = 1
-
-        # combine masks
-        mask[k] = mask_thresh + mask_otsu
-        mask[k][mask[k]>0] = 1
-        mask[k] = binary_fill_holes(mask[k])
-        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
-
-    # Standard deviation filter (Robinson, MRM, 2011)
-    if std_filter and mc_fmap:
-        phasediff_uw *= mask[...,np.newaxis]
-        std = phasediff_uw.std(axis=-1)
-        median_std = np.median(std[std!=0])
-        idx = np.argwhere(std>std_fac*median_std)
-        n_cb = [2,2,1]
-        fmap2 = fmap.copy()
-        for ix in idx:
-            voxel_cb = tuple([slice(max(0,ix[k]-n_cb[k]), ix[k]+n_cb[k]+1) for k in range(3)])
-            fmap2[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
-        fmap = fmap2
 
     # Gauss/median filter
     if gaussian_filtering:

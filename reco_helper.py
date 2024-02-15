@@ -10,6 +10,8 @@ from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, bi
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 from dipy.segment.mask import median_otsu
+import despike
+
 from multiprocessing import Pool
 import psutil
 
@@ -546,13 +548,16 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     """
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
+    despike_filter = True # apply despiking
     median_filtering = False # apply median filtering
-    gaussian_filtering = False # apply Gaussian filtering
+    gaussian_filtering = True # apply Gaussian filtering
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = True # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
-    romeo_fmap = False # use the ROMEO toolbox for field map calculation
+    romeo_fmap = False # use the ROMEO toolbox for field map calculation (set to True, if more than 2 echoes)
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
+
+    cores = psutil.cpu_count(logical = False)
 
     logging.info("Starting field map calculation.")
 
@@ -560,7 +565,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
         std_filter = False
 
     if len(echo_times) > 2:
-        romeo_fmap = True # more than one echo time only possible with ROMEO
+        romeo_fmap = True
 
     if romeo_fmap or romeo_uw:
         if dep_folder is None:
@@ -603,15 +608,15 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
 
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        fmap = romeo_unwrap(imgs, echo_times, result_path, mc_unwrap=False, return_b0=True)
+        mask_romeo = None # Providing mask is taking longer and does not improve?
+        fmap = romeo_unwrap(imgs, echo_times, result_path, mask=mask_romeo, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff,[], result_path, mc_unwrap=True, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff,[], result_path, mask=mask, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
-            cores = psutil.cpu_count(logical = False)
             pool = Pool(processes=cores)
             results = [pool.apply_async(do_unwrap_phase, [phasediff[...,k]]) for k in range(phasediff.shape[-1])]
             for k, val in enumerate(results):
@@ -645,11 +650,19 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
         phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
         phasediff = np.sum(phasediff, axis=-1) # coil combination
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], result_path, mc_unwrap=False, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], result_path, mask=mask, mc_unwrap=False, return_b0=False)
         else:
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
+
+    # Despike filter
+    if despike_filter:
+        pool = Pool(processes=cores)
+        results = [pool.apply_async(do_despike, [fmap[k]]) for k in range(len(fmap))]
+        for k, val in enumerate(results):
+            fmap[k] = val.get()
+        pool.close()
 
     # Gauss/median filter
     if gaussian_filtering:
@@ -706,8 +719,11 @@ def load_external_fmap(path, shape):
 def do_unwrap_phase(phasediff):
     return unwrap_phase(np.angle(phasediff))
 
+def do_despike(fmap):
+    return despike.clean(fmap, n=2, size=5, mask='mean', fill_method='median', fill_size=2)
+
 # Unwrapping with ROME0
-def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
+def romeo_unwrap(imgs, echo_times, path_out, mask=None, mc_unwrap=False, return_b0=False):
     """
         Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)
 
@@ -739,12 +755,18 @@ def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
     mag_romeo = nib.Nifti1Image(mag_in, np.eye(4))
     nib.save(mag_romeo, mag_name)
 
+    mask_name = "robustmask"
+    if mask is not None:
+        mask_name = path_out+"/mask_romeo.nii.gz"
+        mask_romeo = nib.Nifti1Image(mask, np.eye(4))
+        nib.save(mask_romeo, mask_name)
+
+    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {path_out}"
     if mc_unwrap:
         phs_uw = []
         for k in range(phs_in.shape[-1]):
             phs_romeo = nib.Nifti1Image(phs_in[...,k], np.eye(4))
             nib.save(phs_romeo, phs_name)
-            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -o {path_out}"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             phs_uw.append(nib.load(path_out+"/unwrapped.nii").get_fdata().copy())
         phs_uw = np.stack(phs_uw)
@@ -753,12 +775,11 @@ def romeo_unwrap(imgs, echo_times, path_out, mc_unwrap=False, return_b0=False):
         phs_romeo = nib.Nifti1Image(phs_in, np.eye(4))
         nib.save(phs_romeo, phs_name)
         if return_b0:
-            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -B -o {path_out}"
+            subproc += " -B"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             fmap = -1 * 2*np.pi * nib.load(path_out+"/B0.nii").get_fdata() # to [rad/m]
             return fmap # [x,y,z]
         else:
-            subproc = f"romeo -p {phs_name} -m {mag_name} -t {echo_times} -o {path_out}"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             phs_uw = nib.load(path_out+"/unwrapped.nii").get_fdata()
             return phs_uw

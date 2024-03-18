@@ -550,7 +550,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
     despike_filter = True # apply despiking
     median_filtering = False # apply median filtering
-    gaussian_filtering = True # apply Gaussian filtering
+    gaussian_filtering = False # apply Gaussian filtering
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = True # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)

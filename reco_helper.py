@@ -34,7 +34,7 @@ def calculate_prewhitening(noise, scale_factor=1.):
 
     :returns w: Prewhitening matrix, ``[coil, coil]``, w @ data is prewhitened
     '''
-    dmtx = (noise @ np.conj(noise).T)/noise.shape[1]
+    dmtx = (noise @ np.conj(noise).T)/(noise.shape[1]-1)
     dmtx = np.linalg.inv(np.linalg.cholesky(dmtx))
     dmtx *= np.sqrt(2)*np.sqrt(scale_factor)
     return dmtx

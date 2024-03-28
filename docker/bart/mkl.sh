@@ -2,8 +2,8 @@
 
 # install mkl
 apt update && apt install -y --force-yes apt-transport-https && \
-  wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS-2019.PUB && \
-  apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS-2019.PUB && \
+  wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB && \
+  apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB && \
   sh -c 'echo deb https://apt.repos.intel.com/mkl all main > /etc/apt/sources.list.d/intel-mkl.list' && \
   apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install cpio intel-mkl-64bit-2018.3-051 && \
   (find /opt/intel -name "ia32*" -exec rm -rf {} \; || echo "removing ia32 binaries") ; \

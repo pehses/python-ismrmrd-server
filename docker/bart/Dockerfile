@@ -107,7 +107,7 @@ RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
         ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libpugixml-dev libxml2-utils \
-     && pip3 install --no-cache-dir h5py scikit-image ismrmrd
+     && pip3 install --no-cache-dir h5py scikit-image ismrmrd dipy despike psutil
 
 RUN  mkdir -p /opt/code
 

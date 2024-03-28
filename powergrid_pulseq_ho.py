@@ -215,10 +215,10 @@ def process(connection, config, metadata, prot_file):
                 elif len(noiseGroup) > 0 and dmtx is None:
                     noise_data = []
                     for acq in noiseGroup:
-                        noise_data.append(rh.remove_os(acq.data, axis=1)) # remove os to have NoiseReceiverBandwidthRatio=1 (removes filtered area in ADC, see Kellman(2005))
+                        noise_data.append(acq.data[:])
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
-                    dmtx = rh.calculate_prewhitening(noise_data)
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=0.793) # scale factor considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
                     del(noise_data)
                     noiseGroup.clear()
                                

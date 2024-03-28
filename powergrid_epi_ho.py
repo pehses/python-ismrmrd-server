@@ -81,6 +81,9 @@ def process(connection, config, metadata):
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
 
+    # Acquisition dwelltime for noise decorrelation
+    dwell_acq = up_double["dwellTime_us"]
+
     logging.info("Config: \n%s", config)
 
     # Metadata should be MRD formatted header, but may be a string
@@ -147,15 +150,17 @@ def process(connection, config, metadata):
 
                 # run noise decorrelation
                 if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
+                    dwell_noise = item.sample_time_us
                     noiseGroup.append(item)
                     continue
                 elif len(noiseGroup) > 0 and dmtx is None:
                     noise_data = []
                     for acq in noiseGroup:
-                        noise_data.append(rh.remove_os(acq.data, axis=1))
+                        noise_data.append(acq.data[:])
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
-                    dmtx = rh.calculate_prewhitening(noise_data)
+                    noise_scale = dwell_acq / dwell_noise * 0.793 # factor 0.793 considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=noise_scale)
                     del(noise_data)
                     noiseGroup.clear()
                                
@@ -203,6 +208,9 @@ def process(connection, config, metadata):
                     t2_star = 40e-3 # 7T
                 t_vec = item.traj[:,3]
                 item.data[:] *= 1/np.exp(-t_vec/t2_star)
+
+                # Remove oversampling (factor 2), spiral function works for any trajectory
+                rh.remove_os_spiral(item)
 
                 # append item
                 acqGroup[item.idx.slice][item.idx.contrast].append(item)

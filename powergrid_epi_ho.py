@@ -8,6 +8,7 @@ import xml.dom.minidom
 import psutil
 from time import perf_counter
 import importlib
+import tempfile
 
 import subprocess
 import reco_helper as rh
@@ -245,16 +246,19 @@ def process_and_send(connection, acqGroup, metadata, img_coord):
 
 def process_raw(acqGroup, metadata, img_coord):
 
+    # Make temporary directory for PowerGrid file
+    tmpdir = tempfile.TemporaryDirectory()
+    tempdir = tmpdir.name
+    logging.debug("Temporary directory for PowerGrid results: ", tempdir)
+    tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
+
+    # Write ISMRMRD file for PowerGrid
+    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
+
     # Get some header info
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
     nx = metadata.encoding[0].reconSpace.matrixSize.x
     ny = metadata.encoding[0].reconSpace.matrixSize.y
-
-    # Write ISMRMRD file for PowerGrid
-    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
-    if os.path.exists(tmp_file):
-        os.remove(tmp_file)
-    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Insert Coordinates
     img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
@@ -316,13 +320,6 @@ def process_raw(acqGroup, metadata, img_coord):
                 dset_tmp.append_acquisition(acq)
     dset_tmp.close()
 
-    # Define in- and output for PowerGrid
-    pg_dir = dependencyFolder+"/powergrid_results"
-    if not os.path.exists(pg_dir):
-        os.makedirs(pg_dir)
-    if os.path.exists(pg_dir+"/images_pg.npy"):
-        os.remove(pg_dir+"/images_pg.npy")
-
     # MPI and hyperthreading
     mpi = True
     hyperthreading = False # seems to slow down recon in some cases
@@ -352,7 +349,7 @@ def process_raw(acqGroup, metadata, img_coord):
 
     # Define PowerGrid options
     regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}'
+    pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}'
     subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
     
     # Run in bash
@@ -372,7 +369,7 @@ def process_raw(acqGroup, metadata, img_coord):
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
 
     # Image data is saved as .npy
-    data = np.load(pg_dir + "/images_pg.npy")
+    data = np.load(os.path.join(tempdir, "images_pg.npy"))
     if not save_cmplx:
         data = np.abs(data)
 
@@ -422,7 +419,7 @@ def process_raw(acqGroup, metadata, img_coord):
                 dset_tmp.write_acquisition(acq, j)
             dset_tmp.close()
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            data_snr = abs(np.load(pg_dir + "/images_pg.npy"))
+            data_snr = abs(np.load(os.path.join(tempdir,"images_pg.npy")))
             data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
             data_snr_list.append(data_snr.reshape(newshape, order='f'))
         data_snr = np.array(data_snr_list)

@@ -280,10 +280,13 @@ def process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays):
 
 def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
 
+    # Make temporary directory for PowerGrid file
+    tmpdir = tempfile.TemporaryDirectory()
+    tempdir = tmpdir.name
+    logging.debug("Temporary directory for PowerGrid results: ", tempdir)
+    tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
+
     # Write ISMRMRD file for PowerGrid
-    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
-    if os.path.exists(tmp_file):
-        os.remove(tmp_file)
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Write header
@@ -342,14 +345,6 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     ts = min(ts_time, ts_fmap)
     dset_tmp.close()
 
-    # Define in- and output for PowerGrid
-    pg_dir = dependencyFolder+"/powergrid_results"
-    if not os.path.exists(pg_dir):
-        os.makedirs(pg_dir)
-    if os.path.exists(pg_dir+"/images_pg.npy"):
-        os.remove(pg_dir+"/images_pg.npy")
-    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
-
     """ PowerGrid reconstruction
     # Comment from Alex Cerjanic, who developed PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
     # He recommends using the Hanning interpolator with ~1 time segment per ms of readout (which is based on experience @3T)
@@ -387,7 +382,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -B 1000 -n 20 -D 2 -I {temp_intp} -t {ts} -F NUFFT' # -w option writes intermediate results as niftis in pg_dir folder
+    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
+    pg_opts = f'-i {tmp_file} -o {tempdir} -s {n_shots} -B 1000 -n 20 -D 2 -I {temp_intp} -t {ts} -F NUFFT' # -w option writes intermediate results as niftis in pg_dir folder
     if mpi:
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
     else:
@@ -410,7 +406,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
 
     # Image data is saved as .npy
-    data = np.load(pg_dir + "/images_pg.npy")
+    data = np.load(os.path.join(tempdir, "images_pg.npy"))
     data = np.abs(data)
 
     """

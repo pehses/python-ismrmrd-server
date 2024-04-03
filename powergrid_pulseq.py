@@ -392,6 +392,15 @@ def process_and_send(connection, acqGroup, metadata, sensmaps, shotimgs, prot_ar
 
 def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
 
+    # Make temporary directory for PowerGrid file
+    tmpdir = tempfile.TemporaryDirectory()
+    tempdir = tmpdir.name
+    logging.debug("Temporary directory for PowerGrid results: ", tempdir)
+    tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
+
+    # Write ISMRMRD file for PowerGrid
+    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
+
     # Multiband factor
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
 
@@ -399,12 +408,6 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     avg_before = True 
     if metadata.encoding[0].encodingLimits.contrast.maximum > 0:
         avg_before = False # do not average before reco in diffusion imaging as this could introduce phase errors
-
-    # Write ISMRMRD file for PowerGrid
-    tmp_file = dependencyFolder+"/PowerGrid_tmpfile.h5"
-    if os.path.exists(tmp_file):
-        os.remove(tmp_file)
-    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
 
     # Insert Sensitivity Maps
     if read_ecalib:
@@ -504,15 +507,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     ts_time = int((acq.traj[-1,3] - acq.traj[0,3]) / 1e-3 + 0.5) # 1 time segment per ms readout
     ts_fmap = int(np.max(abs(fmap_data)) * (acq.traj[-1,3] - acq.traj[0,3]) / (np.pi/2)) # 1 time segment per pi/2 maximum phase evolution
     ts = min(ts_time, ts_fmap)
-    dset_tmp.close()
-
-    # Define in- and output for PowerGrid
-    pg_dir = dependencyFolder+"/powergrid_results"
-    if not os.path.exists(pg_dir):
-        os.makedirs(pg_dir)
-    if os.path.exists(pg_dir+"/images_pg.npy"):
-        os.remove(pg_dir+"/images_pg.npy")
-    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
+    dset_tmp.close()    
 
     """ PowerGrid reconstruction
     # Comment from Alex Cerjanic, who developed PowerGrid: 'histo' option can generate a bad set of interpolators in edge cases
@@ -555,7 +550,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    pg_opts = f'-i {tmp_file} -o {pg_dir} -s {n_shots} -n 20 -B 500 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
+    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
+    pg_opts = f'-i {tmp_file} -o {tempdir} -s {n_shots} -n 20 -B 500 -D 2' # -w option writes intermediate results as niftis in pg_dir folder
     if pcSENSE: # Multishot
         if sms_factor > 1: # use discrete Fourier transform as 3D gridding has bug
             if mpi:
@@ -596,7 +592,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
 
     # Image data is saved as .npy
-    data = np.load(pg_dir + "/images_pg.npy")
+    data = np.load(os.path.join(tempdir, "images_pg.npy"))
     if not save_cmplx:
         data = np.abs(data)
 

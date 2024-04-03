@@ -5,6 +5,7 @@ import numpy as np
 import logging
 import time
 import os
+import tempfile
 
 from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
 from skimage.transform import resize
@@ -570,9 +571,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     if romeo_fmap or romeo_uw:
         if dep_folder is None:
             dep_folder = "/tmp/share/dependency"
-        result_path = dep_folder+"/romeo_results"
-        if not os.path.exists(result_path):
-            os.makedirs(result_path)
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -609,12 +607,12 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
         mask_romeo = None # Providing mask is taking longer and does not improve?
-        fmap = romeo_unwrap(imgs, echo_times, result_path, mask=mask_romeo, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, mask=mask_romeo, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff,[], result_path, mask=mask, mc_unwrap=True, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff,[], mask=mask, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
             pool = Pool(processes=cores)
@@ -650,7 +648,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
         phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
         phasediff = np.sum(phasediff, axis=-1) # coil combination
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], result_path, mask=mask, mc_unwrap=False, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], mask=mask, mc_unwrap=False, return_b0=False)
         else:
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
@@ -723,13 +721,12 @@ def do_despike(fmap):
     return despike.clean(fmap, n=2, size=5, mask='mean', fill_method='median', fill_size=2)
 
 # Unwrapping with ROME0
-def romeo_unwrap(imgs, echo_times, path_out, mask=None, mc_unwrap=False, return_b0=False):
+def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
     """
         Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)
 
         imgs: Input (multi-coil, multi-echo) images [x,y,z, coils, echoes] (coils & echoes are optional)
         echo_times: list of echo times [ms]
-        path_out: Output path for romeo outputs
         mc_unwrap: unwrap each channel individually (coil dimension has to be present)
         return_b0: return B0 map in rad/m (only if mc_unwrap=False)
     """
@@ -748,27 +745,30 @@ def romeo_unwrap(imgs, echo_times, path_out, mask=None, mc_unwrap=False, return_
     else:
         coildim = -1
 
+    tmpdir = tempfile.TemporaryDirectory()
+    tempdir = tmpdir.name
+
     phs_in = np.angle(imgs)
     mag_in = abs(imgs)
-    phs_name = path_out+"/phs_romeo.nii.gz"
-    mag_name = path_out+"/mag_romeo.nii.gz"
+    phs_name = tempdir+"/phs_romeo.nii.gz"
+    mag_name = tempdir+"/mag_romeo.nii.gz"
     mag_romeo = nib.Nifti1Image(mag_in, np.eye(4))
     nib.save(mag_romeo, mag_name)
 
     mask_name = "robustmask"
     if mask is not None:
-        mask_name = path_out+"/mask_romeo.nii.gz"
+        mask_name = tempdir+"/mask_romeo.nii.gz"
         mask_romeo = nib.Nifti1Image(mask, np.eye(4))
         nib.save(mask_romeo, mask_name)
 
-    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {path_out}"
+    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir}"
     if mc_unwrap:
         phs_uw = []
         for k in range(phs_in.shape[-1]):
             phs_romeo = nib.Nifti1Image(phs_in[...,k], np.eye(4))
             nib.save(phs_romeo, phs_name)
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
-            phs_uw.append(nib.load(path_out+"/unwrapped.nii").get_fdata().copy())
+            phs_uw.append(nib.load(tempdir+"/unwrapped.nii").get_fdata().copy())
         phs_uw = np.stack(phs_uw)
         return np.moveaxis(phs_uw,0,coildim) 
     else:
@@ -777,11 +777,11 @@ def romeo_unwrap(imgs, echo_times, path_out, mask=None, mc_unwrap=False, return_
         if return_b0:
             subproc += " -B"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
-            fmap = -1 * 2*np.pi * nib.load(path_out+"/B0.nii").get_fdata() # to [rad/m]
+            fmap = -1 * 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/m]
             return fmap # [x,y,z]
         else:
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
-            phs_uw = nib.load(path_out+"/unwrapped.nii").get_fdata()
+            phs_uw = nib.load(tempdir+"/unwrapped.nii").get_fdata()
             return phs_uw
 
 ## Old

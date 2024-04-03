@@ -60,6 +60,7 @@ RUN cd /opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mrirecon/bart \
      && cd bart \
+     && git checkout v0.9.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
@@ -223,7 +224,7 @@ RUN  apt-get autoremove --yes
 RUN  apt-get autoclean --yes
 
 # add ismrmrd server start script
-RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
+RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -m -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
 RUN chmod +x /usr/bin/start_server
 
 # Expose all GPU to docker

@@ -52,20 +52,17 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && wget https://github.com/mrirecon/bart/archive/v0.7.00.tar.gz \
-     && tar xzvf v0.7.00.tar.gz \
-     && cd bart-0.7.00 \
+     && git clone https://github.com/mrirecon/bart \
+     && cd bart \
+     && git checkout v0.9.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
+     && echo CUDA=1 >> Makefile.local \
+     && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
+     && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
      && make install
-     # && echo SLINK=1 >> Makefile.local \
-     # && echo CUDA=1 >> Makefile.local \
-     # && echo CUDA_BASE=/usr/local/cuda/ >> Makefile.local \
-     # && echo ENABLE_MEM_CFL=1 >> Makefile.local \
-     # && echo ISMRMRD=1 > Makefile.local \
-     # && export ISMRMRD_HOME=/usr/local \
 
 # ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
 FROM ubuntu:20.04

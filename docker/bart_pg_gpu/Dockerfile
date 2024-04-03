@@ -224,7 +224,7 @@ RUN  apt-get autoremove --yes
 RUN  apt-get autoclean --yes
 
 # add ismrmrd server start script
-RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -m -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
+RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
 RUN chmod +x /usr/bin/start_server
 
 # Expose all GPU to docker

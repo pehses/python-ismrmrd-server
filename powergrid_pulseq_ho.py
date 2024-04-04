@@ -45,14 +45,14 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
 
-read_ecalib = False # read sensitivity maps from file (requires previous recon)
+read_ecalib = True # read sensitivity maps from file (requires previous recon)
 read_fmap = False # read field map from file (requires previous recon)
 save_cmplx = True # save images as complex data
 
 snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
 n_replica = 50 # number of replicas used for SNR map calculation
 
-reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
+reco_n_contr = 1 # if >0 only the volumes up to the specified number will be reconstructed
 first_vol = 0 # index of first volume, that is reconstructed
 
 ########################
@@ -344,7 +344,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
     # Make temporary directory for PowerGrid file
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
-    logging.debug("Temporary directory for PowerGrid results: ", tempdir)
+    logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
     tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
 
     # Write ISMRMRD file for PowerGrid

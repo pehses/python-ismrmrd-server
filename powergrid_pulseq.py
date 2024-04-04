@@ -395,7 +395,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
     # Make temporary directory for PowerGrid file
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
-    logging.debug("Temporary directory for PowerGrid results: ", tempdir)
+    logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
     tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
 
     # Write ISMRMRD file for PowerGrid

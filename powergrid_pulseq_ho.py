@@ -341,8 +341,8 @@ def process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_
 
 def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=False):
 
-    # Make temporary directory for PowerGrid file
-    tmpdir = tempfile.TemporaryDirectory()
+    # Make temporary directory for PowerGrid file in debug folder
+    tmpdir = tempfile.TemporaryDirectory(dir=debugFolder)
     tempdir = tmpdir.name
     logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
     tmp_file = tempdir+"/PowerGrid_tmpfile.h5"

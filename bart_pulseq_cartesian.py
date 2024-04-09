@@ -357,7 +357,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     fmap, mask = rh.calc_fmap(imgs, echo_times, metadata, dep_folder=dependencyFolder)
 
     # save in dependency - swap x/y axes for correct orientation in PowerGrid
-    np.savez(os.path.join(dependencyFolder, "fmap.npz"), fmap=np.swapaxes(fmap,1,2), mask=mask, name='Field map from external scan.')
+    np.savez(os.path.join(dependencyFolder, "fmap.npz"), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name='Field map from external scan.')
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])

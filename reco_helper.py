@@ -567,6 +567,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
 
     if len(echo_times) > 2:
         romeo_fmap = True
+        gaussian_filtering = True
 
     if romeo_fmap or romeo_uw:
         if dep_folder is None:
@@ -665,7 +666,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     # Gauss/median filter
     if gaussian_filtering:
         fmap *= mask
-        fmap = gaussian_filter(fmap, sigma=0.5)
+        fmap = gaussian_filter(fmap, sigma=0.8)
     if median_filtering:
         fmap *= mask
         fmap = median_filter(fmap, size=2)
@@ -718,7 +719,7 @@ def do_unwrap_phase(phasediff):
     return unwrap_phase(np.angle(phasediff))
 
 def do_despike(fmap):
-    return despike.clean(fmap, n=2, size=5, mask='mean', fill_method='median', fill_size=2)
+    return despike.clean(fmap, n=0.8, size=2, mask='mean', fill_method='median', fill_size=2)
 
 # Unwrapping with ROME0
 def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):

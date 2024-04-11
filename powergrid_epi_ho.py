@@ -281,7 +281,7 @@ def process_raw(acqGroup, metadata, img_coord):
         logging.debug("Start sensitivity map calculation.")
         sensmaps = []
         for slc, acs_slc in enumerate(acs):
-            sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, crop=0.92, kernel_size=6, threshold=0.003, use_gpu=False))
+            sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, kernel_size=6, use_gpu=False))
             # sensmaps.append(bart(1, 'caldir 32', acs_slc))
             logging.debug(f"Finished sensitivity map calculation for slice {slc}.")
         sens = np.transpose(np.array(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]

@@ -783,7 +783,7 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
         if online_recon:
             sensmaps = bart(1, 'caldir 40', data_sens[...,0])
         else:
-            sensmaps = rh.ecalib(data_sens[...,0], chunk_sz=chunk_sz, n_maps=1, crop=0.92, threshold=0.003, use_gpu=gpu)
+            sensmaps = rh.ecalib(data_sens[...,0], chunk_sz=chunk_sz, n_maps=1, use_gpu=gpu)
 
     # calculate reference image
     refimg = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1) # save at spiral matrix size

@@ -483,13 +483,30 @@ def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
 def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, chunk_sz=None, use_gpu=False):
+    """
+    Run parallel imaging calibration with ESPIRiT
+
+    acs: ACS data (4D array [nx,ny,nz,nc] or 5D array [nx,ny,nz,nc,n_slc]), if 5D calculation will be parallelized on last dim
+    n_maps: number of ESPRIT maps
+    crop: crop factor for ESPIRiT
+    threshold: threshold for ESPIRiT
+    threads: number of threads for parallel processing, if 3D data is chunked
+    kernel_size: kernel size for ESPIRiT
+    chunk_sz: chunk size for 3D data, if None 3D data will be processed in one run
+    use_gpu: use GPU for ESPIRiT
+    """
+
 
     from multiprocessing import Pool
     from functools import partial
     from bart import bart
 
+    logging.debug("Start sensitivity map calculation.")
+    start = time.perf_counter()
+
     gpu_str = "-g" if use_gpu else ""
 
+    ndim = acs.ndim
     nx, ny, nz, nc = acs.shape[:4]
     if chunk_sz is None:
         # this should usually work
@@ -503,7 +520,12 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
 
     if chunk_sz <= 0 or chunk_sz >= nz:
         # espirit in one run:
-        sensmaps = bart(1, f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}', acs)
+        ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
+        if ndim == 5 and acs.shape[-1] > 1:
+            ecal_str = f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} ' + ecal_str
+            sensmaps = bart(1, ecal_str, acs)
+        else:
+            sensmaps = bart(1, ecal_str, acs)
     else:
         # espirit_econ: reduce memory footprint by chunking
         eon = bart(1, f'ecalib -k {kernel_size} -I {gpu_str} -m {n_maps} -t {threshold} -1', acs)  # currently, gpu doesn't help here but try anyway
@@ -526,12 +548,18 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
         if threads is None or threads < 2:
             sensmaps = [ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=crop) for sig in chunks]
         else:
+            # WIP: BART has its own parallel looping/MPI since v0.9.00
             with Pool(threads) as p:
                 sensmaps = p.map(partial(ecaltwo, gpu_str, n_maps, nx, ny, crop=crop), chunks)
 
         sensmaps = np.concatenate(sensmaps, axis=0)
         sensmaps = np.moveaxis(sensmaps, 0, 2)
         logging.info(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {time.perf_counter()-tic} s")
+
+    while sensmaps.ndim < ndim:
+        sensmaps = sensmaps[..., np.newaxis]
+
+    logging.debug(f"Finished sensitivity map calculation after {time.perf_counter()-start:.2f} s.")
 
     return sensmaps
 
@@ -770,6 +798,7 @@ def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             phs_uw.append(nib.load(tempdir+"/unwrapped.nii").get_fdata().copy())
         phs_uw = np.stack(phs_uw)
+        tmpdir.cleanup()
         return np.moveaxis(phs_uw,0,coildim) 
     else:
         phs_romeo = nib.Nifti1Image(phs_in, np.eye(4))
@@ -778,10 +807,12 @@ def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
             subproc += " -B"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             fmap = -1 * 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/m]
+            tmpdir.cleanup()
             return fmap # [x,y,z]
         else:
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             phs_uw = nib.load(tempdir+"/unwrapped.nii").get_fdata()
+            tmpdir.cleanup()
             return phs_uw
 
 ## Old

@@ -175,7 +175,7 @@ def process(connection, config, metadata, prot_file):
     noiseGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
-    sensmaps = [None] * n_slc
+    acs = [None] * n_slc
     img_coord = [None] * (n_slc//sms_factor)
     dmtx = None
     base_trj = None
@@ -236,8 +236,8 @@ def process(connection, config, metadata, prot_file):
                         acsGroup[item2.idx.slice].append(item2)
                     else:
                         acsGroup[item.idx.slice].append(item)
-                    if sensmaps[item.idx.slice] is None and item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and not process_acs.cc_cha < n_cha:
-                        process_refscan(acsGroup ,sensmaps, item.idx.slice, metadata, dmtx, half_refscan, online_recon=online_recon)
+                    if acs[item.idx.slice] is None and item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) and not process_acs.cc_cha < n_cha:
+                        process_refscan(acsGroup, acs, item.idx.slice, metadata, dmtx, half_refscan)
                     continue
 
                 # Coil Compression calibration
@@ -246,15 +246,15 @@ def process(connection, config, metadata, prot_file):
                     if process_acs.cc_mat is None:
                         cc_data = [item for sublist in acsGroup for item in sublist] # flatten list
                         process_acs.cc_mat = rh.calibrate_cc(cc_data, process_acs.cc_cha, apply_cc=False)
-                    if sensmaps[item.idx.slice] is None:
+                    if acs[item.idx.slice] is None:
                         for k in range(sms_factor):
                             slc_ix = item.idx.slice + n_slc//sms_factor*k
-                            process_refscan(acsGroup ,sensmaps, slc_ix, metadata, dmtx, half_refscan, online_recon=online_recon)
+                            process_refscan(acsGroup ,acs, slc_ix, metadata, dmtx, half_refscan)
 
                 # trigger recon early
                 if reco_n_contr and item.idx.contrast > reco_n_contr + first_vol - 1:
                     if len(acqGroup) > 0:
-                        process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=online_recon)
+                        process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
                     continue
                 if item.idx.contrast < first_vol:
                     continue # skip until first volume index
@@ -313,7 +313,7 @@ def process(connection, config, metadata, prot_file):
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=online_recon)
+                    process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
 
         # Process any remaining groups of raw or image data.  This can 
         # happen if the trigger condition for these groups are not met.
@@ -331,15 +331,15 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=False):
+def process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=False):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon)
+    images = process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_recon=False):
+def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=False):
 
     # Make temporary directory for PowerGrid file in debug folder
     tmpdir = tempfile.TemporaryDirectory(dir=debugFolder)
@@ -370,12 +370,28 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
     dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)
     dset_tmp.append_array("DCF", dcf2.astype(np.float64))
 
-    # Insert Sensitivity Maps
+    # Calculate and insert Sensitivity Maps
     if read_ecalib:
         sens = np.load(debugFolder + "/sensmaps.npy")
     else:
-        if sensmaps[0].shape[-2] > 1 and metadata.encoding[0].encodingLimits.slice.maximum:
-            sens = np.transpose(sensmaps[0][np.newaxis], [3,4,0,2,1]) # 3D refscan for 2D spirals: [nz,nc,slices=1,ny,nx]
+        if acs[0].shape[2] > 1:
+            acs = acs[0][np.newaxis]
+        acs = np.moveaxis(np.asarray(acs),0,-1) # [nx,ny,nz,nc, n_slc]
+        gpu = False
+        chunk_sz = 0
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and acs.shape[2] > 1:
+            logging.debug("Use GPU for ecalib.")
+            gpu = True
+            chunk_sz = None
+        sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=gpu, chunk_sz=chunk_sz)
+        # sensmaps = bart(1, f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} caldir 32', acs)
+        sensmaps = np.moveaxis(np.asarray(sensmaps),-1,0) # [n_slc,nx,ny,nz,nc]
+        nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
+        if sensmaps[0].shape[-2] > 1 and nz > 1:
+            # 3D refscan - remove slice os
+            offset = (sensmaps.shape[-2] - nz) // 2
+            sensmaps = sensmaps[...,offset:-offset,:]
+            sens = np.transpose(sensmaps, [3,4,0,2,1]) # 3D refscan for 2D spirals: [nz,nc,slices=1,ny,nx]
         else:
             sens = np.transpose(np.stack(sensmaps), [0,4,3,2,1]) # 2D refscan: [slices,nc,nz=1,ny,nx]
         if sms_factor > 1:
@@ -713,14 +729,16 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays, img_coord, online_rec
     logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(meta.serialize()).toprettyxml())
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
 
+    tmpdir.cleanup()
+
     return images
 
-def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=False, online_recon=False):
+def process_refscan(acsGroup, acs, slc_ix, metadata, dmtx, half_refscan=False):
     """
     Process reference scans
     """
 
-    sensmaps[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx, online_recon=online_recon)
+    acs[slc_ix] = process_acs(acsGroup[slc_ix], metadata, dmtx)
     acsGroup[slc_ix].clear()
     if half_refscan:
         slc_ix_cp = slc_ix
@@ -728,15 +746,15 @@ def process_refscan(acsGroup, sensmaps, slc_ix, metadata, dmtx, half_refscan=Fal
             slc_ix_cp = slc_ix + 1
         if slc_ix%2==1:
             slc_ix_cp = slc_ix - 1
-        sensmaps[slc_ix_cp] = sensmaps[slc_ix]
+        acs[slc_ix_cp] = acs[slc_ix]
         process_acs.refimg[slc_ix_cp] = process_acs.refimg[slc_ix]
         if process_acs.fmap is not None:
             process_acs.fmap['fmap'][slc_ix_cp] = process_acs.fmap['fmap'][slc_ix]
             process_acs.fmap['mask'][slc_ix_cp] = process_acs.fmap['mask'][slc_ix]
     
-def process_acs(group, metadata, dmtx=None, online_recon=False):
+def process_acs(group, metadata, dmtx=None):
     """ 
-    Do parallel imaging calibration and field map calculation
+    Process parallel imaging calibration scans
     """
 
     if len(group)==0:
@@ -770,20 +788,10 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
     data_sens = data_sens.reshape([nx,ny,nz,data.shape[-2],data.shape[-1]]) # if number of contrasts is 1, BART will remove the last dimension
 
     # ESPIRiT calibration - use only first contrast
-    gpu = False
-    chunk_sz = 0
-    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and data_sens.shape[2] > 1:
-        logging.debug("Use GPU for ecalib.")
-        gpu = True
-        chunk_sz = None
     if read_ecalib:
-        sensmaps = np.zeros(1)
+        acs = np.zeros(1)
     else:
-        logging.debug(f"Sensmap calibration for slice {slc_ix}.")
-        if online_recon:
-            sensmaps = bart(1, 'caldir 40', data_sens[...,0])
-        else:
-            sensmaps = rh.ecalib(data_sens[...,0], chunk_sz=chunk_sz, n_maps=1, use_gpu=gpu)
+        acs = data_sens[...,0] # save acs and calculate sensmaps in parallel, when data for all slices was acuired
 
     # calculate reference image
     refimg = rh.rss(cifftn(data_sens[...,0], [0,1,2]), axis=-1) # save at spiral matrix size
@@ -794,8 +802,6 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
         # remove slice oversampling - this currently only works if the slice resolution is the same as in the spiral scan
         nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
         offset = (refimg.shape[2] - nz) // 2
-        if not read_ecalib:
-            sensmaps = sensmaps[:,:,offset:-offset]
         refimg = refimg[:,:,offset:-offset]
         fmap_ref = fmap_ref[:,:,offset:-offset]
 
@@ -806,7 +812,7 @@ def process_acs(group, metadata, dmtx=None, online_recon=False):
 
     np.save(debugFolder + "/" + "acs.npy", data)
 
-    return sensmaps
+    return acs
 
 def process_diffusion_images(data, bvals, mask):
     """ Calculate ADC maps from diffusion images

@@ -279,12 +279,11 @@ def process_raw(acqGroup, metadata, img_coord):
         sens = np.load(sens_path)
     else:
         logging.debug("Start sensitivity map calculation.")
-        sensmaps = []
-        for slc, acs_slc in enumerate(acs):
-            sensmaps.append(rh.ecalib(acs_slc, chunk_sz=0, n_maps=1, kernel_size=6, use_gpu=False))
-            # sensmaps.append(bart(1, 'caldir 32', acs_slc))
-            logging.debug(f"Finished sensitivity map calculation for slice {slc}.")
-        sens = np.transpose(np.array(sensmaps), [0,4,3,2,1]) # [slices,nc,nz,ny,nx]
+        acs = np.moveaxis(acs,0,-1) # move slice dimension to last
+        sens = rh.ecalib(acs, chunk_sz=0, n_maps=1, kernel_size=6, use_gpu=False)
+        # sens = bart(1, f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} caldir 32', acs)
+        logging.debug(f"Finished sensitivity map calculation")
+        sens = np.transpose(sens, [-1,3,2,1,0]) # [slices,nc,nz,ny,nx]
         sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation
 
     np.save(sens_path, sens)
@@ -514,6 +513,8 @@ def process_raw(acqGroup, metadata, img_coord):
 
     logging.debug("Image MetaAttributes: %s", xml.dom.minidom.parseString(meta.serialize()).toprettyxml())
     logging.debug("Image data has size %d and %d slices"%(images[0].data.size, len(images)))
+
+    tmpdir.cleanup()
 
     return images
     

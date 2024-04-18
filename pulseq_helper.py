@@ -40,13 +40,25 @@ def insert_hdr(prot_file, metadata):
 
     # user parameters
     if prot_hdr.userParameters is not None:
-        dset_udbl_dict = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
-        prot_udbl_dict = {item.name: item.value for item in prot_hdr.userParameters.userParameterDouble}
-        merged_dict = {**dset_udbl_dict, **prot_udbl_dict} # by merging the dicts, dummy user parameters in the parameter_map are not necessary anymore
-        metadata.userParameters.userParameterDouble.clear()
-        for key in merged_dict:
-            up = ismrmrd.xsd.userParameterDoubleType(name=key, value=merged_dict[key])
-            metadata.userParameters.userParameterDouble.append(up)
+        dset_up = [metadata.userParameters.userParameterDouble,
+                   metadata.userParameters.userParameterLong,
+                   metadata.userParameters.userParameterBase64]
+        prot_up = [prot_hdr.userParameters.userParameterDouble,
+                   prot_hdr.userParameters.userParameterLong,
+                   prot_hdr.userParameters.userParameterBase64]
+        for i in range(len(dset_up)):
+            dset_up_dict = {item.name: item.value for item in dset_up[i]}
+            prot_up_dict = {item.name: item.value for item in prot_up[i]}
+            merged_dict = {**dset_up_dict, **prot_up_dict} # by merging the dicts, dummy user parameters in the parameter_map are not necessary anymore
+            dset_up[i].clear()
+            for key in merged_dict:
+                if i == 0:
+                    up = ismrmrd.xsd.userParameterDoubleType(name=key, value=merged_dict[key])
+                elif i == 1:
+                    up = ismrmrd.xsd.userParameterLongType(name=key, value=merged_dict[key])
+                elif i == 2:
+                    up = ismrmrd.xsd.userParameterBase64Type(name=key, value=merged_dict[key])
+                dset_up[i].append(up)
 
     # encoding
     dset_e1 = metadata.encoding[0]
@@ -219,6 +231,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_REPETITION)
+    if prot_acq.is_flag_set(ismrmrd.ACQ_IS_REVERSE):
+        dset_acq.setFlag(ismrmrd.ACQ_IS_REVERSE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
         dset_acq.setFlag(ismrmrd.ACQ_IS_NOISE_MEASUREMENT)
         return

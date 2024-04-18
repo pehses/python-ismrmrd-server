@@ -87,6 +87,9 @@ def process_cartesian(connection, config, metadata, prot_file):
     logging.debug("Reading in protocol acquisitions.")
     acqs = read_acqs(prot_file)
 
+    # initilaize encoding info
+    process_acs.enc_info = [None] * 4
+
     image_list = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     try:
         for item in connection:
@@ -170,24 +173,19 @@ def process_cartesian(connection, config, metadata, prot_file):
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     # initialize k-space
-    enc1_min, enc1_max = int(999), int(0)
-    enc2_min, enc2_max = int(999), int(0)
-    for acq in group:
-        enc1 = acq.idx.kspace_encode_step_1
-        enc2 = acq.idx.kspace_encode_step_2
-        if enc1 < enc1_min:
-            enc1_min = enc1
-        if enc1 > enc1_max:
-            enc1_max = enc1
-        if enc2 < enc2_min:
-            enc2_min = enc2
-        if enc2 > enc2_max:
-            enc2_max = enc2
-
-        # Oversampling removal - WIP: assumes 2x oversampling at the moment
-        data = rh.remove_os(acq.data[:], axis=-1)
-        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-        acq.data[:] = data
+    if None in process_acs.enc_info:
+        process_acs.enc_info = [999, 0, 999, 0]
+        for acq in group:
+            enc1 = acq.idx.kspace_encode_step_1
+            enc2 = acq.idx.kspace_encode_step_2
+            if enc1 < process_acs.enc_info[0]:
+                process_acs.enc_info[0] = enc1
+            if enc1 > process_acs.enc_info[1]:
+                process_acs.enc_info[1] = enc1
+            if enc2 < process_acs.enc_info[2]:
+                process_acs.enc_info[2] = enc2
+            if enc2 > process_acs.enc_info[3]:
+                process_acs.enc_info[3] = enc2
 
     nc = metadata.acquisitionSystemInformation.receiverChannels
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
@@ -197,9 +195,20 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
-    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
+    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % 
+                  (nx, ny, nz, process_acs.enc_info[0], process_acs.enc_info[1], process_acs.enc_info[2], process_acs.enc_info[3], group[0].data.shape[-1]))
 
     for acq in group:
+
+        # check reverse flag
+        if acq.is_flag_set(ismrmrd.ACQ_IS_REVERSE):
+            acq.data[:] = np.flip(acq.data[:], -1)
+
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = rh.remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
+
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
 
@@ -213,8 +222,8 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             cy = ny // 2
             cz = nz // 2
 
-            cenc1 = (enc1_max+1) // 2
-            cenc2 = (enc2_max+1) // 2
+            cenc1 = (process_acs.enc_info[1]+1) // 2
+            cenc2 = (process_acs.enc_info[2]+1) // 2
 
             # sort data into center k-space (assuming a symmetric acquisition)
             enc1 += cy - cenc1

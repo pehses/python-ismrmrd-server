@@ -570,7 +570,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
 def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     """ Calculate field maps from reference images with two different contrasts
 
-        imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
+        imgs: [slices,nx,ny,nz,nc,n_contr]
         echo_times: list of echo times [s]
 
         always returns field map in dimensions [slices/nz, nx, ny]
@@ -581,7 +581,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     median_filtering = False # apply median filtering
     gaussian_filtering = True # apply Gaussian filtering
     nlm_filter = False # apply non-local means filter to field map in the end
-    std_filter = True # apply standard deviation filter (only if mc_fmap selected)
+    std_filter = False # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
     romeo_fmap = False # use the ROMEO toolbox for field map calculation (set to True, if more than 2 echoes)
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
@@ -604,6 +604,10 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
     n_slc = imgs.shape[0]
+    nc = imgs.shape[-2]
+    if nc == 1:
+        mc_fmap = False
+        std_filter = False
 
     # from [slices,nx,ny,nz,coils,echoes] to either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
     if nz == 1:
@@ -635,7 +639,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
         mask_romeo = None # Providing mask is taking longer and does not improve?
-        fmap = romeo_unwrap(imgs, echo_times, mask=mask_romeo, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask_romeo, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
@@ -649,7 +653,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
                 phasediff_uw[...,k] = val.get()
             pool.close()
 
-        nc = phasediff_uw.shape[-1]
         phasediff_uw_rs = phasediff_uw.reshape([-1,nc])
         img_mag = abs(imgs[...,0]).reshape([-1,nc])
         ix = np.argsort(phasediff_uw_rs, axis=-1)[:,nc//4:-nc//4] # remove lowest & highest quartile
@@ -749,12 +752,14 @@ def do_despike(fmap):
     return despike.clean(fmap, n=0.8, size=2, mask='mean', fill_method='median', fill_size=2)
 
 # Unwrapping with ROME0
-def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
+def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_b0=False):
     """
         Do phase unwrapping with romeo and optionally output B0 map (Dymerska, MRM, 2020)
 
         imgs: Input (multi-coil, multi-echo) images [x,y,z, coils, echoes] (coils & echoes are optional)
         echo_times: list of echo times [ms]
+        metadata: ISMRMRD metadata
+        mask: mask for unwrapping
         mc_unwrap: unwrap each channel individually (coil dimension has to be present)
         return_b0: return B0 map in rad/m (only if mc_unwrap=False)
     """
@@ -770,30 +775,50 @@ def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
         coildim = -2
         echodim = -1
         imgs = np.swapaxes(imgs, echodim, coildim) # romeo needs [x,y,z,echoes,coils]
+        if imgs.shape[-1] == 1:
+            imgs = imgs[...,0]
     else:
         coildim = -1
 
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
+    # tempdir = "/tmp/share/debug/"
 
+    # set affine for nifti
+    res_x = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
+    res_y = metadata.encoding[0].encodedSpace.fieldOfView_mm.y / metadata.encoding[0].encodedSpace.matrixSize.y
+    res_z = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
+    affine = np.diag([res_x, res_y, res_z, 1])
+
+    # check for bipolar phase correction
+    up_base_prot = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+    bipolar = False
+    if 'bipolar' in up_base_prot and up_base_prot['bipolar']:
+        logging.debug("Bipolar phase offset correction.")
+        bipolar = True
+
+    # write Niftis
     phs_in = np.angle(imgs)
     mag_in = abs(imgs)
     phs_name = tempdir+"/phs_romeo.nii.gz"
     mag_name = tempdir+"/mag_romeo.nii.gz"
-    mag_romeo = nib.Nifti1Image(mag_in, np.eye(4))
+    mag_romeo = nib.Nifti1Image(mag_in, affine)
     nib.save(mag_romeo, mag_name)
 
     mask_name = "robustmask"
     if mask is not None:
         mask_name = tempdir+"/mask_romeo.nii.gz"
-        mask_romeo = nib.Nifti1Image(mask, np.eye(4))
+        mask_romeo = nib.Nifti1Image(mask, affine)
         nib.save(mask_romeo, mask_name)
 
     subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir}"
+    if bipolar:
+        subproc += " --phase-offset-correction bipolar"
+
     if mc_unwrap:
         phs_uw = []
         for k in range(phs_in.shape[-1]):
-            phs_romeo = nib.Nifti1Image(phs_in[...,k], np.eye(4))
+            phs_romeo = nib.Nifti1Image(phs_in[...,k], affine)
             nib.save(phs_romeo, phs_name)
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
             phs_uw.append(nib.load(tempdir+"/unwrapped.nii").get_fdata().copy())
@@ -801,7 +826,7 @@ def romeo_unwrap(imgs, echo_times, mask=None, mc_unwrap=False, return_b0=False):
         tmpdir.cleanup()
         return np.moveaxis(phs_uw,0,coildim) 
     else:
-        phs_romeo = nib.Nifti1Image(phs_in, np.eye(4))
+        phs_romeo = nib.Nifti1Image(phs_in, affine)
         nib.save(phs_romeo, phs_name)
         if return_b0:
             subproc += " -B"

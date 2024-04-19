@@ -776,10 +776,11 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         echodim = -1
         imgs = np.swapaxes(imgs, echodim, coildim) # romeo needs [x,y,z,echoes,coils]
         if imgs.shape[-1] == 1:
-            imgs = imgs[...,0]
+            imgs = imgs[...,0] # remove coil dimension if 1
     else:
         coildim = -1
 
+    # tempfile.tempdir = "/dev/shm"
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
     # tempdir = "/tmp/share/debug/"
@@ -811,7 +812,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         mask_romeo = nib.Nifti1Image(mask, affine)
         nib.save(mask_romeo, mask_name)
 
-    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir}"
+    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir} --temporal-uncertain-unwrapping"
     if bipolar:
         subproc += " --phase-offset-correction bipolar"
 

@@ -20,6 +20,9 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
+force_pics = False # force parallel imaging reco
+parallel_reco = False # parallel reconstruction of slices/contrasts
+
 def process_cartesian(connection, config, metadata, prot_file):
 
     # reload reco helper
@@ -77,7 +80,7 @@ def process_cartesian(connection, config, metadata, prot_file):
     noiseGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
-    sensmaps = [None] * 256
+    sensmaps = None
     dmtx = None
 
     # Save k-space data for calculating sensitivity maps in following accelerated scans (e.g. EPI/spiral)
@@ -88,7 +91,7 @@ def process_cartesian(connection, config, metadata, prot_file):
     acqs = read_acqs(prot_file)
 
     # initilaize encoding info
-    process_acs.enc_info = [None] * 4
+    process_acs.enc_info = [999, 0, 999, 0]
 
     image_list = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     try:
@@ -121,72 +124,63 @@ def process_cartesian(connection, config, metadata, prot_file):
                     continue
                 elif item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
                     acsGroup[item.idx.slice].append(item)
+                    set_enc_info(item)
                     continue
-                elif sensmaps[item.idx.slice] is None:
+                elif sensmaps is None and len(acsGroup[0]) > 0:
                     # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx, gpu)
-                    acsGroup[item.idx.slice].clear()
+                    acs_ksp = []
+                    for slc in acsGroup:
+                        acs_ksp.append(sort_into_kspace(slc, metadata, dmtx, zf_around_center=True))
+                    sensmaps = process_acs(acsGroup, gpu)
+                    process_acs.enc_info = [999, 0, 999, 0]
 
                 acqGroup[item.idx.contrast][item.idx.slice].append(item)
+                set_enc_info(item)
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and not parallel_reco:
                     logging.info("Processing a group of k-space data")
-                    img, img_uncmb, refdata = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice], gpu)
+                    img, img_uncmb, refdata = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps, gpu)
                     image_list[item.idx.contrast][item.idx.slice] = img
-                    if fmap_scan and img_uncmb is not None:
-                        phs_imgs[item.idx.contrast][item.idx.slice] = img_uncmb # save data for field map calculation
-                    else:
-                        fmap_scan = False
-                    if item.idx.contrast == 0 and refdata is not None:
+                    phs_imgs[item.idx.contrast][item.idx.slice] = img_uncmb # phase data for field map calculation
+                    if item.idx.contrast == 0:
                         acs_ref[item.idx.slice] = refdata
                 
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
+                    if parallel_reco:
+                        logging.debug("Parallel reconstruction of slices/contrasts")
+                        imgs, phs_imgs, acs_ref = process_raw(acqGroup, metadata, dmtx, sensmaps, gpu, parallel=True)
+                        for k,contr in enumerate(imgs):
+                            for j,slc in enumerate(contr):
+                                image_list[k][j] = slc
+
                     images = send_images(image_list, metadata, acqGroup[0][0])
                     connection.send_image(images)
                     if fmap_scan:
                         phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]
                         images = calc_fieldmap(phs_imgs, ismrmrd_arr['echo_times'], metadata, acqGroup[0][0])
                         connection.send_image(images)
-                    if acs_ref[0] is not None:
-                        np.save(os.path.join(dependencyFolder, "acs.npy"), np.array(acs_ref))
-
-        # Process any remaining groups of raw or image data.  This can 
-        # happen if the trigger condition for these groups are not met.
-        # This is also a fallback for handling image data, as the last
-        # image in a series is typically not separately flagged.
-        if item is not None:
-            if len(acqGroup) > 0:
-                logging.info("Processing a group of k-space data (untriggered)")
-                if sensmaps[item.idx.slice] is None:
-                    # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx)
-                image, _, __ = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, dmtx, sensmaps[item.idx.slice])
-                logging.debug("Sending image to client:\n%s", image)
-                connection.send_image(image)
-                acqGroup = []
+                    np.save(os.path.join(dependencyFolder, "acs.npy"), np.array(acs_ref)) # save acs reference data
 
     finally:
         connection.send_close()
 
+def set_enc_info(item):
+    enc1 = item.idx.kspace_encode_step_1
+    enc2 = item.idx.kspace_encode_step_2
+    if enc1 < process_acs.enc_info[0]:
+        process_acs.enc_info[0] = enc1
+    if enc1 > process_acs.enc_info[1]:
+        process_acs.enc_info[1] = enc1
+    if enc2 < process_acs.enc_info[2]:
+        process_acs.enc_info[2] = enc2
+    if enc2 > process_acs.enc_info[3]:
+        process_acs.enc_info[3] = enc2
 
 def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
-    # initialize k-space
-    if None in process_acs.enc_info:
-        process_acs.enc_info = [999, 0, 999, 0]
-        for acq in group:
-            enc1 = acq.idx.kspace_encode_step_1
-            enc2 = acq.idx.kspace_encode_step_2
-            if enc1 < process_acs.enc_info[0]:
-                process_acs.enc_info[0] = enc1
-            if enc1 > process_acs.enc_info[1]:
-                process_acs.enc_info[1] = enc1
-            if enc2 < process_acs.enc_info[2]:
-                process_acs.enc_info[2] = enc2
-            if enc2 > process_acs.enc_info[3]:
-                process_acs.enc_info[3] = enc2
 
+    # initialize k-space
     nc = metadata.acquisitionSystemInformation.receiverChannels
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -195,8 +189,8 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
-    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % 
-                  (nx, ny, nz, process_acs.enc_info[0], process_acs.enc_info[1], process_acs.enc_info[2], process_acs.enc_info[3], group[0].data.shape[-1]))
+    # logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % 
+    #               (nx, ny, nz, process_acs.enc_info[0], process_acs.enc_info[1], process_acs.enc_info[2], process_acs.enc_info[3], group[0].data.shape[-1]))
 
     for acq in group:
 
@@ -206,14 +200,12 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
         # Oversampling removal - WIP: assumes 2x oversampling at the moment
         data = rh.remove_os(acq.data[:], axis=-1)
-        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-        acq.data[:] = data
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
 
         # in case dim sizes smaller than expected, sort data into k-space center (e.g. for reference scans)
-        ncol = acq.data.shape[-1]
+        ncol = data.shape[-1]
         cx = nx // 2
         ccol = ncol // 2
         col = slice(cx - ccol, cx + ccol)
@@ -230,9 +222,9 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             enc2 += cz - cenc2
         
         if dmtx is None:
-            kspace[enc1, enc2, :, col] += acq.data
+            kspace[enc1, enc2, :, col] += data
         else:
-            kspace[enc1, enc2, :, col] += rh.apply_prewhitening(acq.data, dmtx)
+            kspace[enc1, enc2, :, col] += rh.apply_prewhitening(data, dmtx)
         counter[enc1, enc2] += 1
 
     # support averaging (with or without acquisition weighting)
@@ -244,50 +236,102 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     return kspace
 
 
-def process_acs(group, metadata, dmtx=None, gpu=False):
-    if len(group)>0:
-        data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
+def process_acs(acs_ksp, gpu=False):
+    """
+    Process the ACS data to calculate sensitivity maps
+    acs_ksp: ACS k-space data, dims: [n_slc, nx, ny, nz, nc] 
+    """
 
-        # ESPIRiT
-        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
-        else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data) 
-        np.save(debugFolder + "/" + "acs.npy", data)
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
-        return sensmaps
+    acs_ksp = np.moveaxis(np.asarray(acs_ksp),0,-1) # [n_slc, nx, ny, nz, nc] -> [nx, ny, nz, nc, n_slc]
+
+    # ESPIRiT
+    if gpu and acs_ksp.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+        sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', acs_ksp)
+    elif acs_ksp.shape[-1] > 1:
+        sensmaps = bart(1, f'--parallel-loop {(acs_ksp.ndim-1)**2} -e {acs_ksp.shape[-1]} ecalib -m 1 -k 6 -I', acs_ksp) 
+    else: 
+        sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', acs_ksp) 
+
+    while sensmaps.ndim < 5:
+        sensmaps = sensmaps[...,np.newaxis]
+
+    # back to [n_slc, nx, ny, nz, nc]
+    acs_ksp = np.moveaxis(np.asarray(acs_ksp),-1,0)
+    sensmaps = np.moveaxis(np.asarray(sensmaps),-1,0)
+
+    np.save(debugFolder + "/" + "acs.npy", acs_ksp)
+    np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
+    return sensmaps
+
+def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=False):
+
+    if parallel:
+        ksp = []
+        for contr in group:
+            for slc in contr:
+                ksp.append(sort_into_kspace(slc, metadata, dmtx))
+        ksp = np.asarray(ksp)
     else:
-        return None
+        ksp = sort_into_kspace(group, metadata, dmtx)
 
+    logging.debug("Raw data is size %s" % (ksp.shape,))
 
-def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False):
-
-    data = sort_into_kspace(group, metadata, dmtx)
-
-    logging.debug("Raw data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "raw.npy", data)
-
+    if force_pics and sensmaps is None:
+        logging.debug("force pics")
+        if parallel:
+            n_slc = len(group[0])
+            acs_data = ksp[:n_slc]
+        else:
+            acs_data = ksp[np.newaxis]
+        sensmaps = process_acs(acs_data, gpu)
+        if parallel:
+            n_contr = len(group)
+            sensmaps = np.tile(sensmaps, (n_contr, 1, 1, 1, 1))
+        else:
+            sensmaps = sensmaps[0]
+    
     if sensmaps is None:
         logging.debug("no pics necessary, just do standard FFT")
-        img_uncmb = cifftn(data, axes=(0, 1, 2))
-        img = np.sqrt(np.sum(np.abs(img_uncmb)**2, axis=-1)) # Sum of squares coil combination
-        refdata = data
+        coildim = -1
+        if parallel:
+            ksp = np.moveaxis(ksp, 0, -1)
+            coildim = -2
+        img_uncmb = cifftn(ksp, axes=(0, 1, 2))
+        img = np.sqrt(np.sum(np.abs(img_uncmb)**2, axis=coildim)) # Sum of squares coil combination
     else:
-        img_uncmb = None
-        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-            img = bart(1, 'pics -g -S -e -l1 -r 0.001 -i 50', data, sensmaps)
-        else:
-            img = bart(1, 'pics -S -e -l1 -r 0.001 -i 50', data, sensmaps)
-        img = np.abs(img)
-        refdata = None
+        if parallel:
+            ksp = np.moveaxis(ksp, 0, -1) # move slices/contrasts to last dimension
+            sensmaps = np.moveaxis(sensmaps, 0, -1)
+        elif sensmaps.ndim == 5:
+            sensmaps = sensmaps[group[0].idx.slice]
+
+        pics_str = 'pics -S -e -l1 -r 0.001 -i 50'
+        if gpu and ksp.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+            pics_str += ' -g'
+        if parallel:
+            pics_str = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + pics_str
+
+        img_uncmb = bart(1, pics_str, ksp, sensmaps)
+        while img_uncmb.ndim < 4:
+            img_uncmb = img_uncmb[...,np.newaxis] # add nz, nc axis if necessary
+        img = abs(img_uncmb[...,0,:])
 
     # correct orientation at scanner (consistent with ICE)
     img = np.swapaxes(img, 0, 1)
     img = np.flip(img, (0,1,2))
 
+    if parallel:
+        n_contr = len(group)
+        n_slc = len(group[0])
+        newshape_img_uncmb = [n_contr, n_slc] + list(img_uncmb.shape[:4])
+        img_uncmb = np.moveaxis(img_uncmb, -1, 0).reshape(newshape_img_uncmb)
+        newshape_img = [n_contr, n_slc] + list(img.shape[:3])
+        img = np.moveaxis(img, -1, 0).reshape(newshape_img)
+        ksp = np.moveaxis(ksp, -1, 0)[:n_slc]
+
     logging.debug("Image data is size %s" % (img.shape,))
 
-    return img, img_uncmb, refdata
+    return img, img_uncmb, ksp
 
 def send_images(imgs, metadata, group):
 

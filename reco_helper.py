@@ -790,7 +790,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     # check for bipolar phase correction
     up_base_prot = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
     bipolar = False
-    if 'bipolar' in up_base_prot and up_base_prot['bipolar']:
+    if 'bipolar' in up_base_prot and int(up_base_prot['bipolar']):
         logging.debug("Bipolar phase offset correction.")
         bipolar = True
 

@@ -70,9 +70,11 @@ def process(connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Check if ACS and field map available
-    if not os.path.isfile(os.path.join(dependencyFolder, "acs.npy")):
-        raise ValueError("No reference data for coil sensitivity mapping available.")
-    if not os.path.isfile(os.path.join(dependencyFolder, "fmap.npz")):
+    acs_list = os.path.join(dependencyFolder, "acs_data", "acs_list.txt")
+    fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
+    if not rh.check_dependency_data(acs_list):
+        raise ValueError("No ACS data available.")
+    if not rh.check_dependency_data(fmap_list):
         raise ValueError("No field map available.")
 
     # Read user parameters
@@ -266,7 +268,8 @@ def process_raw(acqGroup, metadata, img_coord):
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
     # Load ACS and calculate reference image
-    acs = np.load(os.path.join(dependencyFolder, "acs.npy")) # [slices,nx,ny,nz,nc]
+    acs_file = np.loadtxt(os.path.join(dependencyFolder, "acs_data", "acs_list.txt"), dtype=str)[-1]
+    acs = np.load(os.path.join(dependencyFolder, "acs_data", acs_file)) # [slices,nx,ny,nz,nc]
     if acs.shape[-2] != 1:
         raise ValueError("3D reference scan not supported.")
     acs = bart(1,f'resize -c 1 {nx} 2 {ny} ', acs)
@@ -292,7 +295,8 @@ def process_raw(acqGroup, metadata, img_coord):
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
-    fmap = np.load(os.path.join(dependencyFolder, "fmap.npz"), allow_pickle=True)
+    fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str)[-1]
+    fmap = np.load(os.path.join(dependencyFolder, "fmaps", fmap_file), allow_pickle=True)
     fmap_data = fmap['fmap']
     fmap_name = fmap['name']
     shape = [fmap_data.shape[0], ny, nx] # [slices,ny,nx]

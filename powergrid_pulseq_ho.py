@@ -409,11 +409,14 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             else:
                 refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
             echo_times = fmap['TE']
-            fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon, dependencyFolder)
+            fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon)
         else: # external field map
-            fmap_path = dependencyFolder+"/fmap.npz"
+            fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
+            if not rh.check_dependency_data(fmap_list):
+                raise ValueError("No external field map data found.")
+            fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str)[-1]
             fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
-            fmap = rh.load_external_fmap(fmap_path, fmap_shape)
+            fmap = rh.load_external_fmap(os.path.join(dependencyFolder, "fmaps", fmap_file), fmap_shape)
         np.savez(debugFolder+"/fmap.npz", fmap=fmap['fmap'], mask=fmap['mask'], name=fmap['name'])
     else:
         fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)

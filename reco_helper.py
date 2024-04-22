@@ -567,7 +567,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
 # Field map calculation
 #############################
 
-def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
+def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     """ Calculate field maps from reference images with two different contrasts
 
         imgs: [slices,nx,ny,nz,nc,n_contr]
@@ -595,10 +595,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False, dep_folder=None):
 
     if len(echo_times) > 2:
         romeo_fmap = True
-
-    if romeo_fmap or romeo_uw:
-        if dep_folder is None:
-            dep_folder = "/tmp/share/dependency"
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -840,6 +836,27 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
             phs_uw = nib.load(tempdir+"/unwrapped.nii").get_fdata()
             tmpdir.cleanup()
             return phs_uw
+
+def check_dependency_data(file_list):
+    
+    """
+    Check if field maps or acs data is available in dependency folder
+
+    file_list: File lists with dependency data
+    """
+
+    base_folder = os.path.dirname(file_list)
+    if not os.path.isfile(file_list):
+        logging.debug(f"File list for dependency data not available: {file_list}.")
+        return False
+    else:
+        file_name = np.loadtxt(file_list, dtype=str)[-1]
+        if not os.path.isfile(os.path.join(base_folder, file_name)):
+            logging.debug(f"Dependency data: {file_name} not available.")
+            return False
+    
+    return True       
+    
 
 ## Old
 

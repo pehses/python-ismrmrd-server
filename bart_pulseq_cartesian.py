@@ -158,10 +158,20 @@ def process_cartesian(connection, config, metadata, prot_file):
                     images = send_images(image_list, metadata, acqGroup[0][0])
                     connection.send_image(images)
                     if fmap_scan:
-                        phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]
+                        phs_imgs = np.moveaxis(np.asarray(phs_imgs), 0,-1)  # to [slices,nx,ny,nz,nc,n_contr]                       
+                        metadata.userParameters.userParameterString[0].value = os.path.basename(os.path.splitext(prot_file)[0])
                         images = calc_fieldmap(phs_imgs, ismrmrd_arr['echo_times'], metadata, acqGroup[0][0])
                         connection.send_image(images)
-                    np.save(os.path.join(dependencyFolder, "acs.npy"), np.array(acs_ref)) # save acs reference data
+                    
+                    # save acs data
+                    acs_name = f"acs_{os.path.basename(os.path.splitext(prot_file)[0])}.npy"
+                    acs_folder = os.path.join(dependencyFolder, "acs_data")
+                    if not os.path.exists(acs_folder):
+                        os.makedirs(acs_folder)
+                    np.save(os.path.join(acs_folder, acs_name), np.array(acs_ref)) # save acs reference data
+                    # append name to txt file
+                    with open(os.path.join(acs_folder, "acs_list.txt"), "a") as f:
+                        f.write(acs_name + '\n')
 
     finally:
         connection.send_close()
@@ -259,8 +269,6 @@ def process_acs(acs_ksp, gpu=False):
     acs_ksp = np.moveaxis(np.asarray(acs_ksp),-1,0)
     sensmaps = np.moveaxis(np.asarray(sensmaps),-1,0)
 
-    np.save(debugFolder + "/" + "acs.npy", acs_ksp)
-    np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
     return sensmaps
 
 def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=False):
@@ -407,10 +415,18 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     n_slc = imgs.shape[0]
     n_contr = imgs.shape[-1]
 
-    fmap, mask = rh.calc_fmap(imgs, echo_times, metadata, dep_folder=dependencyFolder)
+    fmap, mask = rh.calc_fmap(imgs, echo_times, metadata)
 
     # save in dependency - swap x/y axes for correct orientation in PowerGrid
-    np.savez(os.path.join(dependencyFolder, "fmap.npz"), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name='Field map from external scan.')
+    prot_file = metadata.userParameters.userParameterString[0].value
+    fmap_name = f"fmap_{prot_file}.npz"
+    fmap_folder = os.path.join(dependencyFolder, "fmaps")
+    if not os.path.exists(fmap_folder):
+        os.makedirs(fmap_folder)
+    np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name='Field map from external scan.')
+    # append name to txt file
+    with open(os.path.join(fmap_folder, "fmap_list.txt"), "a") as f:
+        f.write(fmap_name + '\n')
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])

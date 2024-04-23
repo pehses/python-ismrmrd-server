@@ -523,8 +523,6 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         toc = perf_counter()
         logging.debug(f"PowerGrid Reconstruction time: {toc-tic}.")
         # logging.debug(process.stdout)
-        if mps_server:
-            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
     except subprocess.CalledProcessError as e:
         if mps_server:
             subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
@@ -606,7 +604,13 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                 acq.data[:] = acqs_save[j] + noise
                 dset_tmp.write_acquisition(acq, j)
             dset_tmp.close()
-            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                if mps_server:
+                    subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
+                logging.debug(e.stdout)
+                raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
             data_snr = abs(np.load(os.path.join(tempdir,"images_pg.npy")))
             data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
             data_snr_list.append(data_snr.reshape(newshape, order='f'))
@@ -617,6 +621,9 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
         snr = snr[0,0,0]
         dsets['snr_map'] = snr
+
+    if mps_server:
+        subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
 
     # Correct orientation, normalize and convert to int16 for online recon
     uint_max = np.iinfo(np.uint16).max

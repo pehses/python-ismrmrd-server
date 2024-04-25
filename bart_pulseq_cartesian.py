@@ -423,7 +423,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     fmap_folder = os.path.join(dependencyFolder, "fmaps")
     if not os.path.exists(fmap_folder):
         os.makedirs(fmap_folder)
-    np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name='Field map from external scan.')
+    np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name=fmap_name)
     # append name to txt file
     with open(os.path.join(fmap_folder, "fmap_list.txt"), "a") as f:
         f.write(fmap_name + '\n')

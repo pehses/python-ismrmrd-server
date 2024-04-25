@@ -36,6 +36,8 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
+# tempfile.tempdir = "/dev/shm"  # faster temporary file writing in RAM
+
 read_ecalib = False # read sensitivity maps from file (requires previous recon)
 save_cmplx = True # save images as complex data
 
@@ -84,8 +86,8 @@ def process(connection, config, metadata):
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
 
-    # Acquisition dwelltime for noise decorrelation
-    dwell_acq = up_double["dwellTime_us"]
+    # Acquisition dwelltime for noise decorrelation, factor 2 as oversampling is removed in imaging data
+    dwell_acq = up_double["dwellTime_us"] * 2
 
     logging.info("Config: \n%s", config)
 

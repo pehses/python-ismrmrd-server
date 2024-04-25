@@ -43,7 +43,7 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-# tempfile.tempdir = "/dev/shm"  # slightly faster bart wrapper
+# tempfile.tempdir = "/dev/shm" # faster temporary file writing in RAM
 
 read_ecalib = False # read sensitivity maps from file (requires previous recon)
 read_fmap = False # read field map from file (requires previous recon)
@@ -127,6 +127,9 @@ def process(connection, config, metadata, prot_file):
 
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
+
+    # Oversampling factor
+    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
 
     # Get additional arrays from protocol file for diffusion imaging
     prot_arrays = get_ismrmrd_arrays(prot_file)
@@ -217,8 +220,8 @@ def process(connection, config, metadata, prot_file):
                     for acq in noiseGroup:
                         noise_data.append(acq.data[:])
                     noise_data = np.concatenate(noise_data, axis=1)
-                    # calculate pre-whitening matrix
-                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=0.793) # scale factor considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
+                    # calculate pre-whitening matrix - noise data has same dwelltime as spiral scan, but oversampling is not removed, therefore add os_factor to scale_facotr
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=os_factor*0.793) # scale factor considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
                     del(noise_data)
                     noiseGroup.clear()
                                
@@ -304,7 +307,6 @@ def process(connection, config, metadata, prot_file):
                 item.data[:] *= 1/np.exp(-t_vec/t2_star)
 
                 # remove ADC oversampling
-                os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                 if os_factor == 2:
                     rh.remove_os_spiral(item)
 

@@ -850,7 +850,7 @@ def check_dependency_data(file_list):
         logging.debug(f"File list for dependency data not available: {file_list}.")
         return False
     else:
-        file_name = np.loadtxt(file_list, dtype=str)[-1]
+        file_name = np.loadtxt(file_list, dtype=str, ndmin=1)[-1]
         if not os.path.isfile(os.path.join(base_folder, file_name)):
             logging.debug(f"Dependency data: {file_name} not available.")
             return False

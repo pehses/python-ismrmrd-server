@@ -430,7 +430,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
         if not rh.check_dependency_data(fmap_list):
             raise ValueError("No external field map data found.")
-        fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str)[-1]
+        fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str, ndmin=1)[-1]
         fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
         fmap = rh.load_external_fmap(os.path.join(dependencyFolder, "fmaps", fmap_file), fmap_shape)
 

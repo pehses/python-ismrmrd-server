@@ -268,7 +268,7 @@ def process_raw(acqGroup, metadata, img_coord):
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
     # Load ACS and calculate reference image
-    acs_file = np.loadtxt(os.path.join(dependencyFolder, "acs_data", "acs_list.txt"), dtype=str)[-1]
+    acs_file = np.loadtxt(os.path.join(dependencyFolder, "acs_data", "acs_list.txt"), dtype=str, ndmin=1)[-1]
     acs = np.load(os.path.join(dependencyFolder, "acs_data", acs_file)) # [slices,nx,ny,nz,nc]
     if acs.shape[-2] != 1:
         raise ValueError("3D reference scan not supported.")
@@ -293,7 +293,7 @@ def process_raw(acqGroup, metadata, img_coord):
     dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
     # Insert Field Map
-    fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str)[-1]
+    fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str, ndmin=1)[-1]
     fmap = np.load(os.path.join(dependencyFolder, "fmaps", fmap_file), allow_pickle=True)
     fmap_data = fmap['fmap']
     fmap_name = fmap['name']

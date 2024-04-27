@@ -184,6 +184,7 @@ def process(connection, config, metadata, prot_file):
     base_trj = None
     process_acs.cc_mat = None # compression matrix
     process_acs.refimg = [None] * n_slc # save one reference image for DTI analysis (BET masking) 
+    process_acs.enc_info = [999, 0, 999, 0, 0] # initilaize encoding info: enc1 min/max, enc2 min/max, constrast max
 
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
@@ -231,6 +232,7 @@ def process(connection, config, metadata, prot_file):
 
                 # Process reference scans
                 if item.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION):
+                    set_enc_info(item)
                     if half_refscan:
                         item.idx.slice *= 2
                         acsGroup[item.idx.slice].append(item)
@@ -866,44 +868,41 @@ def process_diffusion_images(data, bvals, mask):
 # Sort Data
 #########################
 
-def sort_into_kspace(group, metadata, dmtx=None):
-    # initialize k-space
-    enc1_min, enc1_max = int(999), int(0)
-    enc2_min, enc2_max = int(999), int(0)
-    contr_max = 0
-    for acq in group:
-        enc1 = acq.idx.kspace_encode_step_1
-        enc2 = acq.idx.kspace_encode_step_2
-        contr = acq.idx.contrast
-        if enc1 < enc1_min:
-            enc1_min = enc1
-        if enc1 > enc1_max:
-            enc1_max = enc1
-        if enc2 < enc2_min:
-            enc2_min = enc2
-        if enc2 > enc2_max:
-            enc2_max = enc2
-        if contr > contr_max:
-            contr_max = contr
-            
-        # Oversampling removal - WIP: assumes 2x oversampling at the moment
-        data = rh.remove_os(acq.data[:], axis=-1)
-        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
-        acq.data[:] = data
+def set_enc_info(item):
+    enc1 = item.idx.kspace_encode_step_1
+    enc2 = item.idx.kspace_encode_step_2
+    contr = item.idx.contrast
+    if enc1 < process_acs.enc_info[0]:
+        process_acs.enc_info[0] = enc1
+    if enc1 > process_acs.enc_info[1]:
+        process_acs.enc_info[1] = enc1
+    if enc2 < process_acs.enc_info[2]:
+        process_acs.enc_info[2] = enc2
+    if enc2 > process_acs.enc_info[3]:
+        process_acs.enc_info[3] = enc2
+    if contr > process_acs.enc_info[4]:
+        process_acs.enc_info[4] = contr
 
+def sort_into_kspace(group, metadata, dmtx=None):
+            
     nc = process_acs.cc_cha
     # if reference scan has bigger matrix than spiral scan (e.g. because of higher resolution), use the bigger matrix
-    nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, acq.number_of_samples)
-    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, enc1_max+1)
-    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, enc2_max+1)
-    n_contr = contr_max + 1
+    nx = max(metadata.encoding[0].encodedSpace.matrixSize.x, group[0].number_of_samples // 2) # // 2 because of oversampling removal (see below)
+    ny = max(metadata.encoding[0].encodedSpace.matrixSize.y, process_acs.enc_info[1]+1)
+    nz = max(metadata.encoding[0].encodedSpace.matrixSize.z, process_acs.enc_info[3]+1)
+    n_contr = process_acs.enc_info[4] + 1
 
     kspace = np.zeros([ny, nz, nc, nx, n_contr], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
 
-    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, enc1_min, enc1_max, enc2_min, enc2_max, group[0].data.shape[-1]))
+    logging.debug("nx/ny/nz: %s/%s/%s; enc1 min/max: %s/%s; enc2 min/max:%s/%s, ncol: %s" % (nx, ny, nz, process_acs.enc_info[0], process_acs.enc_info[1], process_acs.enc_info[2], process_acs.enc_info[1], group[0].number_of_samples // 2))
 
     for acq in group:
+
+        # Oversampling removal - WIP: assumes 2x oversampling at the moment
+        data = rh.remove_os(acq.data[:], axis=-1)
+        acq.resize(number_of_samples=data.shape[-1], active_channels=data.shape[0])
+        acq.data[:] = data
 
         enc1 = acq.idx.kspace_encode_step_1
         enc2 = acq.idx.kspace_encode_step_2
@@ -918,11 +917,11 @@ def sort_into_kspace(group, metadata, dmtx=None):
         # sort data into center k-space (assuming a symmetric acquisition)
         cy = ny // 2
         cz = nz // 2
-        cenc1 = (enc1_max+1) // 2
-        cenc2 = (enc2_max+1) // 2
+        cenc1 = (process_acs.enc_info[1]+1) // 2
+        cenc2 = (process_acs.enc_info[3]+1) // 2
         enc1 += cy - cenc1
         enc2 += cz - cenc2
-        
+
         # Noise-whitening
         if dmtx is not None:
             acq.data[:] = rh.apply_prewhitening(acq.data, dmtx)

@@ -225,7 +225,7 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
             cz = nz // 2
 
             cenc1 = (process_acs.enc_info[1]+1) // 2
-            cenc2 = (process_acs.enc_info[2]+1) // 2
+            cenc2 = (process_acs.enc_info[3]+1) // 2
 
             # sort data into center k-space (assuming a symmetric acquisition)
             enc1 += cy - cenc1

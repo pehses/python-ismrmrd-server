@@ -197,13 +197,15 @@ def process(connection, config, metadata, prot_file):
     logging.debug("Reading in protocol acquisitions.")
     acqs = read_acqs(prot_file)
 
+    processed = False
+
     try:
         for item in connection:
 
             # ----------------------------------------------------------
             # Raw k-space data messages
             # ----------------------------------------------------------
-            if isinstance(item, ismrmrd.Acquisition):
+            if isinstance(item, ismrmrd.Acquisition) and not processed:
 
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
@@ -260,6 +262,7 @@ def process(connection, config, metadata, prot_file):
                 if reco_n_contr and item.idx.contrast > reco_n_contr + first_vol - 1:
                     if len(acqGroup) > 0:
                         process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
+                        processed = True
                     continue
                 if item.idx.contrast < first_vol:
                     continue # skip until first volume index
@@ -318,14 +321,6 @@ def process(connection, config, metadata, prot_file):
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
                     process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
-
-        # Process any remaining groups of raw or image data.  This can 
-        # happen if the trigger condition for these groups are not met.
-        # This is also a fallback for handling image data, as the last
-        # image in a series is typically not separately flagged.
-        if item is not None:
-            logging.info("There was untriggered k-space data that will not get processed.")
-            acqGroup = []
 
     finally:
         connection.send_close()

@@ -26,7 +26,7 @@ def process(connection, config, metadata):
   
     # Create debug folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     prot_folder = os.path.join(dependencyFolder, "metadata")

@@ -88,7 +88,7 @@ def process(connection, config, metadata):
 def process_raw(group, config, metadata):
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Format data into single [cha PE RO phs] array

@@ -60,7 +60,7 @@ def process(connection, config, metadata, prot_file):
         global debugFolder 
         debugFolder += f"/{seq_signature}"
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Check if ecalib maps calculated

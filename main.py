@@ -45,7 +45,7 @@ if __name__ == '__main__':
         print("Logging to file: ", args.logfile)
 
         if not os.path.exists(os.path.dirname(args.logfile)):
-            os.makedirs(os.path.dirname(args.logfile))
+            os.makedirs(os.path.dirname(args.logfile), mode=0o774)
 
         logging.basicConfig(filename=args.logfile, format=fmt, level=logging.WARNING)
         logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))

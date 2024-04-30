@@ -29,7 +29,7 @@ def process(connection, config, metadata, prot_file=None):
   
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
     
     logging.info("Config: \n%s", config)

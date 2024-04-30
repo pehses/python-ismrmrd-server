@@ -167,7 +167,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                     acs_name = f"acs_{os.path.basename(os.path.splitext(prot_file)[0])}.npy"
                     acs_folder = os.path.join(dependencyFolder, "acs_data")
                     if not os.path.exists(acs_folder):
-                        os.makedirs(acs_folder)
+                        os.makedirs(acs_folder, mode=0o774)
                     np.save(os.path.join(acs_folder, acs_name), np.array(acs_ref)) # save acs reference data
                     # append name to txt file
                     with open(os.path.join(acs_folder, "acs_list.txt"), "a") as f:
@@ -422,7 +422,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     fmap_name = f"fmap_{prot_file}.npz"
     fmap_folder = os.path.join(dependencyFolder, "fmaps")
     if not os.path.exists(fmap_folder):
-        os.makedirs(fmap_folder)
+        os.makedirs(fmap_folder, mode=0o774)
     np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name=fmap_name)
     # append name to txt file
     with open(os.path.join(fmap_folder, "fmap_list.txt"), "a") as f:

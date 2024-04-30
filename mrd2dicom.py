@@ -51,7 +51,7 @@ def main(args):
         return
 
     if not os.path.exists(args.out_folder):
-        os.makedirs(args.out_folder)
+        os.makedirs(args.out_folder, mode=0o774)
 
     group = dset.get(args.in_group)
     print("Reading data from group '%s' in file '%s'" % (args.in_group, args.filename))

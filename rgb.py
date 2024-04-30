@@ -77,7 +77,7 @@ def process(connection, config, metadata):
 def process_raw(group, config, metadata):
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Format data into single [cha PE RO phs] array
@@ -176,7 +176,7 @@ def process_raw(group, config, metadata):
 def process_image(images, config, metadata):
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
+        os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     logging.debug("Processing data with %d images of type %s", len(images), ismrmrd.get_dtype_from_data_type(images[0].data_type))

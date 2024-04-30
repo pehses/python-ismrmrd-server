@@ -45,7 +45,7 @@ class Connection:
         if self.savedata is True:
             # Create savedata folder, if necessary
             if ((self.savedataFolder) and (not os.path.exists(self.savedataFolder))):
-                os.makedirs(self.savedataFolder)
+                os.makedirs(self.savedataFolder, mode=0o774)
                 logging.debug("Created folder " + self.savedataFolder + " to save incoming data")
 
             if (self.savedataFile):

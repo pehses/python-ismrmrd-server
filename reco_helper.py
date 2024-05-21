@@ -615,7 +615,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         raise ValueError("Multi-slab is not supported.")
 
     # mask with threshold as accuracy of the field map values is proportional to the signal intensity
-    img_mask = rss(imgs[...,0], axis=-1)
+    img_mask = rss(imgs[...,-1], axis=-1)
     thresh = 0.15
     mask = img_mask/np.max(img_mask)
     mask[mask<thresh] = 0
@@ -631,9 +631,8 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
             phasediff_uw = romeo_unwrap(phasediff,[], mask=mask, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
-            phasediff_ma = np.ma.array(phasediff, mask=(mask==0))
             pool = Pool(processes=cores)
-            results = [pool.apply_async(do_unwrap_phase, [phasediff_ma[...,k]]) for k in range(phasediff_ma.shape[-1])]
+            results = [pool.apply_async(do_unwrap_phase, [np.ma.array(phasediff[...,k], mask=~mask.astype(bool))]) for k in range(phasediff.shape[-1])]
             for k, val in enumerate(results):                
                 phasediff_uw[...,k] = np.ma.getdata(val.get())
             pool.close()
@@ -665,7 +664,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         if romeo_uw:
             phasediff_uw = romeo_unwrap(phasediff, [], mask=mask, mc_unwrap=False, return_b0=False)
         else:
-            phasediff_ma = np.ma.array(phasediff, mask=(mask==0))
+            phasediff_ma = np.ma.array(phasediff, mask=~mask.astype(bool))
             phasediff_uw = unwrap_phase(np.angle(phasediff_ma))
             phasediff_uw = np.ma.getdata(phasediff_uw)
         te_diff = echo_times[1] - echo_times[0]
@@ -684,7 +683,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     # Gauss/median filter
     if gaussian_filtering:
-        fmap = gaussian_filter(fmap, sigma=0.8)
+        fmap = gaussian_filter(fmap, sigma=0.5)
     if median_filtering:
         fmap = median_filter(fmap, size=2)
 

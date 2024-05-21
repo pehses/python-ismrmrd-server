@@ -175,7 +175,7 @@ def process(connection, config, metadata, prot_file):
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
-        process_acs.fmap = {'fmap': [None] * n_slc, 'mask': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+        process_acs.fmap = {'fmap': [None] * n_slc, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 
@@ -253,14 +253,12 @@ def process(connection, config, metadata, prot_file):
                                 process_acs.refimg[slc_ix+1] = process_acs.refimg[slc_ix]
                                 if process_acs.fmap is not None:
                                     process_acs.fmap['fmap'][slc_ix+1] = process_acs.fmap['fmap'][slc_ix]
-                                    process_acs.fmap['mask'][slc_ix+1] = process_acs.fmap['mask'][slc_ix]
                             if slc_ix%2==1:
                                 sensmaps[slc_ix-1] = sensmaps[slc_ix]
                                 sensmaps_shots[slc_ix-1] = sensmaps_shots[slc_ix]
                                 process_acs.refimg[slc_ix-1] = process_acs.refimg[slc_ix]
                                 if process_acs.fmap is not None:
                                     process_acs.fmap['fmap'][slc_ix-1] = process_acs.fmap['fmap'][slc_ix]
-                                    process_acs.fmap['mask'][slc_ix-1] = process_acs.fmap['mask'][slc_ix]
                                 
 
                 # trigger recon early
@@ -425,7 +423,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap = process_acs.fmap
         refimgs = np.asarray(fmap['fmap'])
         echo_times = fmap['TE']
-        fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata)
+        fmap['fmap'] = rh.calc_fmap(refimgs, echo_times, metadata)
     else: # external field map
         fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
         if not rh.check_dependency_data(fmap_list):
@@ -435,10 +433,8 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap = rh.load_external_fmap(os.path.join(dependencyFolder, "fmaps", fmap_file), fmap_shape)
 
     fmap_data = fmap['fmap']
-    fmap_mask = fmap['mask']
     fmap_name = fmap['name']
     np.save(debugFolder+"/fmap_data.npy", fmap_data)
-    np.save(debugFolder+"/fmap_mask.npy", fmap_mask)
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
 
@@ -451,11 +447,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         pcSENSE = True
         shotimgs = np.stack(shotimgs) # [slice, contrast, shot, nz, ny, nx] , nz is used for SMS
         shotimgs = np.swapaxes(shotimgs, 0, 1) # to [contrast, slice, shot, nz, ny, nx] - WIP: expand to [rep, avg, contrast, slice, shot, nz, ny, nx]
-        if sms_factor > 1:
-            mask = reshape_fmap_sms(fmap_mask.copy(), sms_factor) # to [slice,nz,ny,nx]
-        else:
-            mask = fmap_mask.copy()[:,np.newaxis]
-        phasemaps = calc_phasemaps(shotimgs, mask, metadata)
+        phasemaps = calc_phasemaps(shotimgs, metadata)
         dset_tmp.append_array("PhaseMaps", phasemaps.astype(np.float64))
 
     # Write header
@@ -624,8 +616,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
             data_eval = abs(data)
 
             # Calculate ADC maps
-            mask = fmap_mask.copy()
-            adc_maps = process_diffusion_images(data_eval, bvals, mask)
+            adc_maps = process_diffusion_images(data_eval, bvals)
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
@@ -835,7 +826,7 @@ def process_shots(group, metadata, sensmaps_shots):
     
     return imgs
 
-def calc_phasemaps(shotimgs, mask, metadata):
+def calc_phasemaps(shotimgs, metadata):
     """ Calculate phase maps for phase corrected reconstruction
         WIP: still artifacts in the images
              also it might make sense to set phasemaps to zero for b=0 images
@@ -861,7 +852,6 @@ def calc_phasemaps(shotimgs, mask, metadata):
             for k, phsmap in enumerate(slc): # nz/sms-stack
                 phsmap = unwrap_phase(phsmap, wrap_around=(False, False))
                 phsmap = resize(phsmap, [nx,nx])
-                phsmap *= mask[j,k]
                 unwrapped_phasemaps[i,j,k] = median_filter(phsmap, size=9) # median filter seems to be better than Gaussian
     
     phasemaps = unwrapped_phasemaps.reshape(shape + [nx,nx]) # back to [contrast, shot, slice, nz, ny, nx]
@@ -871,7 +861,7 @@ def calc_phasemaps(shotimgs, mask, metadata):
     
     return phasemaps
 
-def process_diffusion_images(data, bvals, mask):
+def process_diffusion_images(data, bvals):
     """ Calculate ADC maps from diffusion images
     """
 
@@ -901,8 +891,6 @@ def process_diffusion_images(data, bvals, mask):
         imgshape = b0.shape
         adc_map = np.polynomial.polynomial.polyfit(b_val_nz, trace_log.reshape([trace_log.shape[0],-1]), 1)[1]
         adc_map = adc_map.reshape(imgshape)
-
-    adc_map *= mask
 
     return adc_map
     

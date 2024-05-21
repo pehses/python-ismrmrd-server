@@ -135,7 +135,7 @@ def process(connection, config, metadata, prot_file):
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
-        process_acs.fmap = {'fmap': None, 'mask': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+        process_acs.fmap = {'fmap': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 
@@ -524,7 +524,7 @@ def process_acs(group, metadata, dmtx=None):
     if process_acs.fmap is not None:
         echo_times = process_acs.fmap['TE']
         refimg = refimg[np.newaxis] # add slice axis
-        process_acs.fmap['fmap'], _ = rh.calc_fmap(refimg, echo_times, metadata)
+        process_acs.fmap['fmap'] = rh.calc_fmap(refimg, echo_times, metadata)
 
     np.save(debugFolder + "/" + "acs.npy", data)
 

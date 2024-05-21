@@ -189,7 +189,7 @@ def process(connection, config, metadata, prot_file):
     # field map, if it was acquired - needs at least 2 reference contrasts
     if 'echo_times' in prot_arrays:
         echo_times = prot_arrays['echo_times']
-        process_acs.fmap = {'fmap': [None] * n_slc, 'mask': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+        process_acs.fmap = {'fmap': [None] * n_slc, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 
@@ -408,7 +408,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             else:
                 refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
             echo_times = fmap['TE']
-            fmap['fmap'], fmap['mask'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon)
+            fmap['fmap'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon)
         else: # external field map
             fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
             if not rh.check_dependency_data(fmap_list):
@@ -416,12 +416,11 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             fmap_file = np.loadtxt(os.path.join(dependencyFolder, "fmaps", "fmap_list.txt"), dtype=str, ndmin=1)[-1]
             fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
             fmap = rh.load_external_fmap(os.path.join(dependencyFolder, "fmaps", fmap_file), fmap_shape)
-        np.savez(debugFolder+"/fmap.npz", fmap=fmap['fmap'], mask=fmap['mask'], name=fmap['name'])
+        np.savez(debugFolder+"/fmap.npz", fmap=fmap['fmap'], name=fmap['name'])
     else:
         fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)
 
     fmap_data = fmap['fmap']
-    fmap_mask = fmap['mask']
     fmap_name = fmap['name']
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
@@ -558,8 +557,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             data_eval = abs(data)
 
             # Calculate ADC maps
-            mask = fmap_mask.copy()
-            adc_maps = process_diffusion_images(data_eval, bvals, mask)
+            adc_maps = process_diffusion_images(data_eval, bvals)
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
@@ -759,7 +757,6 @@ def process_refscan(acsGroup, acs, slc_ix, metadata, dmtx, half_refscan=False):
         process_acs.refimg[slc_ix_cp] = process_acs.refimg[slc_ix]
         if process_acs.fmap is not None:
             process_acs.fmap['fmap'][slc_ix_cp] = process_acs.fmap['fmap'][slc_ix]
-            process_acs.fmap['mask'][slc_ix_cp] = process_acs.fmap['mask'][slc_ix]
     
 def process_acs(group, metadata, dmtx=None):
     """ 
@@ -823,7 +820,7 @@ def process_acs(group, metadata, dmtx=None):
 
     return acs
 
-def process_diffusion_images(data, bvals, mask):
+def process_diffusion_images(data, bvals):
     """ Calculate ADC maps from diffusion images
     """
 
@@ -853,8 +850,6 @@ def process_diffusion_images(data, bvals, mask):
         imgshape = b0.shape
         adc_map = np.polynomial.polynomial.polyfit(b_val_nz, trace_log.reshape([trace_log.shape[0],-1]), 1)[1]
         adc_map = adc_map.reshape(imgshape)
-
-    adc_map *= mask
 
     return adc_map
     

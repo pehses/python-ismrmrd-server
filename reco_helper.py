@@ -8,6 +8,7 @@ import os
 import tempfile
 
 from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
+from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 from dipy.segment.mask import median_otsu
@@ -613,29 +614,16 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     elif nz > 1 and n_slc > 1:
         raise ValueError("Multi-slab is not supported.")
 
-    # mask with threshold and median otsu from dipy
-    # do it in 2D as it works better and hole filling is easier
+    # mask with threshold as accuracy of the field map values is proportional to the signal intensity
     img_mask = rss(imgs[...,0], axis=-1)
-    mask = np.zeros_like(img_mask)
-    for k,img in enumerate(img_mask):
-        _, mask_otsu = median_otsu(img, median_radius=1, numpass=20)
-
-        # simple threshold mask
-        thresh = 0.13
-        mask_thresh = img/np.max(img)
-        mask_thresh[mask_thresh<thresh] = 0
-        mask_thresh[mask_thresh>=thresh] = 1
-
-        # combine masks
-        mask[k] = mask_thresh + mask_otsu
-        mask[k][mask[k]>0] = 1
-        mask[k] = binary_fill_holes(mask[k])
-        mask[k] = binary_dilation(mask[k], iterations=2) # some extrapolation
+    thresh = 0.15
+    mask = img_mask/np.max(img_mask)
+    mask[mask<thresh] = 0
+    mask[mask>=thresh] = 1
 
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        mask_romeo = None # Providing mask is taking longer and does not improve?
-        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask_romeo, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
@@ -643,10 +631,11 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
             phasediff_uw = romeo_unwrap(phasediff,[], mask=mask, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
+            phasediff_ma = np.ma.array(phasediff, mask=(mask==0))
             pool = Pool(processes=cores)
-            results = [pool.apply_async(do_unwrap_phase, [phasediff[...,k]]) for k in range(phasediff.shape[-1])]
-            for k, val in enumerate(results):
-                phasediff_uw[...,k] = val.get()
+            results = [pool.apply_async(do_unwrap_phase, [phasediff_ma[...,k]]) for k in range(phasediff_ma.shape[-1])]
+            for k, val in enumerate(results):                
+                phasediff_uw[...,k] = np.ma.getdata(val.get())
             pool.close()
 
         phasediff_uw_rs = phasediff_uw.reshape([-1,nc])
@@ -660,7 +649,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
         # Standard deviation filter (Robinson, MRM, 2011)
         if std_filter:
-            phasediff_uw *= mask[...,np.newaxis]
             std = phasediff_uw.std(axis=-1)
             median_std = np.median(std[std!=0])
             idx = np.argwhere(std>std_fac*median_std)
@@ -677,9 +665,14 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         if romeo_uw:
             phasediff_uw = romeo_unwrap(phasediff, [], mask=mask, mc_unwrap=False, return_b0=False)
         else:
-            phasediff_uw = unwrap_phase(np.angle(phasediff))
+            phasediff_ma = np.ma.array(phasediff, mask=(mask==0))
+            phasediff_uw = unwrap_phase(np.angle(phasediff_ma))
+            phasediff_uw = np.ma.getdata(phasediff_uw)
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
+
+    # fill all voxels outside the mask by the weighted mean of their 'k' nearest neighbors inside the mask
+    fmap = fill_masked_voxels(fmap, mask, k=10)
 
     # Despike filter
     if despike_filter:
@@ -691,10 +684,8 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     # Gauss/median filter
     if gaussian_filtering:
-        fmap *= mask
         fmap = gaussian_filter(fmap, sigma=0.8)
     if median_filtering:
-        fmap *= mask
         fmap = median_filter(fmap, size=2)
 
     # interpolate to correct matrix size
@@ -703,10 +694,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     else:
         newshape = [nz,ny,nx]
     fmap = resize(np.transpose(fmap,[0,2,1]), newshape, anti_aliasing=True)
-    mask = resize(np.transpose(mask,[0,2,1]), newshape, anti_aliasing=False)
-    mask[mask>0] = 1 # fix interpolation artifacts in binary mask
-
-    fmap *= mask
     
     if nlm_filter:
         sigma_est = np.mean(estimate_sigma(fmap))
@@ -715,23 +702,70 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     logging.info("Field map calculation finished.")
 
-    return fmap, mask
+    return fmap
+
+def fill_masked_voxels(input_array, mask, k=10):
+    """
+    Replace values in the 'outside_mask' by the weighted mean of k nearest neighbors in the 'inside_mask'.
+    Weights are inversely proportional to the distance.
+
+    input_array: 3D numpy array
+        The input array containing values to be filled.
+    mask: 3D numpy array
+        A binary mask where 1 indicates the region with 'valid' values and 0 indicates the region with 'missing' values.
+    k: int
+        The number of nearest neighbors to consider for the weighted mean.
+    """
+
+    mask = mask.astype(bool)
+
+    # Get indices of points inside the mask
+    inside_mask_indices = np.argwhere(mask)
+
+    # Build KDTree for points inside the mask
+    tree = KDTree(inside_mask_indices)
+
+    # Get indices of points outside the mask
+    outside_mask_indices = np.argwhere(~mask)
+
+    # Query the KDTree to find k nearest neighbors within the mask for all points outside the mask
+    distances, ind = tree.query(outside_mask_indices, k=k)
+
+    # Get the coordinates of the k nearest neighbors for each point outside the mask
+    neighbor_coords = inside_mask_indices[ind]
+
+    # Calculate weights as the inverse of the distances
+    weights = 1 / (distances + 1e-8)  # Adding a small value to avoid division by zero
+
+    # Normalize weights so they sum to 1
+    weights /= weights.sum(axis=1, keepdims=True)
+
+    # Get the values of the k nearest neighbors
+    neighbor_values = input_array[neighbor_coords[:, :, 0], neighbor_coords[:, :, 1], neighbor_coords[:, :, 2]]
+
+    # Calculate the weighted mean values for the k nearest neighbors
+    weighted_mean_values = np.sum(neighbor_values * weights, axis=1)
+
+    # Create an array to store results
+    result_array = input_array.copy()
+
+    # Assign the calculated weighted mean values to the corresponding points outside the mask
+    result_array[outside_mask_indices[:, 0], outside_mask_indices[:, 1], outside_mask_indices[:, 2]] = weighted_mean_values
+
+    return result_array
 
 def load_external_fmap(path, shape):
     # Load an external field map (has to be a .npz file)
     if not os.path.exists(path):
-        fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+        fmap = {'fmap': np.zeros(shape), 'name': 'No Field Map'}
         logging.debug("No field map file in dependency folder. Use zeros array instead. Field map should be .npz file.")
     else:
         fmap = dict(np.load(path, allow_pickle=True))
         if 'name' not in fmap:
             fmap['name'] = 'No name.'
-        if 'mask' not in fmap:
-            logging.debug(f"No mask data found in external field map. Set to ones.")
-            fmap['mask'] = np.ones(shape)
         if 'fmap' not in fmap:
             logging.debug(f"No field map data found in external field map. Set field map to zero.")
-            fmap = {'fmap': np.zeros(shape), 'mask': np.ones(shape), 'name': 'No Field Map'}
+            fmap = {'fmap': np.zeros(shape), 'name': 'No Field Map'}
     if shape != list(fmap['fmap'].shape):
         logging.debug(f"Field Map dimensions do not fit. Fmap shape: {list(fmap['fmap'].shape)}, Img Shape: {shape}. Try interpolating the field map.")
         fmap['fmap'] = resize(fmap['fmap'], shape, anti_aliasing=True)

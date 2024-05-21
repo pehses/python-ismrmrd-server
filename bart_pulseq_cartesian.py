@@ -415,7 +415,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     n_slc = imgs.shape[0]
     n_contr = imgs.shape[-1]
 
-    fmap, mask = rh.calc_fmap(imgs, echo_times, metadata)
+    fmap = rh.calc_fmap(imgs, echo_times, metadata)
 
     # save in dependency - swap x/y axes for correct orientation in PowerGrid
     prot_file = metadata.userParameters.userParameterString[0].value
@@ -423,7 +423,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     fmap_folder = os.path.join(dependencyFolder, "fmaps")
     if not os.path.exists(fmap_folder):
         os.makedirs(fmap_folder, mode=0o774)
-    np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), mask=np.swapaxes(mask,1,2), name=fmap_name)
+    np.savez(os.path.join(fmap_folder, fmap_name), fmap=np.swapaxes(fmap,1,2), name=fmap_name)
     # append name to txt file
     with open(os.path.join(fmap_folder, "fmap_list.txt"), "a") as f:
         f.write(fmap_name + '\n')

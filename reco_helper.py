@@ -7,11 +7,10 @@ import time
 import os
 import tempfile
 
-from scipy.ndimage import  median_filter, gaussian_filter, binary_fill_holes, binary_dilation
+from scipy.ndimage import  median_filter, gaussian_filter
 from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
-from dipy.segment.mask import median_otsu
 import despike
 
 from multiprocessing import Pool
@@ -616,25 +615,25 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     # mask with threshold as accuracy of the field map values is proportional to the signal intensity
     img_mask = rss(imgs[...,-1], axis=-1)
-    thresh = 0.15
     mask = img_mask/np.max(img_mask)
+    thresh = 0.2 * np.percentile(mask, 95)
     mask[mask<thresh] = 0
     mask[mask>=thresh] = 1
 
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, metadata, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff,[], mask=mask, mc_unwrap=True, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff,[], mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
             pool = Pool(processes=cores)
-            results = [pool.apply_async(do_unwrap_phase, [np.ma.array(phasediff[...,k], mask=~mask.astype(bool))]) for k in range(phasediff.shape[-1])]
+            results = [pool.apply_async(do_unwrap_phase, [phasediff[...,k]]) for k in range(phasediff.shape[-1])]
             for k, val in enumerate(results):                
-                phasediff_uw[...,k] = np.ma.getdata(val.get())
+                phasediff_uw[...,k] = val.get()
             pool.close()
 
         phasediff_uw_rs = phasediff_uw.reshape([-1,nc])
@@ -662,11 +661,9 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
         phasediff = np.sum(phasediff, axis=-1) # coil combination
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], mask=mask, mc_unwrap=False, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], mc_unwrap=False, return_b0=False)
         else:
-            phasediff_ma = np.ma.array(phasediff, mask=~mask.astype(bool))
-            phasediff_uw = unwrap_phase(np.angle(phasediff_ma))
-            phasediff_uw = np.ma.getdata(phasediff_uw)
+            phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
 
@@ -705,7 +702,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
 def fill_masked_voxels(input_array, mask, k=10):
     """
-    Replace values in the 'outside_mask' by the weighted mean of k nearest neighbors in the 'inside_mask'.
+    Replace values outside of the mask by the weighted mean of k nearest neighbors inside the mask.
     Weights are inversely proportional to the distance.
 
     input_array: 3D numpy array

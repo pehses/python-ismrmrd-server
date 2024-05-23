@@ -45,15 +45,15 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 # tempfile.tempdir = "/dev/shm" # faster temporary file writing in RAM
 
-read_ecalib = False # read sensitivity maps from file (requires previous recon)
-read_fmap = False # read field map from file (requires previous recon)
+read_ecalib = True # read sensitivity maps from file (requires previous recon)
+read_fmap = True # read field map from file (requires previous recon)
 save_cmplx = True # save images as complex data
 
 snr_map = False # calculate only SNR map from the first volume by pseudo-replicas
 n_replica = 50 # number of replicas used for SNR map calculation
 
-reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
-first_vol = 0 # index of first volume, that is reconstructed
+reco_n_contr = 1 # if >0 only the volumes up to the specified number will be reconstructed
+first_vol = 3 # index of first volume, that is reconstructed
 
 ########################
 # Main Function
@@ -291,13 +291,7 @@ def process(connection, config, metadata, prot_file):
                 item.data[:] *= np.exp(-1j*k0)
 
                 # invert trajectory sign (is necessary as field map and k0 also need sign change)
-                # WIP: for some unknown reason, not inverting the sign for concomitant field terms (item.traj[:,:-4] *= -1) yields better results in vivo
-                # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
                 item.traj[:] *= -1
-
-                # below is undoing the inverted sign for concomitant fields (works better in vivo)
-                if item.traj.shape[1] > 4:
-                    item.traj[:,-4:] *= -1
 
                 # replace k0 with time vector
                 nsamples = item.number_of_samples

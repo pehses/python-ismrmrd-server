@@ -197,14 +197,8 @@ def process(connection, config, metadata):
                 # item.data[:] *= np.exp(1j*(shift*item.traj[:,:3]).sum(axis=-1)) # base_trj in [rad/m]
 
                 # invert trajectory sign (is necessary as field map and k0 also need sign change)
-                # WIP: for some unknown reason, not inverting the sign for concomitant field terms (item.traj[:,:-4] *= -1) yields better results in vivo
-                # In phantoms the results are better when using the same sign as for the spherical harmonics (as expected)
                 item.traj[:] *= -1
                 item.traj[:,3] *= -1 # dont invert time vector
-
-                # below is undoing the inverted sign for concomitant fields (works better in vivo)
-                if item.traj.shape[1] > 4:
-                    item.traj[:,-4:] *= -1
 
                 # T2* filter
                 if freq < 2e8:

@@ -12,6 +12,7 @@ from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 import despike
+import nibabel as nib
 
 from multiprocessing import Pool
 import psutil
@@ -619,6 +620,8 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     thresh = 0.2 * np.percentile(mask, 95)
     mask[mask<thresh] = 0
     mask[mask>=thresh] = 1
+    nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
+    nib.save(nifti, "/tmp/share/debug/mask.nii.gz")
 
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)

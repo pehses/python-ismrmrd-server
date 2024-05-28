@@ -280,7 +280,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         shot = group[0].idx.set
         ctr = 0
         for i,acq in enumerate(group):
-            ctr += 1
             if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
                 ctr = 0
             shot = acq.idx.set
@@ -290,6 +289,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
             # apply filter:
             data[:,:,i,:] *= filt
+            ctr += 1
 
     if sensmaps is None:                
         data = bart(1, nufft_config, trj, data)

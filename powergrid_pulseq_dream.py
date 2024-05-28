@@ -330,13 +330,14 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
         shot = 0
         ctr = 0
         for acq in contr:
-            if filt_fid:
+            if filt_fid and acq.idx.contrast == fid_ix:
                 if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
                     ctr = 0
                 shot = acq.idx.set
                 ti = tr * (dummies + ctr) # TI estimate (time from STEAM prep to readout) [s]
                 filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
                 acq.data[:] *= filt
+                ctr += 1
             dset_tmp.append_acquisition(acq)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]

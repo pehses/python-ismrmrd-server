@@ -271,6 +271,8 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         dummies = dream[4]   # number of dummy scans before readout echo train starts
         # T1 estimate:
         t1 = dream[5]        # [s] - approximately Gufi Phantom at 7T
+        TM = dream[6]        # [s]
+        tau = dream[7]       # [s]
     
         ste_data = np.asarray(process_raw.rawdata[ste_ix])
         fid_data = np.asarray(process_raw.rawdata[fid_ix])
@@ -284,7 +286,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                 ctr = 0
             shot = acq.idx.set
 
-            ti = tr * (dummies + ctr) # TI estimate (time from STEAM prep to readout) [s]
+            ti = tr * (dummies + ctr) + (TM+tau) # TI estimate (time from STEAM prep to readout) [s]
             # Global filter:
             filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
             # apply filter:

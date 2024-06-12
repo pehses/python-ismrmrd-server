@@ -320,6 +320,8 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     beta = dream[3]      # readout FA
     dummies = dream[4]   # number of dummy scans before readout echo train starts
     t1 = dream[5]        # [s]
+    TM = dream[6]        # [s]
+    tau = dream[7]       # [s]
     ste_data = np.asarray([acq.data[:] for acq in acqGroup[ste_ix]])
     fid_data = np.asarray([acq.data[:] for acq in acqGroup[fid_ix]])
     mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
@@ -334,7 +336,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
                 if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
                     ctr = 0
                 shot = acq.idx.set
-                ti = tr * (dummies + ctr) # TI estimate (time from STEAM prep to readout) [s]
+                ti = tr * (dummies + ctr) + (TM+tau)# TI estimate (time from STEAM prep to readout) [s]
                 filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
                 acq.data[:] *= filt
                 ctr += 1

@@ -24,6 +24,8 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
+read_ecalib = False
+
 ########################
 # Main Function
 ########################
@@ -31,6 +33,11 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 def process_spiral_dream(connection, config, metadata, prot_file):
     
     logging.debug("Spiral DREAM reconstruction")
+
+    # Check if ecalib maps calculated
+    global read_ecalib
+    if read_ecalib and not os.path.isfile(debugFolder + "/sensmaps.npy"):
+        read_ecalib = False
     
     # Insert protocol header
     insert_hdr(prot_file, metadata)
@@ -260,6 +267,52 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     if ste_ix != 0:
         raise ValueError(f"This reconstruction currently supports only STE first, but STE has index {ste_ix} and FID has index {fid_ix}.")
 
+    # Compute g-factor map of the unfiltered FID contrast (see https://github.com/mrirecon/bart-workshop-OLD/blob/master/demos/gfactor-demo/gfactor-demo-real_data.ipynb) 
+    calc_g_factor = True
+
+    if calc_g_factor and (group[0].idx.contrast == fid_ix) and not (sensmaps is None):
+        logging.info("Computation of g-factor map activated.")
+        # Repeat reconstruction with N_MC noise instances
+        n_mc = 200
+        recons = []
+        for i in range(n_mc):
+            ksp_noise = np.random.randn(*data.shape) + 1j*np.random.randn(*data.shape)
+            ksp_noise = data + ksp_noise
+            im_noise = bart(1,'pics -g -S -i 100 -t' , trj, ksp_noise, sensmaps) # no regularization
+            while np.ndim(im_noise) < 3:
+                im_noise = im_noise[..., np.newaxis]
+            if nz > rNz:
+                # remove oversampling in slice direction
+                im_noise = im_noise[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+            recons.append(im_noise)
+        recons = np.asarray(recons)
+        recons = np.transpose(recons,(1,2,3,0))
+
+        # Repeat reconstruction with N_MC noise-only instances
+        recons_noise = []
+        for i in range(n_mc):
+            ksp_noise = np.random.randn(nx,ny,nz,sensmaps.shape[-1]) + 1j*np.random.randn(nx,ny,nz,sensmaps.shape[-1]) # [nx,ny,nz,ncha]
+            im_noise = bart(1, 'pics -g -S -i 25' , ksp_noise, sensmaps) # no regularization
+            while np.ndim(im_noise) < 3:
+                im_noise = im_noise[..., np.newaxis]
+            if nz > rNz:
+                # remove oversampling in slice direction
+                im_noise = im_noise[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+            recons_noise.append(im_noise)
+        recons_noise = np.asarray(recons_noise)
+        recons_noise = np.transpose(recons_noise,(1,2,3,0))
+
+        # Compute g-factor map
+        recons_std = np.std(recons.real, axis=3)
+        recon_noise_std = np.std(recons_noise, axis=3)
+        gfactor = np.divide(recons_std, recon_noise_std, where=abs(recons[:,:,:,0].squeeze()) != 0)
+        max_gf = np.max(gfactor)
+        logging.debug("Max. g-factor value: %s" % (max_gf,))
+
+        np.save(debugFolder + "/" + "recons.npy", recons)
+        np.save(debugFolder + "/" + "recons_noise.npy", recons_noise)
+        np.save(debugFolder + "/" + "gfactor.npy", gfactor)
+
     # FID filter
     filt_fid = True 
     if group[0].idx.contrast == fid_ix and dream.size > 2 and filt_fid:
@@ -277,8 +330,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         ste_data = np.asarray(process_raw.rawdata[ste_ix])
         fid_data = np.asarray(process_raw.rawdata[fid_ix])
         mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
-
         mean_beta = mean_alpha / alpha * beta
+        total_energy_original = np.sum(np.abs(fid_data)**2)
+
         shot = group[0].idx.set
         ctr = 0
         for i,acq in enumerate(group):
@@ -292,6 +346,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             # apply filter:
             data[:,:,i,:] *= filt
             ctr += 1
+        total_energy_modulated = np.sum(np.abs(data)**2)
+        normalization_factor = np.sqrt(total_energy_original / total_energy_modulated)
+        data *= normalization_factor
 
     if sensmaps is None:                
         data = bart(1, nufft_config, trj, data)
@@ -471,12 +528,15 @@ def process_acs(group, metadata, dmtx=None, gpu=False):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
         data = data[...,0] # currently only first contrast used
-    
-        if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
-            # sensmaps = bart(1, 'caldir 32', data)
+
+        if read_ecalib:
+            sensmaps = np.load(debugFolder + "/sensmaps.npy")
         else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
+            if gpu and data.shape[2]>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+                sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)  # ESPIRiT calibration
+                # sensmaps = bart(1, 'caldir 32', data)
+            else:
+                sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)  # ESPIRiT calibration
         np.save(debugFolder + "/" + "acs.npy", data)
         np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return sensmaps

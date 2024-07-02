@@ -326,8 +326,30 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     fid_data = np.asarray([acq.data[:] for acq in acqGroup[fid_ix]])
     mean_alpha = calc_fa(ste_data.mean(), fid_data.mean())
     mean_beta = mean_alpha / alpha * beta
+    total_energy_original = np.sum(np.abs(fid_data)**2)
 
-    # Insert acquisitions
+    # Normalize both kspaces --> commented here as flip angles will be highly overestimated
+    # S0ste = 0.5 * np.sin(np.deg2rad(beta)) * np.sin(np.deg2rad(alpha))**2
+    # S0fid = np.sin(np.deg2rad(beta)) * np.cos(np.deg2rad(alpha))**2
+    # # Insert acquisitions
+    # for contr in acqGroup:
+    #     shot = 0
+    #     ctr = 0
+    #     for acq in contr:
+    #         if filt_fid and acq.idx.contrast == fid_ix:
+    #             if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
+    #                 ctr = 0
+    #             shot = acq.idx.set
+    #             ti = tr * (dummies + ctr) + (TM+tau)# TI estimate (time from STEAM prep to readout) [s]
+    #             filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
+    #             acq.data[:] *= filt/S0fid
+    #             ctr += 1
+    #         if filt_fid and acq.idx.contrast == ste_ix:
+    #             acq.data[:] /= S0ste
+    #         dset_tmp.append_acquisition(acq)
+
+    # compute filter and the total kspace energy as FID signal intensity should not be altered
+    fid_data_filt = []
     for contr in acqGroup:
         shot = 0
         ctr = 0
@@ -340,6 +362,25 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
                 filt = DREAM_filter_fid(mean_alpha, mean_beta, tr, t1, ti)
                 acq.data[:] *= filt
                 ctr += 1
+                fid_data_filt.append(acq.data[:].copy())
+    
+    if filt_fid:
+        total_energy_modulated = np.sum(np.abs(np.asarray(fid_data_filt))**2)
+        normalization_factor = np.sqrt(total_energy_original / total_energy_modulated)
+
+    # Insert acquisitions
+    i=0
+    for contr in acqGroup:
+        shot = 0
+        ctr = 0
+        for acq in contr:
+            if filt_fid and acq.idx.contrast == fid_ix:
+                if acq.idx.set != shot: # reset counter at start of new shot (= new STEAM prep)
+                    ctr = 0
+                shot = acq.idx.set
+                acq.data[:] = fid_data_filt[i]*normalization_factor
+                ctr += 1
+                i += 1
             dset_tmp.append_acquisition(acq)
 
     readout_dur = acq.traj[-1,3] - acq.traj[0,3]
@@ -385,8 +426,9 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
             logging.debug(e.stdout)
 
     # Define PowerGrid options
-    n_shots = metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1
-    pg_opts = f'-i {tmp_file} -o {tempdir} -s {n_shots} -B 1000 -n 20 -D 2 -I {temp_intp} -t {ts} -F NUFFT' # -w option writes intermediate results as niftis in pg_dir folder
+    n_shots = (metadata.encoding[0].encodingLimits.kspace_encoding_step_1.maximum + 1) * (metadata.encoding[0].encodingLimits.kspace_encoding_step_2.maximum + 1) / (metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    n_shots = int(n_shots)
+    pg_opts = f'-i {tmp_file} -o {tempdir} -s {n_shots} -B 1000 -n 20 -D 3 -I {temp_intp} -t {ts} -F NUFFT' # -w option writes intermediate results as niftis in pg_dir folder
     if mpi:
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI ' + pg_opts
     else:
@@ -437,6 +479,76 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     logging.debug(f"FA map is size {fa_map.shape}")
     dsets.append(fa_map)
     dsets.append(ref_volt_map)
+
+    # Compute g-factor map of the unfiltered FID contrast (see https://github.com/mrirecon/bart-workshop-OLD/blob/master/demos/gfactor-demo/gfactor-demo-real_data.ipynb) 
+    calc_g_factor = False
+
+    if calc_g_factor:
+        logging.info("Computation of g-factor map activated.")
+        n_mc = 200
+
+        # save acquisitions
+        acqs_save = []
+        dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=False)
+        for j in range(dset_tmp.number_of_acquisitions()):
+            acqs_save.append(dset_tmp.read_acquisition(j).data[:].copy())
+        dset_tmp.close()
+
+        # Repeat reconstruction with N_MC noise-only instances using powergrid
+        recons = []
+        for k in range(n_mc):
+            logging.debug(f"Reconstruct replica volume {k+1} of {n_mc}")
+            dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=False)
+            acq = dset_tmp.read_acquisition(0)
+            for j in range(dset_tmp.number_of_acquisitions()):
+                noise = np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape) + 1j* np.random.randn(np.prod(acq.data.shape)).reshape(acq.data.shape)
+                acq = dset_tmp.read_acquisition(j)
+                acq.data[:] = acqs_save[j] + noise
+                dset_tmp.write_acquisition(acq, j)
+            dset_tmp.close()
+            try:
+                process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                if mps_server:
+                    subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
+                logging.debug(e.stdout)
+                raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
+            recon = np.load(os.path.join(tempdir,"images_pg.npy")) # [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
+            recon = recon[0,0,:,0,0] # [Contrast/Echo, Nz, Ny, Nx]
+            recon = np.transpose(recon, [0,-1,-2,-3]) # [Contrast/Echo, Nx, Ny, Nz]
+            recons.append(recon[1,:,:,:]) # [Nx, Ny, Nz]
+        recons = np.asarray(recons) # [n_mc, Nx, Ny, Nz]
+        recons = np.transpose(recons,(1,2,3,0)) # [Nx, Ny, Nz, n_mc]
+
+        # Repeat reconstruction with N_MC noise-only instances using bart
+        recons_noise = []
+        nx = metadata.encoding[0].encodedSpace.matrixSize.x
+        ny = metadata.encoding[0].encodedSpace.matrixSize.y
+        nz = metadata.encoding[0].encodedSpace.matrixSize.z
+        rNz = metadata.encoding[0].reconSpace.matrixSize.z
+        sensmaps = np.transpose(sens, [3,2,1,0]) # [nx,ny,nz,nc]
+        for i in range(n_mc):
+            ksp_noise = np.random.randn(nx,ny,nz,sensmaps.shape[-1]) + 1j*np.random.randn(nx,ny,nz,sensmaps.shape[-1]) # [nx,ny,nz,ncha]
+            im_noise = bart(1, 'pics -g -S -i 25' , ksp_noise, sensmaps) # no regularization
+            while np.ndim(im_noise) < 3:
+                im_noise = im_noise[..., np.newaxis]
+            if nz > rNz:
+                # remove oversampling in slice direction
+                im_noise = im_noise[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+            recons_noise.append(im_noise)
+        recons_noise = np.asarray(recons_noise)
+        recons_noise = np.transpose(recons_noise,(1,2,3,0)) # [Nx, Ny, Nz, n_mc]
+
+        # Compute g-factor map
+        recons_std = np.std(recons.real, axis=3)
+        recon_noise_std = np.std(recons_noise, axis=3)
+        gfactor = np.divide(recons_std, recon_noise_std, where=abs(recons[:,:,:,0].squeeze()) != 0)
+        max_gf = np.max(gfactor)
+        logging.debug("Max. g-factor value: %s" % (max_gf,))
+
+        np.save(debugFolder + "/" + "recons.npy", recons)
+        np.save(debugFolder + "/" + "recons_noise.npy", recons_noise)
+        np.save(debugFolder + "/" + "gfactor.npy", gfactor)
 
     # Normalize and convert to int16 for online recon
     int_max = np.iinfo(np.uint16).max

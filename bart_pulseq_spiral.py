@@ -246,6 +246,8 @@ def process_spiral(connection, config, metadata, prot_file):
 
 def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
 
+    up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
@@ -298,6 +300,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         # Sum of squares coil combination
         data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
     else:
+        if "slice_profile_meas" in up_base:
+            sensmaps = np.repeat(sensmaps, nz, axis=-2)
         data = bart(1, pics_config , trj, data, sensmaps)
         data = np.abs(data)
     
@@ -522,6 +526,11 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
     nz = metadata.encoding[0].encodedSpace.matrixSize.z
-    kspace = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', kspace)
+
+    up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+    if "slice_profile_meas" in up_base:
+        kspace = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {1}', kspace)
+    else:
+        kspace = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', kspace)
 
     return kspace

@@ -200,13 +200,13 @@ def process(connection, config, metadata):
                 item.traj[:] *= -1
                 item.traj[:,3] *= -1 # dont invert time vector
 
-                # T2* filter
-                if freq < 2e8:
-                    t2_star = 70e-3 # 3T
-                else:
-                    t2_star = 40e-3 # 7T
-                t_vec = item.traj[:,3]
-                item.data[:] *= 1/np.exp(-t_vec/t2_star)
+                # T2* filter - not used, reduces SNR a lot
+                # if freq < 2e8:
+                #     t2_star = 70e-3 # 3T
+                # else:
+                #     t2_star = 40e-3 # 7T
+                # t_vec = item.traj[:,3]
+                # item.data[:] *= 1/np.exp(-t_vec/t2_star)
 
                 # Remove oversampling (factor 2), spiral function works for any trajectory
                 rh.remove_os_spiral(item)

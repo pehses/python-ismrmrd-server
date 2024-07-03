@@ -298,12 +298,12 @@ def process(connection, config, metadata, prot_file):
                 t_vec = t_min + dwelltime * np.arange(nsamples) # time vector for B0 correction
                 item.traj[:,3] = t_vec.copy()
 
-                # T2* filter
-                if freq < 2e8:
-                    t2_star = 70e-3 # 3T
-                else:
-                    t2_star = 40e-3 # 7T
-                item.data[:] *= 1/np.exp(-t_vec/t2_star)
+                # T2* filter - not used, reduces SNR a lot
+                # if freq < 2e8:
+                #     t2_star = 70e-3 # 3T
+                # else:
+                #     t2_star = 40e-3 # 7T
+                # item.data[:] *= 1/np.exp(-t_vec/t2_star)
 
                 # remove ADC oversampling
                 if os_factor == 2:

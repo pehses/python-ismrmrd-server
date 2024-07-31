@@ -92,7 +92,13 @@ def process_spiral(connection, config, metadata, prot_file):
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
-    acqGroup = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
+    if sms_factor == 0:
+        sms_factor = 1
+    if sms_factor > 1:
+        parallel_reco = True
+
+    acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]
     noiseGroup = []
     waveformGroup = []
 
@@ -172,6 +178,8 @@ def process_spiral(connection, config, metadata, prot_file):
                         use_gpu_sens = True
                     sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=use_gpu_sens)
                     sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
+                    if sms_factor > 1:
+                        sensmaps = reshape_sens_sms(sensmaps, sms_factor)
 
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)
@@ -278,15 +286,16 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
-        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50'
     else:
         nufft_config = 'nufft -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
-        pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
+        pics_config = 'pics -S -e -l1 -r 0.001 -i 50'
 
     if parallel:
         ksp = []
@@ -323,7 +332,19 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             pics_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + pics_config
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-3)
-            data = bart(1, pics_config , traj, ksp, sensmaps)
+            if sms_factor > 1:
+                sms_dim = 13
+                ksp = rh.add_naxes(ksp, sms_dim+1-ksp.ndim)
+                for s in range(sms_factor-1):
+                    ksp = np.concatenate((ksp, np.zeros_like(ksp[...,0,np.newaxis])),axis=sms_dim)
+                sensmaps = rh.add_naxes(sensmaps, sms_dim+1-sensmaps.ndim) # first dim is sms_dim
+                sensmaps = np.moveaxis(sensmaps,0,sms_dim)
+                pat = bart(1, 'pattern', ksp)
+                pics_config += " -M"
+                data = bart(1, pics_config, ksp, sensmaps, t=traj, p=pat)
+                data = data.reshape( data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f' ) # merge slice and sms dim
+            else:
+                data = bart(1, pics_config, ksp, sensmaps, t=traj)
             data = np.abs(data)
         
         if nz > rNz:
@@ -431,7 +452,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         else:
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-2)
-            data = bart(1, pics_config , trj, data, sensmaps)
+            data = bart(1, pics_config, data, sensmaps, t=trj)
             data = np.abs(data)
         
         # make sure that data is 3d
@@ -646,3 +667,12 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
         kspace = bart(1,f'resize -c 0 {nx} 1 {ny} 2 {nz}', kspace)
 
     return kspace
+
+def reshape_sens_sms(sens, sms_factor):
+    # reshape sensmaps array for sms imaging, sensmaps for one acquisition are stored at nz
+    sens_cpy = sens.copy() # [slices, nx, ny, nz, nc]
+    slices_eff = sens_cpy.shape[0]//sms_factor
+    sens = np.zeros([slices_eff, sms_factor, sens_cpy.shape[1] , sens_cpy.shape[2], sens_cpy.shape[3], sens_cpy.shape[4]], dtype=sens_cpy.dtype)
+    for slc in range(sens_cpy.shape[0]):
+        sens[slc%slices_eff,slc//slices_eff] = sens_cpy[slc] 
+    return sens

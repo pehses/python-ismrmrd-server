@@ -798,7 +798,7 @@ def process_shots(group, metadata, sensmaps_shots):
         sms = True
         sms_dim = 13
         data = rh.add_naxes(data, sms_dim+1-data.ndim)
-        for s in range(sms_factor):
+        for s in range(sms_factor-1):
             data = np.concatenate((data, np.zeros_like(data[...,0,np.newaxis])),axis=sms_dim)
         sensmaps_shots = rh.add_naxes(sensmaps_shots, sms_dim+1-sensmaps_shots.ndim)
         sensmaps_shots = np.moveaxis(sensmaps_shots,0,sms_dim)

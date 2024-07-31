@@ -21,6 +21,8 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
+parallel_reco = False # parallel reconstruction of slices/contrasts
+
 ########################
 # Main Function
 ########################
@@ -95,7 +97,8 @@ def process_spiral(connection, config, metadata, prot_file):
     waveformGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
-    sensmaps = [None] * n_slc
+    acs = [None] * n_slc
+    sensmaps = None
     dmtx = None
 
     process_raw.imascale = None
@@ -158,9 +161,17 @@ def process_spiral(connection, config, metadata, prot_file):
                         acsGroup[item.idx.slice].append(item)
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
+                        acs[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
                         acsGroup[item.idx.slice].clear()
                     continue
+                if sensmaps is None:
+                    # ESPIRiT calibration
+                    use_gpu_sens = False
+                    acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim
+                    if gpu and acs.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
+                        use_gpu_sens = True
+                    sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=use_gpu_sens)
+                    sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
 
                 if item.idx.segment == 0:
                     acqGroup[item.idx.contrast][item.idx.slice].append(item)
@@ -186,12 +197,17 @@ def process_spiral(connection, config, metadata, prot_file):
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
+                if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and not parallel_reco:
                     logging.info("Processing a group of k-space data")
                     images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps[item.idx.slice], gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
+
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT) and parallel_reco:
+                    logging.info("Process slices/constrasts in parallel.")
+                    images = process_raw(acqGroup, metadata, cc_cha, dmtx, sensmaps, gpu, parallel=True)
+                    connection.send_image(images)
 
             # ----------------------------------------------------------
             # Image data messages
@@ -244,7 +260,10 @@ def process_spiral(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
+def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, parallel=False):
+
+    force_pics = False # force PICS reconstruction (only if parallel=False)
+    adjoint_nufft = False # do adjoint nufft instead of inverse nufft (only if parallel=False)
 
     up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
 
@@ -256,17 +275,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
     rNy = metadata.encoding[0].reconSpace.matrixSize.y
     rNz = metadata.encoding[0].reconSpace.matrixSize.z
 
-    data, trj = sort_spiral_data(group, dmtx)
-    
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    slc = group[0].idx.slice
-    if cc_cha < n_cha and process_raw.cc_mat[slc] is None:
-        logging.debug(f'Calculate coil compression matrix.')
-        process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
-
-    if process_raw.cc_mat[slc] is not None:
-        logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
-        data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc])
+    n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
@@ -277,92 +288,200 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False):
         ecalib_config = 'ecalib -m 1 -I'
         pics_config = 'pics -S -e -l1 -r 0.001 -i 50 -t'
 
-    force_pics = False
-    adjoint_nufft = False
-    if sensmaps is None and force_pics:
-        sensmaps = bart(1, nufft_config, trj, data) # nufft
-        sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
-        sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+    if parallel:
+        ksp = []
+        traj = []
+        for contr_acq in group:
+            for slc_acq in contr_acq:
+                data, trj = sort_spiral_data(slc_acq, dmtx)
+                traj.append(trj)
 
-    if sensmaps is None:       
-        if adjoint_nufft:
-            logging.debug("Do adjoint nufft")
-            # calculate and apply dcf
-            dcf = rh.calc_dcf(np.swapaxes(trj[...,0],0,1))
-            dcf /= np.max(abs(dcf))
-            data *= dcf[np.newaxis,:,np.newaxis,np.newaxis]
+                slc = slc_acq[0].idx.slice
+                if cc_cha < n_cha and process_raw.cc_mat[slc] is None:
+                    logging.debug(f'Calculate coil compression matrix.')
+                    process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
 
-            data = bart(1, 'nufft -a', trj, data) # adjoint nufft
-        else:
+                if process_raw.cc_mat[slc] is not None:
+                    logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
+                    data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc])
+
+                ksp.append(data)
+
+        # move slices to last dim
+        ksp = np.moveaxis(np.asarray(ksp), 0, -1)
+        traj = np.moveaxis(np.asarray(traj)[...,np.newaxis], 0, -1)
+
+        if sensmaps is None:
             logging.debug("Do inverse nufft")
-            data = bart(1, nufft_config, trj, data) # iterative inverse nufft
+            nufft_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + nufft_config
+            data = bart(1, nufft_config, traj, ksp) # iterative inverse nufft
 
-        # Sum of squares coil combination
-        data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
-    else:
-        if "slice_profile_meas" in up_base:
-            sensmaps = np.repeat(sensmaps, nz, axis=-2)
-        data = bart(1, pics_config , trj, data, sensmaps)
-        data = np.abs(data)
-    
-    # make sure that data is 3d
-    while np.ndim(data) < 3:
-        data = data[..., np.newaxis]
-    data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
+            # Sum of squares coil combination
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-2))
+        else:
+            sensmaps = np.moveaxis(np.asarray(sensmaps), 0, -1)
+            pics_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + pics_config
+            if "slice_profile_meas" in up_base:
+                sensmaps = np.repeat(sensmaps, nz, axis=-3)
+            data = bart(1, pics_config , traj, ksp, sensmaps)
+            data = np.abs(data)
+        
+        if nz > rNz:
+            # remove oversampling in slice direction
+            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
 
-    if nz > rNz:
-        # remove oversampling in slice direction
-        data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
-
-    logging.debug("Image data is size %s" % (data.shape,))
-    if group[0].idx.slice == 0:
+        logging.debug("Image data is size %s" % (data.shape,))
         np.save(debugFolder + "/" + "img.npy", data)
 
-    # correct orientation at scanner (consistent with ICE)
-    data = np.swapaxes(data, 0, 1)
-    data = np.flip(data, (0,1,2))
+        # correct orientation at scanner (consistent with ICE)
+        data = np.swapaxes(data, 0, 1)
+        data = np.flip(data, (0,1,2))
+        data = np.moveaxis(data, -1, 0)[...,0] # [slc,x,y,z]
+        newshape = [n_contr, n_slc] + list(data.shape[1:])
+        data = data.reshape(newshape)
 
-    # Normalize and convert to int16
-    # save one scaling in 'static' variable
-    if process_raw.imascale is None:
-        process_raw.imascale = 0.8 / data.max()
-    data *= 32767 * process_raw.imascale
-    data = np.around(data)
-    data = data.astype(np.int16)
+        # Normalize and convert to int16
+        # save one scaling in 'static' variable
+        if process_raw.imascale is None:
+            process_raw.imascale = 0.8 / data.max()
+        data *= 32767 * process_raw.imascale
+        data = np.around(data)
+        data = data.astype(np.int16)
 
-    # Set ISMRMRD Meta Attributes
-    meta = ismrmrd.Meta({'DataRole':               'Image',
-                         'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                         'WindowCenter':           '16384',
-                         'WindowWidth':            '32768',
-                         'Keep_image_geometry':    1,
-                         'ImgType':                'Imgdata'})
-    xml = meta.serialize()
+        # Set ISMRMRD Meta Attributes
+        meta = ismrmrd.Meta({'DataRole':               'Image',
+                            'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                            'WindowCenter':           '16384',
+                            'WindowWidth':            '32768',
+                            'Keep_image_geometry':    1,
+                            'ImgType':                'Imgdata'})
+        xml = meta.serialize()
+        
+        images = []
+        n_par = data.shape[-1]
+
+        for k,contr in enumerate(data):
+            for j,img in enumerate(contr):
+                if n_par > 1:
+                    image = ismrmrd.Image.from_array(img, acquisition=group[0][0][0])
+                else:
+                    image = ismrmrd.Image.from_array(img[...,0], acquisition=group[0][0][0])
+                image.image_index = j
+                image.image_series_index = k
+                image.slice = j
+                image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
+
+        for j in range(n_slc):
+            if process_raw.refimg[j] is not None:
+                meta['ImgType'] = 'refimg'
+                xml = meta.serialize()
+                refimg = np.swapaxes(process_raw.refimg[j], 0, 1)
+                refimg = np.flip(refimg, (0,1,2))
+                refimg *= 32767 / np.max(refimg)
+                refimg = np.around(refimg)
+                refimg = refimg.astype(np.int16)
+                
+                image = ismrmrd.Image.from_array(refimg, acquisition=group[0][0][0])
+                image.image_index = j
+                image.image_series_index = n_contr
+                image.attribute_string = xml
+                image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                images.append(image)
+
+        return images
     
-    images = []
-    n_par = data.shape[-1]
-    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    else:
+        data, trj = sort_spiral_data(group, dmtx)
+        
+        slc = group[0].idx.slice
+        if cc_cha < n_cha and process_raw.cc_mat[slc] is None:
+            logging.debug(f'Calculate coil compression matrix.')
+            process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
 
-    # Format as ISMRMRD image data
-    if n_par > 1:
-        image = ismrmrd.Image.from_array(data, acquisition=group[0])
-        image.image_index = 1
+        if process_raw.cc_mat[slc] is not None:
+            logging.debug(f'Perform Coil Compression to {cc_cha} channels.')
+            data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc])
+
+        if sensmaps is None and force_pics:
+            sensmaps = bart(1, nufft_config, trj, data) # nufft
+            sensmaps = cfftn(sensmaps, [0, 1, 2]) # back to k-space
+            sensmaps = bart(1, ecalib_config, sensmaps)  # ESPIRiT calibration
+
+        if sensmaps is None:       
+            if adjoint_nufft:
+                logging.debug("Do adjoint nufft")
+                # calculate and apply dcf
+                dcf = rh.calc_dcf(np.swapaxes(trj[...,0],0,1))
+                dcf /= np.max(abs(dcf))
+                data *= dcf[np.newaxis,:,np.newaxis,np.newaxis]
+
+                data = bart(1, 'nufft -a', trj, data) # adjoint nufft
+            else:
+                logging.debug("Do inverse nufft")
+                data = bart(1, nufft_config, trj, data) # iterative inverse nufft
+
+            # Sum of squares coil combination
+            data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
+        else:
+            if "slice_profile_meas" in up_base:
+                sensmaps = np.repeat(sensmaps, nz, axis=-2)
+            data = bart(1, pics_config , trj, data, sensmaps)
+            data = np.abs(data)
+        
+        # make sure that data is 3d
+        while np.ndim(data) < 3:
+            data = data[..., np.newaxis]
+        data = data[(slice(None),) * 3 + (data.ndim-3) * (0,)]  # select first 3 dims
+
+        if nz > rNz:
+            # remove oversampling in slice direction
+            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+
+        logging.debug("Image data is size %s" % (data.shape,))
+
+        # correct orientation at scanner (consistent with ICE)
+        data = np.swapaxes(data, 0, 1)
+        data = np.flip(data, (0,1,2))
+
+        # Normalize and convert to int16
+        # save one scaling in 'static' variable
+        if process_raw.imascale is None:
+            process_raw.imascale = 0.8 / data.max()
+        data *= 32767 * process_raw.imascale
+        data = np.around(data)
+        data = data.astype(np.int16)
+
+        # Set ISMRMRD Meta Attributes
+        meta = ismrmrd.Meta({'DataRole':               'Image',
+                            'ImageProcessingHistory': ['FIRE', 'PYTHON'],
+                            'WindowCenter':           '16384',
+                            'WindowWidth':            '32768',
+                            'Keep_image_geometry':    1,
+                            'ImgType':                'Imgdata'})
+        xml = meta.serialize()
+        
+        images = []
+        n_par = data.shape[-1]
+        n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+
+        # Format as ISMRMRD image data
+        if n_par > 1:
+            image = ismrmrd.Image.from_array(data, acquisition=group[0])
+        else:
+            image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+        image.image_index = group[0].idx.slice
         image.image_series_index = group[0].idx.contrast
         image.slice = group[0].idx.slice
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
-    else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = group[0].idx.slice
-        image.image_series_index = group[0].idx.contrast
-        image.slice = group[0].idx.slice
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
     # send reference image if available
@@ -397,13 +516,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
             process_raw.cc_mat[slc] = bart(1, f'cc -A -M -S -p {cc_cha}', data) # SVD based Coil compression        
             data = bart(1, f'ccapply -S -p {cc_cha}', data, process_raw.cc_mat[slc]) # SVD based Coil compression
 
-        # ESPIRiT calibration
-        if gpu and data.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-            sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', data)
-            # sensmaps = bart(1, 'caldir 64', data)
-        else:
-            sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', data)
-
         refimg = cifftn(data,axes=[0,1,2])
         refimg = np.sqrt(np.sum(np.abs(refimg)**2, axis=-1))
         process_raw.refimg[slc] = refimg
@@ -411,8 +523,8 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
         np.save(debugFolder + "/" + "refimg.npy", refimg)
 
         np.save(debugFolder + "/" + "acs.npy", data)
-        np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
-        return sensmaps
+        # np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
+        return data
     else:
         return None
 

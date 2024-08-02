@@ -96,6 +96,7 @@ def process_spiral(connection, config, metadata, prot_file):
     if sms_factor == 0:
         sms_factor = 1
     if sms_factor > 1:
+        global parallel_reco
         parallel_reco = True
 
     acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]

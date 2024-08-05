@@ -323,6 +323,49 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
 
     return sig
 
+def fft_dim(sig, axes=None):
+
+    from collections.abc import Iterable
+    if axes is None:
+        axes = range(axes.ndim)
+    elif not isinstance(axes, Iterable):
+        axes = [axes]
+
+    sig = np.fft.ifftshift(sig, axes=axes)
+    sig = np.fft.ifftn(sig, axes=axes)
+    sig = np.fft.fftshift(sig, axes=axes)
+
+    return sig
+
+def ifft_dim(sig, axes=None):
+
+    from collections.abc import Iterable
+    if axes is None:
+        axes = range(axes.ndim)
+    elif not isinstance(axes, Iterable):
+        axes = [axes]
+
+    sig = np.fft.ifftshift(sig, axes=axes)
+    sig = np.fft.fftn(sig, axes=axes)
+    sig = np.fft.fftshift(sig, axes=axes)
+
+    return sig
+
+def fov_shift_img_axis(img, shift, axis):
+    """
+    Shift the field of view of an image along an axis
+    img: image data
+    shift: shift in voxel
+    axis: axis along which to shift
+    """
+
+    img_cp = np.moveaxis(img, axis, -1)
+    fac = np.exp(-1j*shift*2*np.pi*np.arange(img_cp.shape[-1])/img_cp.shape[-1])
+    img_cp = ifft_dim(fft_dim(img_cp, axes=-1) * fac, axes=-1)
+
+    return np.moveaxis(img_cp, -1, axis)
+
+
 ## K-space filter
 
 def filt_ksp(kspace, traj, filt_fac=0.95):

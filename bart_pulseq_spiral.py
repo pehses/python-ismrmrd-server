@@ -21,7 +21,7 @@ shareFolder = "/tmp/share"
 debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
-parallel_reco = False # parallel reconstruction of slices/contrasts
+parallel_reco = True # parallel reconstruction of slices/contrasts
 
 ########################
 # Main Function
@@ -275,6 +275,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     adjoint_nufft = False # do adjoint nufft instead of inverse nufft (only if parallel=False)
 
     up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+    up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -288,6 +289,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
+    slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
 
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
@@ -334,6 +336,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-3)
             if sms_factor > 1:
+                logging.info("BART SMS reconstruction.")
                 sms_dim = 13
                 ksp = rh.add_naxes(ksp, sms_dim+1-ksp.ndim)
                 for s in range(sms_factor-1):
@@ -343,6 +346,11 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 pat = bart(1, 'pattern', ksp)
                 pics_config += " -M"
                 data = bart(1, pics_config, ksp, sensmaps, t=traj, p=pat)
+                if "slice_profile_meas" in up_base:
+                    # upper mb slices need FOV shift, which is the slice distance in voxel
+                    res_z = up_double["res_z"] if "res_z" in up_double else 1 # voxel size in z
+                    shift = n_slc // sms_factor * slc_res / res_z
+                    data[...,1] = rh.fov_shift_img_axis(data[...,1], shift, axis=2)
                 data = data.reshape( data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f' ) # merge slice and sms dim
             else:
                 data = bart(1, pics_config, ksp, sensmaps, t=traj)

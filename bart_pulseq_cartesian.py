@@ -8,6 +8,7 @@ import logging
 import numpy as np
 from cfft import cfftn, cifftn
 import ctypes
+from datetime import datetime
 
 import importlib
 
@@ -164,7 +165,8 @@ def process_cartesian(connection, config, metadata, prot_file):
                         connection.send_image(images)
                     
                     # save acs data
-                    acs_name = f"acs_{os.path.basename(os.path.splitext(prot_file)[0])}.npy"
+                    current_datetime = datetime.now().strftime('%Y%m%d%H%M%S')
+                    acs_name = f"{current_datetime}_acs_{os.path.basename(os.path.splitext(prot_file)[0])}.npy"
                     acs_folder = os.path.join(dependencyFolder, "acs_data")
                     if not os.path.exists(acs_folder):
                         os.makedirs(acs_folder, mode=0o774)
@@ -419,7 +421,8 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
 
     # save in dependency - swap x/y axes for correct orientation in PowerGrid
     prot_file = metadata.userParameters.userParameterString[0].value
-    fmap_name = f"fmap_{prot_file}.npz"
+    current_datetime = datetime.now().strftime('%Y%m%d%H%M%S')
+    fmap_name = f"{current_datetime}_fmap_{prot_file}.npz"
     fmap_folder = os.path.join(dependencyFolder, "fmaps")
     if not os.path.exists(fmap_folder):
         os.makedirs(fmap_folder, mode=0o774)

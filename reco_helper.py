@@ -716,14 +716,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     # fill all voxels outside the mask by the weighted mean of their 'k' nearest neighbors inside the mask
     fmap = fill_masked_voxels(fmap, mask, k=10)
 
-    # Despike filter
-    if despike_filter:
-        pool = Pool(processes=cores)
-        results = [pool.apply_async(do_despike, [fmap[k]]) for k in range(len(fmap))]
-        for k, val in enumerate(results):
-            fmap[k] = val.get()
-        pool.close()
-
     # Gauss/median filter
     if gaussian_filtering:
         fmap2 = gaussian_filter(fmap, sigma=3)
@@ -732,6 +724,14 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         fmap = gaussian_filter(fmap, sigma=0.5)
     if median_filtering:
         fmap = median_filter(fmap, size=2)
+
+    # Despike filter
+    if despike_filter:
+        pool = Pool(processes=cores)
+        results = [pool.apply_async(do_despike, [fmap[k]]) for k in range(len(fmap))]
+        for k, val in enumerate(results):
+            fmap[k] = val.get()
+        pool.close()
 
     # interpolate to correct matrix size
     if nz == 1:

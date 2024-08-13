@@ -726,6 +726,9 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     # Gauss/median filter
     if gaussian_filtering:
+        fmap2 = gaussian_filter(fmap, sigma=3)
+        thresh = 0.6 * np.percentile(abs(fmap), 95)
+        fmap[abs(fmap) > thresh] = fmap2[abs(fmap) > thresh]
         fmap = gaussian_filter(fmap, sigma=0.5)
     if median_filtering:
         fmap = median_filter(fmap, size=2)

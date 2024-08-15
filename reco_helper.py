@@ -624,6 +624,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     despike_filter = True # apply despiking
     median_filtering = False # apply median filtering
     gaussian_filtering = True # apply Gaussian filtering
+    gaussian_filtering_high_offres = False # apply extra Gaussian filtering to areas with large offresonance
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
@@ -716,14 +717,10 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     # fill all voxels outside the mask by the weighted mean of their 'k' nearest neighbors inside the mask
     fmap = fill_masked_voxels(fmap, mask, k=10)
 
-    # Gauss/median filter
-    if gaussian_filtering:
+    if gaussian_filtering_high_offres:
         fmap2 = gaussian_filter(fmap, sigma=3)
         thresh = 0.6 * np.percentile(abs(fmap), 95)
         fmap[abs(fmap) > thresh] = fmap2[abs(fmap) > thresh]
-        fmap = gaussian_filter(fmap, sigma=0.5)
-    if median_filtering:
-        fmap = median_filter(fmap, size=2)
 
     # Despike filter
     if despike_filter:
@@ -732,6 +729,12 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         for k, val in enumerate(results):
             fmap[k] = val.get()
         pool.close()
+
+    # Gauss/median filter
+    if gaussian_filtering:
+        fmap = gaussian_filter(fmap, sigma=0.5)
+    if median_filtering:
+        fmap = median_filter(fmap, size=2)
 
     # interpolate to correct matrix size
     if nz == 1:

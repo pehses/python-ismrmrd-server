@@ -22,6 +22,7 @@ debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
 parallel_reco = True # parallel reconstruction of slices/contrasts
+save_complex = False
 
 ########################
 # Main Function
@@ -354,7 +355,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 data = data.reshape( data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f' ) # merge slice and sms dim
             else:
                 data = bart(1, pics_config, ksp, sensmaps, t=traj)
-            data = np.abs(data)
+            if not save_complex:
+                data = np.abs(data)
         
         if nz > rNz:
             # remove oversampling in slice direction
@@ -372,11 +374,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         # Normalize and convert to int16
         # save one scaling in 'static' variable
-        if process_raw.imascale is None:
-            process_raw.imascale = 0.8 / data.max()
-        data *= 32767 * process_raw.imascale
-        data = np.around(data)
-        data = data.astype(np.int16)
+        if not save_complex:
+            if process_raw.imascale is None:
+                process_raw.imascale = 0.8 / data.max()
+            data *= 32767 * process_raw.imascale
+            data = np.around(data)
+            data = data.astype(np.int16)
 
         # Set ISMRMRD Meta Attributes
         meta = ismrmrd.Meta({'DataRole':               'Image',
@@ -462,6 +465,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-2)
             data = bart(1, pics_config, data, sensmaps, t=trj)
+        if not save_complex:    
             data = np.abs(data)
         
         # make sure that data is 3d
@@ -481,11 +485,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         # Normalize and convert to int16
         # save one scaling in 'static' variable
-        if process_raw.imascale is None:
-            process_raw.imascale = 0.8 / data.max()
-        data *= 32767 * process_raw.imascale
-        data = np.around(data)
-        data = data.astype(np.int16)
+        if not save_complex:
+            if process_raw.imascale is None:
+                process_raw.imascale = 0.8 / data.max()
+            data *= 32767 * process_raw.imascale
+            data = np.around(data)
+            data = data.astype(np.int16)
 
         # Set ISMRMRD Meta Attributes
         meta = ismrmrd.Meta({'DataRole':               'Image',

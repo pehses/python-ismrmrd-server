@@ -388,7 +388,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
         k0 = intp_axis(adctime, gradtime, k0, axis=0)
     else:
         pred_grad = grad.copy()
-        k0 = None
+        k0 = np.zeros_like(ncol)
 
     pred_trj = np.cumsum(pred_grad, axis=1) * dt_grad * gammabar # calculate trajectory [1/m]
     base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar

@@ -412,7 +412,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     pred_trj = np.swapaxes(pred_trj,0,1) # switch array order to [samples, dims]
 
     # shift base_trj for undoing the FOV shift (see fov_shift_spiral_reapply in reco_helper.py)
-    if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+    if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus' or hdr.acquisitionSystemInformation.systemModel == 'MAGNETOM Terra.X':
         extra_gradshift = -0.8 * 1e-5 # validated for 7T plus
     elif hdr.acquisitionSystemInformation.systemModel == 'ConnectomA':
         extra_gradshift = 1e-5 # for some reason this is different for the connectom

@@ -172,7 +172,7 @@ def process_spiral(connection, config, metadata, prot_file):
                         acs[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
                         acsGroup[item.idx.slice].clear()
                     continue
-                if sensmaps is None:
+                if acs[0] is not None and sensmaps is None:
                     # ESPIRiT calibration
                     use_gpu_sens = False
                     acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim

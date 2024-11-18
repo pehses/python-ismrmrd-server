@@ -6,16 +6,22 @@ import logging
 import time
 import os
 import tempfile
+from collections.abc import Iterable
+import subprocess
+from multiprocessing import Pool
+import psutil
+from functools import partial
 
-from scipy.ndimage import  median_filter, gaussian_filter
+import scipy.ndimage as scpnd
 from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 import despike
 import nibabel as nib
+import scipy.ndimage as scn
+from nilearn.masking import compute_epi_mask
 
-from multiprocessing import Pool
-import psutil
+from bart import bart
 
 # Root sum of squares
 
@@ -325,7 +331,6 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
 
 def fft_dim(sig, axes=None):
 
-    from collections.abc import Iterable
     if axes is None:
         axes = range(axes.ndim)
     elif not isinstance(axes, Iterable):
@@ -339,7 +344,6 @@ def fft_dim(sig, axes=None):
 
 def ifft_dim(sig, axes=None):
 
-    from collections.abc import Iterable
     if axes is None:
         axes = range(axes.ndim)
     elif not isinstance(axes, Iterable):
@@ -522,11 +526,10 @@ def calc_dcf(traj):
 ######################################
 
 def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
-    from bart import bart
     maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, chunk_sz=None, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, softsense=True, chunk_sz=None, use_gpu=False):
     """
     Run parallel imaging calibration with ESPIRiT
 
@@ -539,11 +542,6 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
     chunk_sz: chunk size for 3D data, if None 3D data will be processed in one run
     use_gpu: use GPU for ESPIRiT
     """
-
-
-    from multiprocessing import Pool
-    from functools import partial
-    from bart import bart
 
     logging.debug("Start sensitivity map calculation.")
     start = time.perf_counter()
@@ -565,6 +563,8 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
     if chunk_sz <= 0 or chunk_sz >= nz:
         # espirit in one run:
         ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
+        if softsense:
+            ecal_str += ' -S'
         if ndim == 5 and acs.shape[-1] > 1:
             ecal_str = f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} ' + ecal_str
             sensmaps = bart(1, ecal_str, acs)
@@ -572,7 +572,10 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, c
             sensmaps = bart(1, ecal_str, acs)
     else:
         # espirit_econ: reduce memory footprint by chunking
-        eon = bart(1, f'ecalib -k {kernel_size} -I {gpu_str} -m {n_maps} -t {threshold} -1', acs)  # currently, gpu doesn't help here but try anyway
+        ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m {n_maps} -t {threshold} -1'
+        if softsense:
+            ecal_str += ' -S'
+        eon = bart(1, ecal_str, acs)  # currently, gpu doesn't help here but try anyway
         # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
         # scaling is very important for proper masking in ecaltwo!
         tic = time.perf_counter()
@@ -658,15 +661,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     elif nz > 1 and n_slc > 1:
         raise ValueError("Multi-slab is not supported.")
 
-    # mask with threshold as accuracy of the field map values is proportional to the signal intensity
-    img_mask = rss(imgs[...,-1], axis=-1)
-    mask = img_mask/np.max(img_mask)
-    thresh = 0.2 * np.percentile(mask, 95)
-    mask[mask<thresh] = 0
-    mask[mask>=thresh] = 1
-    nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
-    nib.save(nifti, "/tmp/share/debug/mask.nii.gz")
-
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
         fmap = romeo_unwrap(imgs, echo_times, metadata, mc_unwrap=False, return_b0=True)
@@ -714,11 +708,20 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
 
+    # mask with threshold as accuracy of the field map values is proportional to the signal intensity
+    img_mask = rss(imgs[...,-1], axis=-1)
+    mask = get_fmap_mask(img_mask)
+    nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
+    nib.save(nifti, "/tmp/share/debug/mask.nii")
+
     # fill all voxels outside the mask by the weighted mean of their 'k' nearest neighbors inside the mask
-    fmap = fill_masked_voxels(fmap, mask, k=10)
+    # 2D seems to work better than 3D
+    # fmap = fill_masked_voxels(fmap, mask, k=10)
+    for k,fmap_slc in enumerate(fmap):
+        fmap[k] = fill_masked_voxels(fmap_slc, mask[k], k=10)
 
     if gaussian_filtering_high_offres:
-        fmap2 = gaussian_filter(fmap, sigma=3)
+        fmap2 = scpnd.gaussian_filter(fmap, sigma=3)
         thresh = 0.6 * np.percentile(abs(fmap), 95)
         fmap[abs(fmap) > thresh] = fmap2[abs(fmap) > thresh]
 
@@ -732,9 +735,9 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     # Gauss/median filter
     if gaussian_filtering:
-        fmap = gaussian_filter(fmap, sigma=0.5)
+        fmap = scpnd.gaussian_filter(fmap, sigma=1.5)
     if median_filtering:
-        fmap = median_filter(fmap, size=2)
+        fmap = scpnd.median_filter(fmap, size=2)
 
     # interpolate to correct matrix size
     if nz == 1:
@@ -752,20 +755,61 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     return fmap
 
+def get_fmap_mask(img):
+    """
+    Calculate mask for field map from GRE image
+
+    img: GRE image [nx,ny,nz]
+    """
+
+    # threshold mask
+    mask_thresh = img/np.max(img)
+    thresh = 0.3 * np.percentile(mask_thresh, 95)
+    mask_thresh[mask_thresh<thresh] = 0
+    mask_thresh[mask_thresh>=thresh] = 1
+    for k in range(len(mask_thresh)):
+        mask_thresh[k] = scn.binary_erosion(mask_thresh[k], iterations=1)
+
+    # nilearn mask (without skull)
+    n_iter3d = 3
+    nifti_img = nib.Nifti1Image(img, np.eye(4))
+    mask = compute_epi_mask(nifti_img, lower_cutoff=0.2, upper_cutoff=0.85, connected=True, opening=n_iter3d)
+    mask = mask.get_fdata()
+    mask = scn.binary_fill_holes(mask)
+    mask = scn.binary_dilation(mask, iterations=n_iter3d).astype(np.uint8) # fill slices that were eroded by compute_epi_mask
+
+    # erode and fill holes
+    for k in range(len(mask)):
+        eroded = scn.binary_erosion(mask[k],iterations=n_iter3d + 3)
+        mask[k] = scn.binary_fill_holes(eroded)
+
+    # combine masks
+    mask[mask_thresh==1] = 1
+
+    return mask
+
 def fill_masked_voxels(input_array, mask, k=10):
     """
     Replace values outside of the mask by the weighted mean of k nearest neighbors inside the mask.
-    Weights are inversely proportional to the distance.
-
-    input_array: 3D numpy array
-        The input array containing values to be filled.
-    mask: 3D numpy array
-        A binary mask where 1 indicates the region with 'valid' values and 0 indicates the region with 'missing' values.
-    k: int
-        The number of nearest neighbors to consider for the weighted mean.
+    Works for both 2D and 3D arrays.
+    
+    Parameters:
+        input_array: 2D or 3D numpy array
+            The input array containing values to be filled.
+        mask: 2D or 3D numpy array
+            A binary mask where 1 indicates the region with 'valid' values and 0 indicates the region with 'missing' values.
+        k: int
+            The number of nearest neighbors to consider for the weighted mean.
+    
+    Returns:
+        result_array: 2D or 3D numpy array
+            The input array with masked values replaced.
     """
-
+    # Ensure mask is boolean
     mask = mask.astype(bool)
+
+    # Get the dimensionality of the input
+    is_3d = input_array.ndim == 3
 
     # Get indices of points inside the mask
     inside_mask_indices = np.argwhere(mask)
@@ -788,17 +832,31 @@ def fill_masked_voxels(input_array, mask, k=10):
     # Normalize weights so they sum to 1
     weights /= weights.sum(axis=1, keepdims=True)
 
-    # Get the values of the k nearest neighbors
-    neighbor_values = input_array[neighbor_coords[:, :, 0], neighbor_coords[:, :, 1], neighbor_coords[:, :, 2]]
+    # Extract the values of the k nearest neighbors
+    if is_3d:
+        neighbor_values = input_array[
+            neighbor_coords[:, :, 0], neighbor_coords[:, :, 1], neighbor_coords[:, :, 2]
+        ]
+    else:  # 2D case
+        neighbor_values = input_array[
+            neighbor_coords[:, :, 0], neighbor_coords[:, :, 1]
+        ]
 
     # Calculate the weighted mean values for the k nearest neighbors
     weighted_mean_values = np.sum(neighbor_values * weights, axis=1)
 
-    # Create an array to store results
+    # Create a copy of the input array for storing results
     result_array = input_array.copy()
 
     # Assign the calculated weighted mean values to the corresponding points outside the mask
-    result_array[outside_mask_indices[:, 0], outside_mask_indices[:, 1], outside_mask_indices[:, 2]] = weighted_mean_values
+    if is_3d:
+        result_array[
+            outside_mask_indices[:, 0], outside_mask_indices[:, 1], outside_mask_indices[:, 2]
+        ] = weighted_mean_values
+    else:  # 2D case
+        result_array[
+            outside_mask_indices[:, 0], outside_mask_indices[:, 1]
+        ] = weighted_mean_values
 
     return result_array
 
@@ -842,9 +900,6 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         return_b0: return B0 map in rad/m (only if mc_unwrap=False)
     """
 
-    import nibabel as nib
-    import subprocess
-
     if mc_unwrap and imgs.ndim<4:
         raise ValueError("No multi-coil data available.")
     if len(echo_times) > 0:
@@ -877,16 +932,16 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         bipolar = True
 
     # write Niftis
-    phs_in = np.angle(imgs)
-    mag_in = abs(imgs)
-    phs_name = tempdir+"/phs_romeo.nii.gz"
-    mag_name = tempdir+"/mag_romeo.nii.gz"
+    phs_in = np.angle(imgs).astype(np.float32)
+    mag_in = abs(imgs).astype(np.float32)
+    phs_name = tempdir+"/phs_romeo.nii"
+    mag_name = tempdir+"/mag_romeo.nii"
     mag_romeo = nib.Nifti1Image(mag_in, affine)
     nib.save(mag_romeo, mag_name)
 
     mask_name = "robustmask"
     if mask is not None:
-        mask_name = tempdir+"/mask_romeo.nii.gz"
+        mask_name = tempdir+"/mask_romeo.nii"
         mask_romeo = nib.Nifti1Image(mask, affine)
         nib.save(mask_romeo, mask_name)
 

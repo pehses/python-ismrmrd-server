@@ -209,7 +209,11 @@ def process_spiral(connection, config, metadata, prot_file):
                 # data, which returns images that are sent back to the client.
                 if (item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE) or item.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION)) and not parallel_reco:
                     logging.info("Processing a group of k-space data")
-                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps[item.idx.slice], gpu)
+                    if sensmaps is None:
+                        sensmaps_slc = None
+                    else:
+                        sensmaps_slc = sensmaps[item.idx.slice]
+                    images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps_slc, gpu)
                     logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory

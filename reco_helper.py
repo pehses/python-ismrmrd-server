@@ -519,7 +519,7 @@ def calc_dcf(traj):
     theta = np.unwrap(theta)
     dcf = theta[1:] - theta[:-1]
     dcf = np.append(dcf,dcf[-1]) * np.sqrt(traj[:,0]**2+traj[:,1]**2)
-    return dcf
+    return abs(dcf)
 
 ######################################
 #### Ecalib (3D is done in chunks)

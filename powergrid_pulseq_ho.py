@@ -357,7 +357,8 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
     # Calculate and insert DCF
-    traj = acqGroup[0][0][0].traj[:,:2]
+    rotmat = rh.calc_rotmat(acqGroup[0][0][0])
+    traj = rh.dcs_to_gcs(acqGroup[0][0][0].traj[:,:3].T, rotmat).T[:,:2]
     dcf = rh.calc_dcf(traj)
     dcf /= np.max(dcf)
     dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)

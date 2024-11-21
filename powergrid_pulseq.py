@@ -43,6 +43,8 @@ read_ecalib = False
 save_cmplx = True # save images as complex data
 online_recon = False
 
+compressed_coils = None
+
 ########################
 # Main Function
 ########################
@@ -64,15 +66,16 @@ def process(connection, config, metadata, prot_file):
         global online_recon
         online_recon = True
 
-    # Coil Compression: Compress number of coils by n_compr coils
-    n_compr = 0
+    # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    if n_compr > 0 and n_compr<n_cha:
-        process_acs.cc_cha = n_cha - n_compr
-        logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
-    elif n_compr<0 or n_compr>=n_cha:
-        process_acs.cc_cha = n_cha
-        logging.debug('Invalid number of compressed coils.')
+    global compressed_coils
+    if compressed_coils is not None:
+        if compressed_coils > 0 and compressed_coils<=n_cha:
+            process_acs.cc_cha = compressed_coils
+            logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
+        else:
+            process_acs.cc_cha = n_cha
+            logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
     else:
         process_acs.cc_cha = n_cha
 
@@ -98,6 +101,7 @@ def process(connection, config, metadata, prot_file):
 
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+    up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
 
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
@@ -297,6 +301,8 @@ def process(connection, config, metadata, prot_file):
                     shift = rh.pcs_to_gcs(np.asarray(last_item.position), rotmat) # shift [mm] in GCS, as traj is in GCS
                     shift_px = shift / res # shift in pixel
                     traj = last_item.traj[:,:3]
+                    if "spiral_nopos" in up_base and up_base["spiral_nopos"] == "1":
+                        base_trj = None
                     last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], traj, base_trj, shift_px, matr_sz)
 
                     # filter signal to avoid Gibbs Ringing

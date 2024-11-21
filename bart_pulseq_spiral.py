@@ -24,6 +24,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 parallel_reco = True # parallel reconstruction of slices/contrasts
 save_complex = False
 
+compressed_coils = None
+
 ########################
 # Main Function
 ########################
@@ -49,12 +51,18 @@ def process_spiral(connection, config, metadata, prot_file):
         if online_slc >= 0:
             slc_sel = int(online_slc)
 
-    # Coil Compression: Compress number of coils to cc_cha
-    n_compr = 0
+    # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    cc_cha = n_cha - n_compr
-    if n_cha > cc_cha:
-        logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+    global compressed_coils
+    if compressed_coils is not None:
+        if compressed_coils > 0 and compressed_coils<=n_cha:
+            cc_cha = compressed_coils
+            logging.debug(f'Coil Compression from {n_cha} to {cc_cha} channels.')
+        else:
+            cc_cha = n_cha
+            logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
+    else:
+        cc_cha = n_cha
 
     # ----------------------------- #
 
@@ -88,6 +96,7 @@ def process_spiral(connection, config, metadata, prot_file):
 
     # user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+    up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
 
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
@@ -198,6 +207,8 @@ def process_spiral(connection, config, metadata, prot_file):
                 if item.idx.segment == nsegments - 1:
                     # Reapply FOV Shift with predicted trajectory
                     last_item = acqGroup[item.idx.contrast][item.idx.slice][-1]
+                    if "spiral_nopos" in up_base and up_base["spiral_nopos"] == "1":
+                        base_trj = None
                     last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
 
                     # remove oversampling

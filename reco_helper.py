@@ -297,35 +297,33 @@ def fov_shift_spiral(sig, trj, shift, matr_sz):
 
 def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     """ 
-    Re-apply FOV shift on spiral/noncartesian data, when FOV positioning in the Pulseq sequence is enabled
+    Re-apply (2D) FOV shift on spiral/noncartesian data, when FOV positioning in the Pulseq sequence is enabled
     first undo field of view shift with nominal, then reapply with predicted trajectory
 
     IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
                of the scanner is lagging behind be one gradient raster time (10 us).
                For Pulseq sequences this is done in pulseq_helper.py
 
+    From Pulseq 1.4.2 on it is possible to disable FOV positioning for single blocks (e.g. spirals).
+    In this case the nominal trajectory should be set to None or zeros.
+
     sig: signal data (dimensions as in ISMRMRD [coils, samples]) 
-    pred_traj: predicted trajectory (dimensions as in ISMRMRD [samples, dims]) 
-    base_trj: nominal trajectory (dimensions as in ISMRMRD [samples, dims])
-    shift: shift [x_shift, y_shift] in voxel
+    pred_traj: predicted/measured trajectory (dimensions as in ISMRMRD [samples, dims]) in logical coordinate system
+    base_trj: nominal trajectory (dimensions as in ISMRMRD [samples, dims]) in logical coordinate system
+              if None, only apply the shift with the predicted/measured trajectory
+    shift: shift [x_shift, y_shift] in voxel in logical coordinate system
     matr_sz: matrix size [x,y]
     """
-
-    pred_trj = pred_trj[:,:2]
-    base_trj = base_trj[:,:2]
-
-    if (abs(shift[0]) < 1e-2) and (abs(shift[1]) < 1e-2):
-        # nothing to do
-        return sig
 
     kmax = (matr_sz/2+0.5).astype(np.int32)[:2]
     shift = shift[:2]
 
     # undo FOV shift from nominal traj
-    sig *= np.exp(1j*np.pi*(shift*base_trj/kmax).sum(axis=-1))
+    if base_trj is not None:
+        sig *= np.exp(1j*np.pi*(shift*base_trj[:,:2]/kmax).sum(axis=-1))
 
     # redo FOV shift with predicted traj
-    sig *= np.exp(-1j*np.pi*(shift*pred_trj/kmax).sum(axis=-1))
+    sig *= np.exp(-1j*np.pi*(shift*pred_trj[:,:2]/kmax).sum(axis=-1))
 
     return sig
 

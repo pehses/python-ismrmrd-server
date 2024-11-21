@@ -31,6 +31,8 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 read_ecalib = False
 
+compressed_coils = None
+
 ########################
 # Main Function
 ########################
@@ -39,15 +41,16 @@ def process(connection, config, metadata, prot_file):
     
     # -- manual parameters --- #
 
-    # Coil Compression: Compress number of coils by n_compr coils
-    n_compr = 0
+    # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    if n_compr > 0 and n_compr<n_cha:
-        process_acs.cc_cha = n_cha - n_compr
-        logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
-    elif n_compr<0 or n_compr>=n_cha:
-        process_acs.cc_cha = n_cha
-        logging.debug('Invalid number of compressed coils.')
+    global compressed_coils
+    if compressed_coils is not None:
+        if compressed_coils > 0 and compressed_coils<=n_cha:
+            process_acs.cc_cha = compressed_coils
+            logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
+        else:
+            process_acs.cc_cha = n_cha
+            logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
     else:
         process_acs.cc_cha = n_cha
 

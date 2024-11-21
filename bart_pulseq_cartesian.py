@@ -71,10 +71,10 @@ def process_cartesian(connection, config, metadata, prot_file):
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
 
     # for B0 mapping
+    phs_imgs = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
     ismrmrd_arr = get_ismrmrd_arrays(prot_file)
     fmap_scan = False
-    if 'echo_times' in ismrmrd_arr:
-        phs_imgs = [[[] for _ in range(n_slc)] for _ in range(n_contr)]
+    if 'echo_times' in ismrmrd_arr and len(ismrmrd_arr['echo_times']) > 1:
         fmap_scan = True
 
     acqGroup = [[[] for _ in range(n_slc)] for _ in range(n_contr)]

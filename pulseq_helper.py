@@ -3,6 +3,7 @@
 Includes trajectory prediction with the GIRF
 """
 
+from packaging.version import Version
 import ismrmrd
 import h5py
 import numpy as np
@@ -42,10 +43,12 @@ def insert_hdr(prot_file, metadata):
     if prot_hdr.userParameters is not None:
         dset_up = [metadata.userParameters.userParameterDouble,
                    metadata.userParameters.userParameterLong,
-                   metadata.userParameters.userParameterBase64]
+                   metadata.userParameters.userParameterBase64,
+                   metadata.userParameters.userParameterString]
         prot_up = [prot_hdr.userParameters.userParameterDouble,
                    prot_hdr.userParameters.userParameterLong,
-                   prot_hdr.userParameters.userParameterBase64]
+                   prot_hdr.userParameters.userParameterBase64,
+                   prot_hdr.userParameters.userParameterString]
         for i in range(len(dset_up)):
             dset_up_dict = {item.name: item.value for item in dset_up[i]}
             prot_up_dict = {item.name: item.value for item in prot_up[i]}
@@ -58,6 +61,8 @@ def insert_hdr(prot_file, metadata):
                     up = ismrmrd.xsd.userParameterLongType(name=key, value=merged_dict[key])
                 elif i == 2:
                     up = ismrmrd.xsd.userParameterBase64Type(name=key, value=merged_dict[key])
+                elif i == 3:
+                    up = ismrmrd.xsd.userParameterStringType(name=key, value=merged_dict[key])
                 dset_up[i].append(up)
 
     # encoding
@@ -203,9 +208,17 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     # # Process acquisition
     # #---------------------------
 
-    # convert positions for correct rotation matrix - this was experimentally validated on 20210709
-    # In Pulseq interpreter v1.4 this is valid for the "old/compat" FOV positioning mode
-    # Shifts and rotations in diffent directions lead to correctly shifted/rotated images and trajectories
+    # The rotation matrix below was experimentally validated for the "old/compat" FOV positioning mode of the Pulseq interpreter.
+    # All reconstruction scripts are based on this mode, which however is deprecated from Pulseq 1.4.0 onwards.
+    # The new default FOV positioning mode ("XYZ in TRA") correctly maps the axes defined in Pulseq to the physical coordinate system
+    # This is different from the "old/compat" mode by a sign flip in the x-axis.
+    # To make the reconstruction scripts compatible with the new mode, the data or trajectories are now flipped below.
+    prot_up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+    vers = Version("1.3.1")
+    if "pulseq_version" in prot_up_string:
+        vers = Version(prot_up_string["pulseq_version"])
+
+    # Convert positions for correct rotation matrix
     tmp = -1* np.asarray(dset_acq.phase_dir[:])
     dset_acq.phase_dir[:] = np.asarray(dset_acq.read_dir[:])
     dset_acq.read_dir[:] = tmp
@@ -227,10 +240,16 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
     dset_acq.user_float[:] = prot_acq.user_float[:]
 
     # flags
+    if vers >= Version("1.4.0"):
+        # If NOPOS or NOROT labels are used in the Pulseq sequence, all labels in the acquisition data are messed up (incl ACQ_LAST_IN_MEASUREMENT)
+        # Therefore only the labels from the protocol file will be used here
+        dset_acq.clear_all_flags()
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_SLICE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_REPETITION):
         dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_REPETITION)
+    if prot_acq.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
+        dset_acq.setFlag(ismrmrd.ACQ_LAST_IN_MEASUREMENT)
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_REVERSE):
         dset_acq.setFlag(ismrmrd.ACQ_IS_REVERSE)
     if prot_acq.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT):
@@ -248,7 +267,12 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         dset_acq.resize(trajectory_dimensions=prot_acq.traj[:].shape[1], number_of_samples=dset_acq.number_of_samples, active_channels=dset_acq.active_channels)
         if dset_acq.traj.shape[-1] > 0:
             dset_acq.traj[:] = prot_acq.traj[:]
+        elif vers >= Version("1.4.0"):
+            dset_acq.data[:] = dset_acq.data[:,::-1]
         return
+
+    if not noncartesian and vers >= Version("1.4.0"):
+        dset_acq.data[:] = dset_acq.data[:,::-1]
 
     # deal with noncartesian trajectories
     base_trj = None
@@ -276,7 +300,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         data_tmp = dset_acq.data[:].copy()
         traj_tmp = dset_acq.traj[:].copy()
         if dset_acq.traj.size > 0:
-            # trajectory already inserted from Skope system
+            # trajectory inserted from Skope system in physical coordinates
             base_trj = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=False, traj_phys=traj_phys)[0] # for FOV shift reapply
             if dset_acq.traj.shape[1] < 4:
                 dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
@@ -284,6 +308,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
                 dset_acq.traj[:,:3] = traj_tmp
                 dset_acq.traj[:,3] = np.zeros(len(dset_acq.traj[:])) # add zeros, if k0 from Skope not inserted
         else:
+            if vers >= Version("1.4.0"):
+                prot_acq.traj[:,0] *= -1
             dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
             if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
                 # trajectory in protocol file

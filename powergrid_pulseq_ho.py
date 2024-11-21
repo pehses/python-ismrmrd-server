@@ -55,6 +55,8 @@ n_replica = 50 # number of replicas used for SNR map calculation
 reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
 first_vol = 0 # index of first volume, that is reconstructed
 
+compressed_coils = None # if not None compress number of coils to the specified number of coils
+
 ########################
 # Main Function
 ########################
@@ -86,15 +88,16 @@ def process(connection, config, metadata, prot_file):
         read_ecalib = False
         read_fmap = False
 
-    # Coil Compression: Compress number of coils by n_compr coils
-    n_compr = 0
+    # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
-    if n_compr > 0 and n_compr<n_cha:
-        process_acs.cc_cha = n_cha - n_compr
-        logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
-    elif n_compr<0 or n_compr>=n_cha:
-        process_acs.cc_cha = n_cha
-        logging.debug('Invalid number of compressed coils.')
+    global compressed_coils
+    if compressed_coils is not None:
+        if compressed_coils > 0 and compressed_coils<=n_cha:
+            process_acs.cc_cha = compressed_coils
+            logging.debug(f'Coil Compression from {n_cha} to {process_acs.cc_cha} channels.')
+        else:
+            process_acs.cc_cha = n_cha
+            logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
     else:
         process_acs.cc_cha = n_cha
 
@@ -124,6 +127,7 @@ def process(connection, config, metadata, prot_file):
 
     # Read user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+    up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
 
     # Check SMS, in the 3D case we can have an acceleration factor, but its not SMS
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
@@ -283,8 +287,9 @@ def process(connection, config, metadata, prot_file):
                     rh.apply_cc(item, process_acs.cc_mat)
 
                 # Undo FOV Shift with base trajectory
-                shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
-                item.data[:] *= np.exp(1j*(shift*base_trj).sum(axis=-1)) # base_trj in [rad/m]
+                if "spiral_nopos" not in up_base or up_base["spiral_nopos"] != "1":
+                    shift = rh.pcs_to_dcs(np.asarray(item.position)) * 1e-3 # shift [m] in DCS
+                    item.data[:] *= np.exp(1j*(shift*base_trj).sum(axis=-1)) # base_trj in [rad/m]
 
                 # Correct the global phase
                 k0 = item.traj[:,3]

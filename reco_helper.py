@@ -527,7 +527,7 @@ def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, softsense=True, chunk_sz=None, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, softsense=False, chunk_sz=None, use_gpu=False):
     """
     Run parallel imaging calibration with ESPIRiT
 

@@ -34,7 +34,8 @@ import reco_helper as rh
     
     !!! This recon does not support multishot diffusion imaging !!!
 
-    The recon currently is meant for 2D spiral data (3D not tested), it supports 3D reference scans though.
+    The recon currently is meant for single shot 2D spiral data (multishot and 3D not tested), it supports 3D reference scans though.
+    SMS reconstruction with variations in the z-trajectory (e.g. blips/waves) is supported
 
 """
 

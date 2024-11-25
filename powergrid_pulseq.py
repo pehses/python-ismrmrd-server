@@ -26,7 +26,8 @@ import reco_helper as rh
 
     The B0 field corrected recon is done in the logical coordinate system (GCS)
     Trajectories therefore have to be int the logical coordinate system and scaled with "FOV[m] / (2*pi)" to make them dimensionless and suitable for BART/PowerGrid.
-
+    SMS reconstruction does not work with variations in the z-trajectory, as this requires an additional phase correction, which is not implemented here (use powergrid_pulseq_ho.py instead)
+    
     The 0th order term k0 will be directly applied in this script and afterwards replaced by a time vector (for B0 correction), which is also calculated in this script                    
     
     If multishot spirals were used, a phase-corrected reconstruction is done.

@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.6.0-devel-ubuntu20.04 AS mrd_converter
+FROM nvidia/cuda:12.6.2-devel-ubuntu20.04 AS reco_base
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -44,18 +44,6 @@ RUN cd /opt/code \
     && make -j $(nproc) \
     && make install
 
-# siemens_to_ismrmrd converter
-RUN cd /opt/code \
-    && git clone https://github.com/mavel101/siemens_to_ismrmrd.git \
-    && cd siemens_to_ismrmrd \
-    && git checkout skope_ecc \
-    && cp /opt/code/python-ismrmrd-server/parameter_maps/* parameter_maps/ \
-    && mkdir build \
-    && cd build \
-    && cmake ../ \
-    && make -j $(nproc) \
-    && make install
-
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
      && git clone https://github.com/mrirecon/bart \
@@ -73,14 +61,14 @@ RUN  cd /opt/code \
 ### Dependencies for PowerGrid ###
 
 # Download and install NVIDIA HPC SDK
-RUN  wget https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-22-1_22.1_amd64.deb \
-     https://developer.download.nvidia.com/hpc-sdk/22.1/nvhpc-2022_22.1_amd64.deb \
-     && apt-get install --yes ./nvhpc-22-1_22.1_amd64.deb ./nvhpc-2022_22.1_amd64.deb
+RUN  wget https://developer.download.nvidia.com/hpc-sdk/22.11/nvhpc_2022_2211_Linux_x86_64_cuda_11.8.tar.gz \
+     && tar xpzf nvhpc_2022_2211_Linux_x86_64_cuda_11.8.tar.gz \
+     && nvhpc_2022_2211_Linux_x86_64_cuda_11.8/install
 
 # Load NVIDIA HPC SDK modules
 ENV NVARCH=Linux_x86_64
 ENV NVHPC=/opt/nvidia/hpc_sdk
-ENV HPCSDK_VERSION=22.1
+ENV HPCSDK_VERSION=22.11
 ENV HPCSDK_RELEASE=2022
 ENV CUDA_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/cuda"
 ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/man"
@@ -148,7 +136,7 @@ RUN  cd /opt/code \
      && make -j4 && make install    
 
 # ----- Start another clean build without all of the build dependencies-----
-FROM nvidia/cuda:11.6.0-runtime-ubuntu20.04
+FROM nvidia/cuda:12.6.2-runtime-ubuntu20.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -156,10 +144,10 @@ ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Copy packages from last stage and re-add necessary dependencies
-COPY --from=mrd_converter /usr/local/. /usr/local/
-COPY --from=mrd_converter /opt/nvidia /opt/nvidia 
-COPY --from=mrd_converter /opt/code/PowerGrid /opt/code/PowerGrid
-COPY --from=mrd_converter /opt/code/spiraltraj/SpiralTraj* /opt/code/
+COPY --from=reco_base /usr/local/. /usr/local/
+COPY --from=reco_base /opt/nvidia /opt/nvidia 
+COPY --from=reco_base /opt/code/PowerGrid /opt/code/PowerGrid
+COPY --from=reco_base /opt/code/spiraltraj/SpiralTraj* /opt/code/
 
 # Set variables for PowerGrid
 ENV LD_LIBRARY_PATH="/usr/local/PowerGrid/lib:${LD_LIBRARY_PATH}"
@@ -168,7 +156,7 @@ ENV PATH="/usr/local/PowerGrid/bin:${PATH}"
 ENV HDF5_USE_FILE_LOCKING=FALSE
 
 # Copy MKL
-COPY --from=mrd_converter /opt/intel/mkl/lib /opt/intel/mkl/lib/
+COPY --from=reco_base /opt/intel/mkl/lib /opt/intel/mkl/lib/
 RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so  \
     libblas.so-x86_64-linux-gnu      /opt/intel/mkl/lib/intel64/libmkl_rt.so 50 && \
   update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so.3  \
@@ -187,7 +175,7 @@ ENV TOOLBOX_PATH="/opt/code/bart"
 ENV PYTHONPATH="${PYTHONPATH}:${TOOLBOX_PATH}/python"
 
 # copy bart python interface to pythonpath
-COPY --from=mrd_converter ${TOOLBOX_PATH} ${TOOLBOX_PATH}
+COPY --from=reco_base ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \

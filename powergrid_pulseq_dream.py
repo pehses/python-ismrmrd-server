@@ -405,16 +405,23 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
     # MPI and hyperthreading
     mpi = True
     hyperthreading = False # seems to slow down recon in some cases
-    if hyperthreading:
-        cores = psutil.cpu_count(logical = True)
-        mpi_cmd = 'mpirun --use-hwthread-cpus'
+    if mpi:
+        if hyperthreading:
+            cores = psutil.cpu_count(logical = True)
+            mpi_cmd = 'mpirun --use-hwthread-cpus'
+        else:
+            cores = psutil.cpu_count(logical = False)
+            mpi_cmd = 'mpirun'
+        is_root = os.geteuid() == 0
+        if is_root:
+            mpi_cmd += ' --allow-run-as-root'
     else:
-        cores = psutil.cpu_count(logical = False)
-        mpi_cmd = 'mpirun'
+        cores = 1
+        mpi_cmd = ''
 
     # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
     # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
-    pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/22.1 && '
+    pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/22.11 && '
 
     mps_server = False
     if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
@@ -424,6 +431,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
         mps_server = True
         try:
             subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
         except subprocess.CalledProcessError as e:
             logging.debug("MPS Server not started. See error messages below.")
             logging.debug(e.stdout)

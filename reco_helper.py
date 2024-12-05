@@ -762,29 +762,30 @@ def get_fmap_mask(img):
 
     # threshold mask
     mask_thresh = img/np.max(img)
-    thresh = 0.3 * np.percentile(mask_thresh, 95)
+    thresh = 0.2 * np.percentile(mask_thresh, 95)
     mask_thresh[mask_thresh<thresh] = 0
     mask_thresh[mask_thresh>=thresh] = 1
-    for k in range(len(mask_thresh)):
-        mask_thresh[k] = scn.binary_erosion(mask_thresh[k], iterations=1)
 
-    # nilearn mask (without skull)
-    n_iter3d = 3
-    nifti_img = nib.Nifti1Image(img, np.eye(4))
-    mask = compute_epi_mask(nifti_img, lower_cutoff=0.2, upper_cutoff=0.85, connected=True, opening=n_iter3d)
-    mask = mask.get_fdata()
-    mask = scn.binary_fill_holes(mask)
-    mask = scn.binary_dilation(mask, iterations=n_iter3d).astype(np.uint8) # fill slices that were eroded by compute_epi_mask
+    # for k in range(len(mask_thresh)):
+    #     mask_thresh[k] = scn.binary_erosion(mask_thresh[k], iterations=1)
 
-    # erode and fill holes
-    for k in range(len(mask)):
-        eroded = scn.binary_erosion(mask[k],iterations=n_iter3d + 3)
-        mask[k] = scn.binary_fill_holes(eroded)
+    # # nilearn mask (without skull)
+    # n_iter3d = 3
+    # nifti_img = nib.Nifti1Image(img, np.eye(4))
+    # mask = compute_epi_mask(nifti_img, lower_cutoff=0.2, upper_cutoff=0.85, connected=True, opening=n_iter3d)
+    # mask = mask.get_fdata()
+    # mask = scn.binary_fill_holes(mask)
+    # mask = scn.binary_dilation(mask, iterations=n_iter3d).astype(np.uint8) # fill slices that were eroded by compute_epi_mask
 
-    # combine masks
-    mask[mask_thresh==1] = 1
+    # # erode and fill holes
+    # for k in range(len(mask)):
+    #     eroded = scn.binary_erosion(mask[k],iterations=n_iter3d + 3)
+    #     mask[k] = scn.binary_fill_holes(eroded)
 
-    return mask
+    # # combine masks
+    # mask[mask_thresh==1] = 1
+
+    return mask_thresh
 
 def fill_masked_voxels(input_array, mask, k=10):
     """

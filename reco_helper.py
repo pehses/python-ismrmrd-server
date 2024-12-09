@@ -807,6 +807,10 @@ def fill_masked_voxels(input_array, mask, k=10):
     # Ensure mask is boolean
     mask = mask.astype(bool)
 
+    # return zeros if all values are masked
+    if not np.any(mask):
+        return np.zeros_like(input_array)
+
     # Get the dimensionality of the input
     is_3d = input_array.ndim == 3
 

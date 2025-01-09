@@ -19,7 +19,6 @@ from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 import despike
 import nibabel as nib
 import scipy.ndimage as scn
-from nilearn.masking import compute_epi_mask
 
 from bart import bart
 
@@ -707,8 +706,11 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
 
     # mask with threshold as accuracy of the field map values is proportional to the signal intensity
-    img_mask = rss(imgs[...,-1], axis=-1)
+    img_mask = np.sum(rss(imgs, axis=-2), axis=-1)
     mask = get_fmap_mask(img_mask)
+    if romeo_fmap:
+        romeo_mask = fmap != 0
+        mask = mask * romeo_mask
     nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
     nib.save(nifti, "/tmp/share/debug/mask.nii")
 
@@ -762,14 +764,16 @@ def get_fmap_mask(img):
 
     # threshold mask
     mask_thresh = img/np.max(img)
-    thresh = 0.2 * np.percentile(mask_thresh, 95)
+    thresh = 0.3 * np.percentile(mask_thresh, 95)
     mask_thresh[mask_thresh<thresh] = 0
     mask_thresh[mask_thresh>=thresh] = 1
 
+    # Nilearn mask doesnt work well
     # for k in range(len(mask_thresh)):
     #     mask_thresh[k] = scn.binary_erosion(mask_thresh[k], iterations=1)
 
     # # nilearn mask (without skull)
+    # from nilearn.masking import compute_epi_mask
     # n_iter3d = 3
     # nifti_img = nib.Nifti1Image(img, np.eye(4))
     # mask = compute_epi_mask(nifti_img, lower_cutoff=0.2, upper_cutoff=0.85, connected=True, opening=n_iter3d)
@@ -919,7 +923,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     # tempfile.tempdir = "/dev/shm"
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
-    # tempdir = "/tmp/share/debug/"
+    tempdir = "/tmp/share/debug/"
 
     # set affine for nifti
     res_x = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x
@@ -942,13 +946,13 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     mag_romeo = nib.Nifti1Image(mag_in, affine)
     nib.save(mag_romeo, mag_name)
 
-    mask_name = "robustmask"
+    mask_name = "qualitymask 0.35"
     if mask is not None:
         mask_name = tempdir+"/mask_romeo.nii"
         mask_romeo = nib.Nifti1Image(mask, affine)
         nib.save(mask_romeo, mask_name)
 
-    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir} --temporal-uncertain-unwrapping"
+    subproc = f"romeo -p {phs_name} -m {mag_name} -k {mask_name} -t {echo_times} -o {tempdir} -u --temporal-uncertain-unwrapping"
     if bipolar:
         subproc += " --phase-offset-correction bipolar"
 

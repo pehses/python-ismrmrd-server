@@ -33,8 +33,11 @@ def process(connection, config, metadata):
         date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
         prot_folder_loc = os.path.join(prot_folder_local, date)
         prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"
+        prot_file_loc2 = prot_folder_loc + "/prot/" + prot_filename + ".h5"
         if os.path.isfile(prot_file_loc):
             prot_file = prot_file_loc
+        elif os.path.isfile(prot_file_loc2):
+            prot_file = prot_file_loc2
         else:
             raise ValueError(f"Metadata file {prot_file} not available.")
 

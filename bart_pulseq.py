@@ -37,9 +37,7 @@ def process(connection, config, metadata):
     # Check if local protocol folder is available, if protocol is not in dependency protocol folder
     if not os.path.isfile(prot_file):
         prot_folder_local = "/tmp/local/metadata" # optional local protocol mountpoint (via -v option)
-        date = prot_filename.split('_')[0] # folder in Protocols (=date of seqfile)
-        prot_folder_loc = os.path.join(prot_folder_local, date)
-        prot_file_loc = prot_folder_loc + "/" + prot_filename + ".h5"
+        prot_file_loc = prot_folder_local + "/" + prot_filename + ".h5"
         if os.path.isfile(prot_file_loc):
             prot_file = prot_file_loc
         else:

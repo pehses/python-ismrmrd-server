@@ -16,6 +16,7 @@ import scipy.ndimage as scpnd
 from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
+from skimage.filters import threshold_li
 import despike
 import nibabel as nib
 import scipy.ndimage as scn
@@ -764,30 +765,9 @@ def get_fmap_mask(img):
 
     # threshold mask
     mask_thresh = img/np.max(img)
-    thresh = 0.3 * np.percentile(mask_thresh, 95)
+    thresh = threshold_li(mask_thresh)
     mask_thresh[mask_thresh<thresh] = 0
     mask_thresh[mask_thresh>=thresh] = 1
-
-    # Nilearn mask doesnt work well
-    # for k in range(len(mask_thresh)):
-    #     mask_thresh[k] = scn.binary_erosion(mask_thresh[k], iterations=1)
-
-    # # nilearn mask (without skull)
-    # from nilearn.masking import compute_epi_mask
-    # n_iter3d = 3
-    # nifti_img = nib.Nifti1Image(img, np.eye(4))
-    # mask = compute_epi_mask(nifti_img, lower_cutoff=0.2, upper_cutoff=0.85, connected=True, opening=n_iter3d)
-    # mask = mask.get_fdata()
-    # mask = scn.binary_fill_holes(mask)
-    # mask = scn.binary_dilation(mask, iterations=n_iter3d).astype(np.uint8) # fill slices that were eroded by compute_epi_mask
-
-    # # erode and fill holes
-    # for k in range(len(mask)):
-    #     eroded = scn.binary_erosion(mask[k],iterations=n_iter3d + 3)
-    #     mask[k] = scn.binary_fill_holes(eroded)
-
-    # # combine masks
-    # mask[mask_thresh==1] = 1
 
     return mask_thresh
 

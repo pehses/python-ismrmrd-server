@@ -194,9 +194,9 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
     # initialize k-space
     nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = metadata.encoding[0].reconSpace.matrixSize.x
+    ny = metadata.encoding[0].reconSpace.matrixSize.y
+    nz = metadata.encoding[0].reconSpace.matrixSize.z
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)
@@ -279,10 +279,10 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
         ksp = []
         for contr in group:
             for slc in contr:
-                ksp.append(sort_into_kspace(slc, metadata, dmtx))
+                ksp.append(sort_into_kspace(slc, metadata, dmtx, zf_around_center=True))
         ksp = np.asarray(ksp)
     else:
-        ksp = sort_into_kspace(group, metadata, dmtx)
+        ksp = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
 
     logging.debug("Raw data is size %s" % (ksp.shape,))
 

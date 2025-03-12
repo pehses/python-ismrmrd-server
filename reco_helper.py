@@ -17,6 +17,7 @@ from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
 from skimage.filters import threshold_li
+from skimage.morphology import remove_small_holes
 import despike
 import nibabel as nib
 import scipy.ndimage as scn
@@ -335,7 +336,7 @@ def fft_dim(sig, axes=None):
         axes = [axes]
 
     sig = np.fft.ifftshift(sig, axes=axes)
-    sig = np.fft.ifftn(sig, axes=axes)
+    sig = np.fft.fftn(sig, axes=axes, norm='ortho')
     sig = np.fft.fftshift(sig, axes=axes)
 
     return sig
@@ -348,7 +349,7 @@ def ifft_dim(sig, axes=None):
         axes = [axes]
 
     sig = np.fft.ifftshift(sig, axes=axes)
-    sig = np.fft.fftn(sig, axes=axes)
+    sig = np.fft.ifftn(sig, axes=axes, norm='ortho')
     sig = np.fft.fftshift(sig, axes=axes)
 
     return sig
@@ -629,8 +630,9 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
-    romeo_fmap = False # use the ROMEO toolbox for field map calculation (set to True, if more than 2 echoes)
+    romeo_fmap = True # use the ROMEO toolbox for field map calculation (set to True, if more than 2 echoes)
     romeo_uw = False # use ROMEO only for unwrapping (slower than unwrapping with skimage)
+    regularized_fmap = False # regularized field map calculation
 
     cores = psutil.cpu_count(logical = False)
 
@@ -639,34 +641,56 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     if online_recon:
         std_filter = False
 
-    if len(echo_times) > 2:
-        romeo_fmap = True
-
-    nx = metadata.encoding[0].encodedSpace.matrixSize.x
-    ny = metadata.encoding[0].encodedSpace.matrixSize.y
-    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    nx = metadata.encoding[0].reconSpace.matrixSize.x
+    ny = metadata.encoding[0].reconSpace.matrixSize.y
+    nz = metadata.encoding[0].reconSpace.matrixSize.z
     n_slc = imgs.shape[0]
     nc = imgs.shape[-2]
     if nc == 1:
         mc_fmap = False
         std_filter = False
 
+    # calculate coil sensitivity maps
+    sens = None
+    if regularized_fmap or not (mc_fmap or romeo_fmap):
+        imgs_sens = np.moveaxis(imgs[...,0], 0, -1)
+        ksp_sens= fft_dim(imgs_sens, axes=(0,1))
+        sens = bart(1, f"--parallel-loop {(ksp_sens.ndim-1)**2} -e {ksp_sens.shape[-1]} ecalib -m1", ksp_sens)
+        nifti = nib.Nifti1Image(np.flip(np.transpose(abs(sens[:,:,0]),[0,1,3,2]), (0,1,2)), np.eye(4))
+        nib.save(nifti, "/tmp/share/debug/sens.nii")
+        sens = np.moveaxis(sens, -1, 0)
+
     # from [slices,nx,ny,nz,coils,echoes] to either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
     if nz == 1:
         imgs = imgs[:,:,:,0] # 2D field map acquisition
+        if sens is not None:
+            sens = sens[:,:,:,0]
     elif nz > 1:
         imgs = np.moveaxis(imgs[0],2,0) # 3D field map acquisition
+        if sens is not None:
+            sens = np.moveaxis(sens[0],2,0)
     elif nz > 1 and n_slc > 1:
         raise ValueError("Multi-slab is not supported.")
 
+    # calculate mask
+    img_mask = rss(imgs[...,0], axis=-1)
+    mask = get_fmap_mask(img_mask)
+    nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
+    nib.save(nifti, "/tmp/share/debug/mask.nii")
+
+    # mask images
+    imgs = imgs * mask[...,np.newaxis, np.newaxis]
+    if sens is not None:
+        sens = sens * mask[...,np.newaxis]
+
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        fmap = romeo_unwrap(imgs, echo_times, metadata, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff,[], mc_unwrap=True, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=mask, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
             pool = Pool(processes=cores)
@@ -696,24 +720,29 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
                 fmap2[tuple(ix)] = np.median((fmap[voxel_cb])[np.nonzero(fmap[voxel_cb])])
             fmap = fmap2
     else:
-        # Standard field mapping approach (Hermitian product & SOS coil combination)
-        phasediff = imgs[...,1] * np.conj(imgs[...,0]) 
-        phasediff = np.sum(phasediff, axis=-1) # coil combination
+        # Standard field mapping approach with prior coil combination
+        cc_nom = np.sum(np.conj(sens[...,np.newaxis])*imgs, axis=-2)
+        cc_denom = np.sqrt(np.sum(abs(sens)**2, axis=-1))[...,np.newaxis]
+        imgs_cc = np.divide(cc_nom, cc_denom, out=np.zeros_like(cc_nom), where=cc_denom!=0)
+        nifti = nib.Nifti1Image(np.flip(np.transpose(abs(imgs_cc[...,0]),[1,2,0]), (0,1,2)), np.eye(4))
+        nib.save(nifti, "/tmp/share/debug/mag.nii")
+        phasediff = imgs_cc[...,1] * np.conj(imgs_cc[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], mc_unwrap=False, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=mask, mc_unwrap=False, return_b0=False)
         else:
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
         fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
 
-    # mask with threshold as accuracy of the field map values is proportional to the signal intensity
-    img_mask = np.sum(rss(imgs, axis=-2), axis=-1)
-    mask = get_fmap_mask(img_mask)
-    if romeo_fmap:
-        romeo_mask = fmap != 0
-        mask = mask * romeo_mask
-    nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
-    nib.save(nifti, "/tmp/share/debug/mask.nii")
+    # regularized field map calculation
+    if regularized_fmap:
+        fmap_init = -1 * fmap / (2 * np.pi) # to Hz
+        nifti = nib.Nifti1Image(np.flip(np.transpose(fmap_init,[1,2,0]), (0,1,2)), np.eye(4)) # save initial field map for easier debugging
+        nib.save(nifti, "/tmp/share/debug/fmap_init.nii")
+        fmap = calc_regularized_fmap(imgs, echo_times, fmap_init, mask, sens)
+        nifti = nib.Nifti1Image(np.flip(np.transpose(fmap,[1,2,0]), (0,1,2)), np.eye(4)) # save regularized field map for easier debugging
+        nib.save(nifti, "/tmp/share/debug/fmap_regu.nii")
+        fmap = -1 * fmap * 2 * np.pi # to rad/s
 
     # fill all voxels outside the mask by the weighted mean of their 'k' nearest neighbors inside the mask
     # 2D seems to work better than 3D
@@ -763,13 +792,38 @@ def get_fmap_mask(img):
     img: GRE image [nx,ny,nz]
     """
 
-    # threshold mask
-    mask_thresh = img/np.max(img)
-    thresh = threshold_li(mask_thresh)
-    mask_thresh[mask_thresh<thresh] = 0
-    mask_thresh[mask_thresh>=thresh] = 1
+    # parameters for erosions and hole filling
+    area_threshold = 16
+    connectivity = 8
+    erosions = 2
 
-    return mask_thresh
+    # threshold mask
+    mask = img/np.max(img)
+    thresh = threshold_li(mask)
+    mask[mask<thresh] = 0
+    mask[mask>=thresh] = 1
+    for k, mask_slc in enumerate(mask):
+        mask_slc = remove_small_holes(mask_slc.astype(bool), area_threshold=area_threshold, connectivity=connectivity)
+        mask_slc = scpnd.binary_erosion(mask_slc, iterations=erosions)
+        mask[k] = mask_slc
+
+    return mask
+
+def calc_regularized_fmap(imgs, te, fmap_init, mask, sens):
+
+    from julia.api import Julia
+    jl = Julia(compiled_modules=False)
+    from julia import Main
+
+    Main.data = imgs.astype(np.complex64)
+    Main.te = np.asarray(te)
+    Main.fmap_init = fmap_init
+    Main.mask = mask.astype(bool)
+    Main.sens = sens
+
+    Main.eval("using MRIFieldmaps")
+    Main.eval("field_map, _, _ = b0map(data, te, finit=fmap_init, mask=mask, smap=sens, l2b=-6)")
+    return Main.eval("field_map")
 
 def fill_masked_voxels(input_array, mask, k=10):
     """
@@ -926,7 +980,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     mag_romeo = nib.Nifti1Image(mag_in, affine)
     nib.save(mag_romeo, mag_name)
 
-    mask_name = "qualitymask 0.35"
+    mask_name = "robustmask" # "qualitymask 0.3"
     if mask is not None:
         mask_name = tempdir+"/mask_romeo.nii"
         mask_romeo = nib.Nifti1Image(mask, affine)
@@ -952,7 +1006,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         if return_b0:
             subproc += " -B"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
-            fmap = -1 * 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/m]
+            fmap = -1 * 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/s]
             tmpdir.cleanup()
             return fmap # [x,y,z]
         else:

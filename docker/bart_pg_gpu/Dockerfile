@@ -181,8 +181,8 @@ COPY --from=reco_base ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil xsdata==22.2 ismrmrd==1.14.0 despike nilearn
+        ca-certificates nano git gcc python3-dev python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils \
+     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd despike julia
 
 RUN  mkdir -p /opt/code
 
@@ -205,6 +205,19 @@ RUN  cd /opt/code \
      && rm mritools_ubuntu-20.04_4.5.3.tar.gz 
 
 ENV PATH=${PATH}:"/opt/code/mritools_ubuntu-20.04_4.5.3/bin"
+
+# Download and install Julia
+ENV JULIA_VERSION=1.9.3
+RUN wget https://julialang-s3.julialang.org/bin/linux/x64/1.9/julia-${JULIA_VERSION}-linux-x86_64.tar.gz \
+    && tar -xzf julia-${JULIA_VERSION}-linux-x86_64.tar.gz -C /usr/local --strip-components=1 \
+    && rm julia-${JULIA_VERSION}-linux-x86_64.tar.gz
+
+# Precompile Julia python interface
+RUN python3 -c "import julia; julia.install()"
+RUN julia -e 'using Pkg; Pkg.add("PyCall"); using PyCall; PyCall.python_interpreter = Sys.which("python3"); Pkg.build("PyCall")'
+
+# Install MRIFieldmaps.jl and its dependencies
+RUN julia -e 'using Pkg; Pkg.add(url="https://github.com/MagneticResonanceImaging/MRIFieldmaps.jl"); using MRIFieldmaps'
 
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip wget

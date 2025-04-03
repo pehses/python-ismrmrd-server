@@ -363,7 +363,7 @@ def fov_shift_img_axis(img, shift, axis):
     """
 
     img_cp = np.moveaxis(img, axis, -1)
-    fac = np.exp(-1j*shift*2*np.pi*np.arange(img_cp.shape[-1])/img_cp.shape[-1])
+    fac = np.exp(1j*shift*2*np.pi*np.arange(img_cp.shape[-1])/img_cp.shape[-1])
     img_cp = ifft_dim(fft_dim(img_cp, axes=-1) * fac, axes=-1)
 
     return np.moveaxis(img_cp, -1, axis)

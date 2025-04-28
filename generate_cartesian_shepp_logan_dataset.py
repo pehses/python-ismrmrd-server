@@ -7,6 +7,9 @@ import numpy as np
 import argparse
 
 def create(filename='testdata.h5', matrix_size=256, coils=8, oversampling=2, repetitions=1, acceleration=1, noise_level=0.05):
+    print("Creating Shepp-Logan phantom raw data:")
+    print("Matrix %dx%d at R=%d with %d repetitions" % (matrix_size, matrix_size, acceleration, repetitions))
+    print("%d coils with %d oversampling and %1.2f noise level" % (coils, oversampling, noise_level))
 
     # Generate the phantom and coil sensitivity maps
     phan = simulation.phantom(matrix_size)
@@ -47,11 +50,11 @@ def create(filename='testdata.h5', matrix_size=256, coils=8, oversampling=2, rep
     encoding.trajectory = ismrmrd.xsd.trajectoryType('cartesian')
 
     # encoded and recon spaces
-    efov = ismrmrd.xsd.fieldOfViewMmType()
+    efov = ismrmrd.xsd.fieldOfViewMm()
     efov.x = oversampling*256
     efov.y = 256
     efov.z = 5
-    rfov = ismrmrd.xsd.fieldOfViewMmType()
+    rfov = ismrmrd.xsd.fieldOfViewMm()
     rfov.x = 256
     rfov.y = 256
     rfov.z = 5
@@ -106,6 +109,26 @@ def create(filename='testdata.h5', matrix_size=256, coils=8, oversampling=2, rep
     
     encoding.encodingLimits = limits
     header.encoding.append(encoding)
+
+    # User Parameters
+    user = ismrmrd.xsd.userParametersType()
+    userParameterLong = ismrmrd.xsd.userParameterLongType()
+    userParameterLong.name = 'TestLong'
+    userParameterLong.value = '42'
+    user.userParameterLong.append(userParameterLong)
+    userParameterDouble = ismrmrd.xsd.userParameterDoubleType()
+    userParameterDouble.name = 'TestDouble'
+    userParameterDouble.value = '3.14159'
+    user.userParameterDouble.append(userParameterDouble)
+    userParameterString = ismrmrd.xsd.userParameterStringType()
+    userParameterString.name = 'TestString'
+    userParameterString.value = 'This is a test'
+    user.userParameterString.append(userParameterString)
+    userParameterBase64 = ismrmrd.xsd.userParameterBase64Type()
+    userParameterBase64.name = 'TestBase64'
+    userParameterBase64.value = 'QWxsIHlvdXIgYmFzZSBhcmUgYmVsb25nIHRvIHVz'
+    user.userParameterBase64.append(userParameterBase64)
+    header.userParameters = user
 
     dset.write_xml_header(header.toXML('utf-8'))
 
@@ -164,7 +187,7 @@ def create(filename='testdata.h5', matrix_size=256, coils=8, oversampling=2, rep
 
     # Clean up
     dset.close()
-
+    print("Saved to %s" % (filename))
 
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

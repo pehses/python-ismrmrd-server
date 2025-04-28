@@ -39,19 +39,26 @@ def conditionalGroups(iterable, predicateAccept, predicateFinish):
         iterable.send_close()
 
 
-def process(connection, config, metadata):
+def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
-    logging.info("Metadata: \n%s", metadata)
+    logging.info("MRD Header: \n%s", mrdHeader)
 
     # Discard phase correction lines and accumulate lines until "ACQ_LAST_IN_SLICE" is set
     for group in conditionalGroups(connection, lambda acq: not acq.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA), lambda acq: acq.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE)):
-        image = process_group(group, config, metadata)
+        image = process_group(group, config, mrdHeader)
 
         logging.debug("Sending image to client:\n%s", image)
         connection.send_image(image)
 
 
-def process_group(group, config, metadata):
+def process_group(group, config, mrdHeader):
+    if len(group) == 0:
+        return []
+
+    logging.info(f'-------------------------------------------------')
+    logging.info(f'     process_group called with {len(group)} readouts')
+    logging.info(f'-------------------------------------------------')
+
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
@@ -64,18 +71,11 @@ def process_group(group, config, metadata):
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
-    # Remove readout oversampling
-    data = fft.ifft(data, axis=1)
-    data = np.delete(data, np.arange(int(data.shape[1]*1/4),int(data.shape[1]*3/4)), 1)
-    data = fft.fft( data, axis=1)
-
-    logging.debug("Raw data is size after readout oversampling removal %s" % (data.shape,))
-    np.save(debugFolder + "/" + "rawNoOS.npy", data)
-
     # Fourier Transform
     data = fft.fftshift( data, axes=(1, 2))
     data = fft.ifft2(    data, axes=(1, 2))
     data = fft.ifftshift(data, axes=(1, 2))
+    data *= np.prod(data.shape) # FFT scaling for consistency with ICE
 
     # Sum of squares coil combination
     data = np.abs(data)
@@ -86,18 +86,26 @@ def process_group(group, config, metadata):
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
 
+    # Determine max value (12 or 16 bit)
+    BitsStored = 12
+    if (mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored") is not None):
+        BitsStored = mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored")
+    maxVal = 2**BitsStored - 1
+
     # Normalize and convert to int16
-    data *= 32767/data.max()
+    data *= maxVal/data.max()
     data = np.around(data)
     data = data.astype(np.int16)
 
     # Remove readout oversampling
-    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
-    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.x,:]
+    if mrdHeader.encoding[0].reconSpace.matrixSize.x != 0:
+        offset = int((data.shape[0] - mrdHeader.encoding[0].reconSpace.matrixSize.x)/2)
+        data = data[offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.x,:]
 
     # Remove phase oversampling
-    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
-    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.y]
+    if mrdHeader.encoding[0].reconSpace.matrixSize.y != 0:
+        offset = int((data.shape[1] - mrdHeader.encoding[0].reconSpace.matrixSize.y)/2)
+        data = data[:,offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.y]
 
     logging.debug("Image without oversampling is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgCrop.npy", data)
@@ -110,15 +118,15 @@ def process_group(group, config, metadata):
     image.image_index = 1
 
     # Set field of view
-    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+    image.field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
+                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
+                            ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
 
     # Set ISMRMRD Meta Attributes
     meta = ismrmrd.Meta({'DataRole':               'Image',
                          'ImageProcessingHistory': ['FIRE', 'PYTHON'],
-                         'WindowCenter':           '16384',
-                         'WindowWidth':            '32768'})
+                         'WindowCenter':           str((maxVal+1)/2),
+                         'WindowWidth':            str((maxVal+1))})
 
     # Add image orientation directions to MetaAttributes if not already present
     if meta.get('ImageRowDir') is None:

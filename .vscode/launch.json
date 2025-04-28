@@ -4,12 +4,45 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        // Start server
         {
-            "name": "Start Python MRD Server",
-            "type": "python",
+            "name": "Start server",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
-            "args": ["-p", "9002", "-v"]
-        }
+            "args": [
+                "-p", "9020",
+                // "-v",
+                // "-s"
+            ],
+            "console": "integratedTerminal",
+            "consoleTitle": "Server",
+            "justMyCode": true,
+        },
+
+        // Run client
+        {
+            "name": "Run client",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/client.py",
+            "args": [
+                "${workspaceFolder}/data/shepplogan_raw.mrd",
+                "-p", "9020",
+                "-c", "invertcontrast",
+                "-o", "${workspaceFolder}/data/shepplogan_recon.mrd"
+            ],
+            "console": "integratedTerminal",
+            "consoleTitle": "Client",
+            "justMyCode": true,
+        },
+    ],
+    "compounds":
+    [
+        {
+            "name": "Server + client",
+            "configurations": ["Start server", "Run client"]
+        },
     ]
+
 }

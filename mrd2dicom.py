@@ -7,7 +7,6 @@ import h5py
 import ismrmrd
 import numpy as np
 import pydicom
-import pynetdicom
 import base64
 
 # Lookup table between DICOM and MRD mrdImg types
@@ -89,7 +88,10 @@ def main(args):
         xml_header = dset.read_xml_header()
         xml_header = xml_header.decode("utf-8")
         mrdHead = ismrmrd.xsd.CreateFromDocument(xml_header)
+    else:
+        mrdHead = ismrmrd.xsd.ismrmrdHeader()
 
+    filesWritten = 0
     for group in groups:
         if ( (group == 'config') or (group == 'config_file') or (group == 'xml') ):
             continue
@@ -118,11 +120,12 @@ def main(args):
                     dicomDset = pydicom.dataset.Dataset.from_json(base64.b64decode(meta['DicomJson']))
                 else:
                     dicomDset = pydicom.dataset.Dataset()
+                dicomDset = pydicom.dataset.Dataset()
 
                 # Enforce explicit little endian for written DICOM files
                 dicomDset.file_meta                            = pydicom.dataset.FileMetaDataset()
                 dicomDset.file_meta.TransferSyntaxUID          = pydicom.uid.ExplicitVRLittleEndian
-                dicomDset.file_meta.MediaStorageSOPClassUID    = pynetdicom.sop_class.MRImageStorage
+                dicomDset.file_meta.MediaStorageSOPClassUID    = pydicom.uid.MRImageStorage
                 dicomDset.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
                 pydicom.dataset.validate_file_meta(dicomDset.file_meta)
                 # FileMetaInformationGroupLength is still missing?
@@ -155,25 +158,28 @@ def main(args):
                     print("Error setting header information from MRD header's measurementInformation section")
 
                 try:
-                    # print("---------- Old -------------------------")
-                    # print("mrdHead.acquisitionSystemInformation.systemVendor         : %s" % mrdHead.acquisitionSystemInformation.systemVendor          )
-                    # print("mrdHead.acquisitionSystemInformation.systemModel          : %s" % mrdHead.acquisitionSystemInformation.systemModel           )
-                    # print("mrdHead.acquisitionSystemInformation.systemFieldStrength_T: %s" % mrdHead.acquisitionSystemInformation.systemFieldStrength_T )
-                    # print("mrdHead.acquisitionSystemInformation.institutionName      : %s" % mrdHead.acquisitionSystemInformation.institutionName       )
-                    # print("mrdHead.acquisitionSystemInformation.stationName          : %s" % mrdHead.acquisitionSystemInformation.stationName           )
+                    if mrdHead.acquisitionSystemInformation is None:
+                        pass
+                    else:
+                        # print("---------- Old -------------------------")
+                        # print("mrdHead.acquisitionSystemInformation.systemVendor         : %s" % mrdHead.acquisitionSystemInformation.systemVendor          )
+                        # print("mrdHead.acquisitionSystemInformation.systemModel          : %s" % mrdHead.acquisitionSystemInformation.systemModel           )
+                        # print("mrdHead.acquisitionSystemInformation.systemFieldStrength_T: %s" % mrdHead.acquisitionSystemInformation.systemFieldStrength_T )
+                        # print("mrdHead.acquisitionSystemInformation.institutionName      : %s" % mrdHead.acquisitionSystemInformation.institutionName       )
+                        # print("mrdHead.acquisitionSystemInformation.stationName          : %s" % mrdHead.acquisitionSystemInformation.stationName           )
 
-                    if mrdHead.acquisitionSystemInformation.systemVendor          is not None: dicomDset.Manufacturer          = mrdHead.acquisitionSystemInformation.systemVendor         
-                    if mrdHead.acquisitionSystemInformation.systemModel           is not None: dicomDset.ManufacturerModelName = mrdHead.acquisitionSystemInformation.systemModel          
-                    if mrdHead.acquisitionSystemInformation.systemFieldStrength_T is not None: dicomDset.MagneticFieldStrength = mrdHead.acquisitionSystemInformation.systemFieldStrength_T
-                    if mrdHead.acquisitionSystemInformation.institutionName       is not None: dicomDset.InstitutionName       = mrdHead.acquisitionSystemInformation.institutionName      
-                    if mrdHead.acquisitionSystemInformation.stationName           is not None: dicomDset.StationName           = mrdHead.acquisitionSystemInformation.stationName
+                        if mrdHead.acquisitionSystemInformation.systemVendor          is not None: dicomDset.Manufacturer          = mrdHead.acquisitionSystemInformation.systemVendor         
+                        if mrdHead.acquisitionSystemInformation.systemModel           is not None: dicomDset.ManufacturerModelName = mrdHead.acquisitionSystemInformation.systemModel          
+                        if mrdHead.acquisitionSystemInformation.systemFieldStrength_T is not None: dicomDset.MagneticFieldStrength = mrdHead.acquisitionSystemInformation.systemFieldStrength_T
+                        if mrdHead.acquisitionSystemInformation.institutionName       is not None: dicomDset.InstitutionName       = mrdHead.acquisitionSystemInformation.institutionName      
+                        if mrdHead.acquisitionSystemInformation.stationName           is not None: dicomDset.StationName           = mrdHead.acquisitionSystemInformation.stationName
 
-                    # print("---------- New -------------------------")
-                    # print("mrdHead.acquisitionSystemInformation.systemVendor         : %s" % mrdHead.acquisitionSystemInformation.systemVendor          )
-                    # print("mrdHead.acquisitionSystemInformation.systemModel          : %s" % mrdHead.acquisitionSystemInformation.systemModel           )
-                    # print("mrdHead.acquisitionSystemInformation.systemFieldStrength_T: %s" % mrdHead.acquisitionSystemInformation.systemFieldStrength_T )
-                    # print("mrdHead.acquisitionSystemInformation.institutionName      : %s" % mrdHead.acquisitionSystemInformation.institutionName       )
-                    # print("mrdHead.acquisitionSystemInformation.stationName          : %s" % mrdHead.acquisitionSystemInformation.stationName           )
+                        # print("---------- New -------------------------")
+                        # print("mrdHead.acquisitionSystemInformation.systemVendor         : %s" % mrdHead.acquisitionSystemInformation.systemVendor          )
+                        # print("mrdHead.acquisitionSystemInformation.systemModel          : %s" % mrdHead.acquisitionSystemInformation.systemModel           )
+                        # print("mrdHead.acquisitionSystemInformation.systemFieldStrength_T: %s" % mrdHead.acquisitionSystemInformation.systemFieldStrength_T )
+                        # print("mrdHead.acquisitionSystemInformation.institutionName      : %s" % mrdHead.acquisitionSystemInformation.institutionName       )
+                        # print("mrdHead.acquisitionSystemInformation.stationName          : %s" % mrdHead.acquisitionSystemInformation.stationName           )
                 except:
                     print("Error setting header information from MRD header's acquisitionSystemInformation section")
 
@@ -233,7 +239,7 @@ def main(args):
                 hour = int(np.floor(time_sec/3600))
                 min  = int(np.floor((time_sec - hour*3600)/60))
                 sec  = time_sec - hour*3600 - min*60
-                dicomDset.AcquisitionTime            = "%02.0f%02.0f%02.6f" % (hour, min, sec)
+                dicomDset.AcquisitionTime            = "%02.0f%02.0f%09.6f" % (hour, min, sec)
                 dicomDset.TriggerTime                = mrdImg.physiology_time_stamp[0] / 2.5
 
                 # ----- Update DICOM header from MRD Image MetaAttributes -----
@@ -277,7 +283,10 @@ def main(args):
                 # Write DICOM files
                 fileName = "%02.0f_%s_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, dicomDset.InstanceNumber)
                 print("  Writing file %s" % fileName)
-                dicomDset.save_as(os.path.join(args.out_folder, fileName))
+                dicomDset.save_as(os.path.join(args.out_folder, fileName), enforce_file_format=True)
+                filesWritten += 1
+
+    print("Wrote %d DICOM files to %s" % (filesWritten, args.out_folder))
     return
 
 if __name__ == '__main__':

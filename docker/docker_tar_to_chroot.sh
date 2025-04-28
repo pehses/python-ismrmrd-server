@@ -2,24 +2,25 @@
 # This script takes a Docker container export (.tar) creates a chroot image (.img)
 # Note that root privileges are required to mount the loopback images 
 
-# Syntax: ./docker_tar_to_chroot.sh docker-export.tar chroot.img
+# Syntax: ./docker_tar_to_chroot.sh docker-export.tar chroot.img optional_buffer_size_in_mb
 
 EXPORT_FILE=${1}
 CHROOT_FILE=${2}
+BUFFER_MB=${3:-50}
 
 # Files have a minimum storage size of 4k due to block size
 exportSize=$(tar -tvf "${EXPORT_FILE}" | awk '{s+=int($3/4096+0.99999)*4096} END{printf "%.0f\n", s}')
 
 # Add a minimum buffer of free space to account for filesystem overhead
-chrootMinSize=$(( exportSize/(1024*1024) * 115/100 + 50))
+chrootMinSize=$(( exportSize/(1024*1024) * 115/100 + ${BUFFER_MB}))
 
 # Round up to the nearest 100 MB
 chrootSize=$(( ((${chrootMinSize%.*})/100+1)*100 ))
 
-echo ------------------------------------------------------------
-echo Total size of files from Docker image is $(( exportSize/(1024*1024) )) MB
-echo Creating chroot file ${CHROOT_FILE} of size $chrootSize MB
-echo ------------------------------------------------------------
+echo ----------------------------------------------------------------------
+echo Total size of files from Docker image is $(( exportSize/(1024*1024) )) MB with ${BUFFER_MB} MB of buffer
+echo Creating chroot file ${CHROOT_FILE} of size ${chrootSize} MB
+echo ----------------------------------------------------------------------
 
 if test -f "${CHROOT_FILE}"; then
     echo "Warning -- ${CHROOT_FILE} exists and will be overwritten!"

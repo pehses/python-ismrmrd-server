@@ -1,7 +1,8 @@
 ### Getting Started with Docker
 Docker is a virtualization platform that allows software to run in isolated environments called containers.  It provides a convenient mechanism to package up a reconstruction program and all its libraries in a manner that can be easily deployed to other computers without manually installing dependencies or other configuration steps.  
 
-Install Docker from https://www.docker.com/products/docker-desktop with the standard settings.  Note that Docker is not compatible with Hyper-V, which is required for VirtualBox.  Both Docker and VirtualBox can be installed at the same time, but only one can be usable depending on whether Hyper-V is enabled or not.  Hyper-V can be turned on/off following the instructions at https://docs.microsoft.com/en-us/troubleshoot/windows-client/application-management/virtualization-apps-not-work-with-hyper-v.  A reboot is required for the change to take effect.
+Install Docker from https://www.docker.com/products/docker-desktop with the standard settings.  Windows Subsystem for Linux (WSL) 2 is the preferred backend, although Hyper-V backends are still currently supported. Both Hyper-V and WSL2 backends are supported.  The backend can be configured in the settings, as described in https://docs.docker.com/desktop/wsl/.
+
 
 Download the Docker image of this server by opening a command prompt and running:
 ```
@@ -71,21 +72,21 @@ As Docker provides only a command-line virtualization interface, it not possible
 
 
 ### Building a Docker Image
-A [Dockerfile](../docker/Dockerfile) is provided using based on [python:3.9-slim](https://github.com/docker-library/python/blob/18ef1b6500a622da8b138d1b413c963c279e7ea4/3.9/buster/slim/Dockerfile), a light Python image optimized for reduced total size.  A two-stage build is also used to include the [ismrmrd](https://github.com/ismrmrd/ismrmrd) and [siemens_to_ismrmrd](https://github.com/ismrmrd/siemens_to_ismrmrd) packages without needing their build dependencies in the final image.
+A [Dockerfile](../docker/Dockerfile) is provided using based on [python:3.12.0-slim](https://hub.docker.com/layers/library/python/3.12.0-slim/images/sha256-8e216a21d8df597118b46f3fff477ed1c5c11be81531b6da87790a17851b7f1c?context=explore), a light Python image optimized for reduced total size.  A multi-stage build is also used to include the [ismrmrd](https://github.com/ismrmrd/ismrmrd) and [siemens_to_ismrmrd](https://github.com/ismrmrd/siemens_to_ismrmrd) packages without needing their build dependencies in the final image.
 
-For some image analysis code, additional packages or libraries may be required.  To create a Docker image with these additional packages, modify the Dockerfile by adding ``RUN`` commands corresponding to how the packages would be installed via command line.  Temporary files created during each ``RUN`` command are kept in the final image, so group installations of multiple packages from the same manager (e.g. apt or pip) whenever possible.
+For some image analysis code, additional packages or libraries may be required.  To create a Docker image with these additional packages, start with the ``kspacekelvin/fire-python`` image (created above) and add ``RUN`` commands corresponding to how the packages would be installed via command line.  Temporary files created during each ``RUN`` command are kept in the final image, so group installations of multiple packages from the same manager (e.g. apt or pip) whenever possible.  An example for installation of PyTorch is provided in [docker/pytorch/Dockerfile](../docker/pytorch/Dockerfile).  Alternatively, it is possible to copy the main [Dockerfile](../docker/Dockerfile) and modify it directly.  An example for this approach can be found in [docker/pytorch/Dockerfile_standalone](../docker/pytorch/Dockerfile_standalone).
 
-When determining the required packages, an interactive approach is often useful.  Build the existing Dockerfile by opening a command prompt in the folder containing the python-ismrmrd-server repo:
+When determining the required packages, an interactive approach is often useful.  Build the existing Dockerfile by opening a command prompt in the `python-ismrmrd-server` repo folder and run:
 ```
-docker build --no-cache -t fire-python -f python-ismrmrd-server/docker/Dockerfile ./
+docker build --no-cache -t fire-python -f docker/Dockerfile ./
 ```
 
 The above command uses the following options:
 ```
---no-cache                                  Run each step of the Docker build process without caching from previous builds
--t fire-python                              Tag (name) of the Docker image.
--f python-ismrmrd-server/docker/Dockerfile  Path to the Dockerfile
-./                                          Build context (folder from which COPY commands use as root)
+--no-cache            Run each step of the Docker build process without caching from previous builds
+-t fire-python        Tag (name) of the Docker image.
+-f docker/Dockerfile  Path to the Dockerfile
+./                    Build context (folder from which COPY commands use as root)
 ```
 
 Start an instance of this image:
@@ -105,16 +106,15 @@ Within this container, attempt to start the Python server by running ``python3 /
 A chroot image contains the complete contents of a Linux operating system and serves as the root folder for the reconstruction program.  The chroot image can contain libraries and other files that can be used by the reconstruction program, isolated from the Linux operating system on the MARS computer.  Operating systems tested for FIRE chroot compatibility include Ubuntu, Debian, and Alpine.  Chroot images can be generated using manual tools such as debootstrap or be created from existing containers such as Docker.
 
 A set of scripts is provided to automate the creation of chroot images from Docker images.  To use them, open a command prompt inside the [docker](/docker) folder and run the following command:
+```
+In Windows:
+    docker_to_chroot.bat kspacekelvin/fire-python fire-python-chroot.img
 
-    ```
-    In Windows:
-        docker_to_chroot.bat kspacekelvin/fire-python fire-python-chroot.img
+In MacOS/Linux:
+    ./docker_to_chroot.sh kspacekelvin/fire-python fire-python-chroot.img
+```
 
-    In MacOS/Linux:
-        ./docker_to_chroot.sh kspacekelvin/fire-python fire-python-chroot.img
-    ```
-
-Note that both the [docker_to_chroot.bat](/docker/docker_to_chroot.bat) and [docker_to_chroot.sh](/docker/docker_to_chroot.sh) scripts require the [docker_tar_to_chroot.sh](/docker/docker_tar_to_chroot.sh) script that is also in the docker folder.
+The first argument is the name of the (existing) Docker image and the second argument is the chroot image file to be created.  An optional third argument can be used to specify the free space buffer added to the chroot in MB (default 50 MB).  Note that both the [docker_to_chroot.bat](/docker/docker_to_chroot.bat) and [docker_to_chroot.sh](/docker/docker_to_chroot.sh) scripts require the [docker_tar_to_chroot.sh](/docker/docker_tar_to_chroot.sh) script that is also in the docker folder.
 
 #### Manual creation of a chroot image
 The following steps can be used to manually create a chroot image from a Docker image.  These steps are the same as those automated by the ``docker_to_chroot`` scripts above.  Here they are performed within a Linux Docker image, but they can also be run on a Linux system natively.
@@ -124,7 +124,7 @@ The following steps can be used to manually create a chroot image from a Docker 
     docker create --name tmpimage kspacekelvin/fire-python
     ```
 
-1. Export the file system contents to a tar archive.  Create the tmp folder if necessary.
+1. Export the file system contents to a tar archive.  Create the tmp folder if necessary.  Note that the [docker export](https://docs.docker.com/engine/reference/commandline/export/) command must be used instead of [docker save](https://docs.docker.com/engine/reference/commandline/save/).
     ```
     In Windows:
         docker export -o C:\tmp\fire-python-contents.tar tmpimage

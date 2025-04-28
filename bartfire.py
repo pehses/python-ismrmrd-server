@@ -1,8 +1,10 @@
 import ismrmrd
 import os
 import logging
+import traceback
 import numpy as np
 import ctypes
+import constants
 import mrdhelper
 import tempfile
 from bart import bart
@@ -21,7 +23,7 @@ def process(connection, config, metadata):
         # # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
 
         logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
-        logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
+        logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
             metadata.encoding[0].trajectory, 
             metadata.encoding[0].encodedSpace.matrixSize.x, 
             metadata.encoding[0].encodedSpace.matrixSize.y, 
@@ -82,10 +84,17 @@ def process(connection, config, metadata):
             connection.send_image(image)
             acqGroup = []
 
+    except Exception as e:
+        logging.error(traceback.format_exc())
+        connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
+
     finally:
         connection.send_close()
 
 def process_raw(group, config, metadata):
+    if len(group) == 0:
+        return []
+
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder, mode=0o774)
@@ -139,18 +148,26 @@ def process_raw(group, config, metadata):
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
 
+    # Determine max value (12 or 16 bit)
+    BitsStored = 12
+    if (mrdhelper.get_userParameterLong_value(metadata, "BitsStored") is not None):
+        BitsStored = mrdhelper.get_userParameterLong_value(metadata, "BitsStored")
+    maxVal = 2**BitsStored - 1
+
     # Normalize and convert to int16
-    data *= 32767/data.max()
+    data *= maxVal/data.max()
     data = np.around(data)
     data = data.astype(np.int16)
 
     # Remove readout oversampling
-    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
-    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
+    if metadata.encoding[0].reconSpace.matrixSize.x != 0:
+        offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
+        data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
 
     # Remove phase oversampling
-    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
-    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
+    if metadata.encoding[0].reconSpace.matrixSize.y != 0:
+        offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
+        data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
 
     logging.debug("Image without oversampling is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgCrop.npy", data)
@@ -159,10 +176,10 @@ def process_raw(group, config, metadata):
     imagesOut = []
     for phs in range(data.shape[2]):
         # Create new MRD instance for the processed image
-        # NOTE: from_array() takes input data as [x y z coil], which is
-        # different than the internal representation in the "data" field as
-        # [coil z y x], so we need to transpose
-        tmpImg = ismrmrd.Image.from_array(data[...,phs].transpose())
+        # data has shape [PE RO phs], i.e. [y x].
+        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+        # with this option, can take input as: [cha z y x], [z y x], or [y x]
+        tmpImg = ismrmrd.Image.from_array(data[...,phs], transpose=False)
 
         # Set the header information
         tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
@@ -175,8 +192,8 @@ def process_raw(group, config, metadata):
         tmpMeta = ismrmrd.Meta()
         tmpMeta['DataRole']               = 'Image'
         tmpMeta['ImageProcessingHistory'] = ['PYTHON', 'BART']
-        tmpMeta['WindowCenter']           = '16384'
-        tmpMeta['WindowWidth']            = '32768'
+        tmpMeta['WindowCenter']           = str((maxVal+1)/2)
+        tmpMeta['WindowWidth']            = str((maxVal+1))
         tmpMeta['Keep_image_geometry']    = 1
 
         # Add image orientation directions to MetaAttributes if not already present

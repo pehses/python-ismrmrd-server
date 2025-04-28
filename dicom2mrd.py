@@ -43,7 +43,10 @@ def CreateMrdHeader(dset):
     mrdHead.acquisitionSystemInformation.systemVendor          = dset.Manufacturer
     mrdHead.acquisitionSystemInformation.systemModel           = dset.ManufacturerModelName
     mrdHead.acquisitionSystemInformation.systemFieldStrength_T = float(dset.MagneticFieldStrength)
-    mrdHead.acquisitionSystemInformation.institutionName       = dset.InstitutionName
+    try:
+        mrdHead.acquisitionSystemInformation.institutionName       = dset.InstitutionName
+    except:
+        mrdHead.acquisitionSystemInformation.institutionName       = 'Virtual'
     try:
         mrdHead.acquisitionSystemInformation.stationName       = dset.StationName
     except:
@@ -103,6 +106,13 @@ def main(args):
 
     # Group by series number
     uSeriesNum = np.unique([dset.SeriesNumber for dset in dsetsAll])
+
+    # Re-group series that were split during conversion from multi-frame to single-frame DICOMs
+    if all(uSeriesNum > 1000):
+        for i in range(len(dsetsAll)):
+            dsetsAll[i].SeriesNumber = int(np.floor(dsetsAll[i].SeriesNumber / 1000))
+    uSeriesNum = np.unique([dset.SeriesNumber for dset in dsetsAll])
+
     print("Found %d unique series from %d files in folder %s" % (len(uSeriesNum), len(dsetsAll), args.folder))
 
     print("Creating MRD XML header from file %s" % dsetsAll[0].filename)
@@ -141,10 +151,10 @@ def main(args):
             tmpDset = dsets[iImg]
 
             # Create new MRD image instance.
-            # NOTE: from_array() takes input data as [x y z coil], but the
-            # pixel_array() output returns data as [row col], so need to transpose.
-            # This will also set the data_type and matrix_size fields.
-            tmpMrdImg = ismrmrd.Image.from_array(tmpDset.pixel_array.transpose())
+            # pixel_array data has shape [row col], i.e. [y x].
+            # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+            # with this option, can take input as: [cha z y x], [z y x], or [y x]
+            tmpMrdImg = ismrmrd.Image.from_array(tmpDset.pixel_array, transpose=False)
             tmpMeta   = ismrmrd.Meta()
 
             try:
@@ -188,6 +198,11 @@ def main(args):
             except:
                 pass
 
+            try:
+                tmpMeta['ImageComments'] = tmpDset.ImageComments
+            except:
+                pass
+
             tmpMeta['SequenceDescription'] = tmpDset.SeriesDescription
 
             # Remove pixel data from pydicom class
@@ -211,7 +226,7 @@ def main(args):
     # Write all images
     for iSer in range(len(imgAll)):
         for iImg in range(len(imgAll[iSer])):
-            mrdDset.append_image("images_%d" % imgAll[iSer][iImg].image_series_index, imgAll[iSer][iImg])
+            mrdDset.append_image("image_%d" % imgAll[iSer][iImg].image_series_index, imgAll[iSer][iImg])
 
     mrdDset.close()
 

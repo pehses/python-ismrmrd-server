@@ -2,6 +2,7 @@ import ismrmrd
 import os
 import itertools
 import logging
+import traceback
 import numpy as np
 import numpy.fft as fft
 import base64
@@ -13,28 +14,28 @@ from time import perf_counter
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
 
-def process(connection, config, metadata):
+def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
 
-    # Metadata should be MRD formatted header, but may be a string
+    # mrdHeader should be xml formatted MRD header, but may be a string
     # if it failed conversion earlier
     try:
         # Disabled due to incompatibility between PyXB and Python 3.8:
         # https://github.com/pabigot/pyxb/issues/123
-        # # logging.info("Metadata: \n%s", metadata.toxml('utf-8'))
+        # # logging.info("MRD header: \n%s", mrdHeader.toxml('utf-8'))
 
-        logging.info("Incoming dataset contains %d encodings", len(metadata.encoding))
-        logging.info("First encoding is of type '%s', with a field of view of (%s x %s x %s)mm^3 and a matrix size of (%s x %s x %s)", 
-            metadata.encoding[0].trajectory, 
-            metadata.encoding[0].encodedSpace.matrixSize.x, 
-            metadata.encoding[0].encodedSpace.matrixSize.y, 
-            metadata.encoding[0].encodedSpace.matrixSize.z, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.x, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.y, 
-            metadata.encoding[0].encodedSpace.fieldOfView_mm.z)
+        logging.info("Incoming dataset contains %d encodings", len(mrdHeader.encoding))
+        logging.info("First encoding is of type '%s', with a matrix size of (%s x %s x %s) and a field of view of (%s x %s x %s)mm^3", 
+            mrdHeader.encoding[0].trajectory, 
+            mrdHeader.encoding[0].encodedSpace.matrixSize.x, 
+            mrdHeader.encoding[0].encodedSpace.matrixSize.y, 
+            mrdHeader.encoding[0].encodedSpace.matrixSize.z, 
+            mrdHeader.encoding[0].encodedSpace.fieldOfView_mm.x, 
+            mrdHeader.encoding[0].encodedSpace.fieldOfView_mm.y, 
+            mrdHeader.encoding[0].encodedSpace.fieldOfView_mm.z)
 
     except:
-        logging.info("Improperly formatted metadata: \n%s", metadata)
+        logging.info("Improperly formatted MRD header: \n%s", mrdHeader)
 
     # Continuously parse incoming data parsed from MRD messages
     imgGroup = []
@@ -78,7 +79,8 @@ def process(connection, config, metadata):
         if len(waveformGroup) > 0:
             waveformGroup.sort(key = lambda item: item.time_stamp)
             ecgData = [item.data for item in waveformGroup if item.waveform_id == 0]
-            ecgData = np.concatenate(ecgData,1)
+            if len(ecgData) > 0:
+                ecgData = np.concatenate(ecgData,1)
 
         # Process any remaining groups of raw or image data.  This can 
         # happen if the trigger condition for these groups are not met.
@@ -86,15 +88,26 @@ def process(connection, config, metadata):
         # image in a series is typically not separately flagged.
         if len(imgGroup) > 0:
             logging.info("Processing a group of images (untriggered)")
-            image = process_image(imgGroup, connection, config, metadata)
+            image = process_image(imgGroup, connection, config, mrdHeader)
             logging.debug("Sending images to client")
             connection.send_image(image)
             imgGroup = []
 
+    except Exception as e:
+        logging.error(traceback.format_exc())
+        connection.send_logging(constants.MRD_LOGGING_ERROR, traceback.format_exc())
+
     finally:
         connection.send_close()
 
-def process_image(images, connection, config, metadata):
+def process_image(imgGroup, connection, config, mrdHeader):
+    if len(imgGroup) == 0:
+        return []
+
+    logging.info(f'-----------------------------------------------')
+    logging.info(f'     process_image called with {len(imgGroup)} images')
+    logging.info(f'-----------------------------------------------')
+
     # Start timer
     tic = perf_counter()
 
@@ -103,10 +116,10 @@ def process_image(images, connection, config, metadata):
         os.makedirs(debugFolder, mode=0o774)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    logging.debug("Processing data with %d images of type %s", len(images), ismrmrd.get_dtype_from_data_type(images[0].data_type))
+    logging.debug("Processing data with %d images of type %s", len(imgGroup), ismrmrd.get_dtype_from_data_type(imgGroup[0].data_type))
 
     # Display MetaAttributes for first image
-    tmpMeta = ismrmrd.Meta.deserialize(images[0].attribute_string)
+    tmpMeta = ismrmrd.Meta.deserialize(imgGroup[0].attribute_string)
     logging.debug("MetaAttributes[0]: %s", ismrmrd.Meta.serialize(tmpMeta))
 
     # Optional serialization of ICE MiniHeader
@@ -114,11 +127,11 @@ def process_image(images, connection, config, metadata):
         logging.debug("IceMiniHead[0]: %s", base64.b64decode(tmpMeta['IceMiniHead']).decode('utf-8'))
 
     # Extract some indices for the images
-    slice = [img.slice for img in images]
-    phase = [img.phase for img in images]
+    slice = [img.slice for img in imgGroup]
+    phase = [img.phase for img in imgGroup]
 
     # Process each group of venc directions separately
-    unique_venc_dir = np.unique([ismrmrd.Meta.deserialize(img.attribute_string)['FlowDirDisplay'] for img in images])
+    unique_venc_dir = np.unique([ismrmrd.Meta.deserialize(img.attribute_string)['FlowDirDisplay'] for img in imgGroup])
 
     # Measure processing time
     toc = perf_counter()
@@ -136,11 +149,11 @@ def process_image(images, connection, config, metadata):
     for venc_dir in unique_venc_dir:
         # data array has dimensions [row col sli phs], i.e. [y x sli phs]
         # info lists has dimensions [sli phs]
-        data = np.zeros((images[0].data.shape[2], images[0].data.shape[3], max(slice)+1, max(phase)+1), images[0].data.dtype)
+        data = np.zeros((imgGroup[0].data.shape[2], imgGroup[0].data.shape[3], max(slice)+1, max(phase)+1), imgGroup[0].data.dtype)
         head = [[None]*(max(phase)+1) for _ in range(max(slice)+1)]
         meta = [[None]*(max(phase)+1) for _ in range(max(slice)+1)]
 
-        for img, sli, phs in zip(images, slice, phase):
+        for img, sli, phs in zip(imgGroup, slice, phase):
             if ismrmrd.Meta.deserialize(img.attribute_string)['FlowDirDisplay'] == venc_dir:
                 # print("sli phs", sli, phs)
                 data[:,:,sli,phs] = img.data
@@ -157,18 +170,24 @@ def process_image(images, connection, config, metadata):
         data_masked[(data_meandiff > threshold)] = 2048
         np.save(debugFolder + "/" + "data_masked_" + venc_dir + ".npy", data_masked)
 
+        # Determine max value (12 or 16 bit)
+        BitsStored = 12
+        if (mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored") is not None):
+            BitsStored = mrdhelper.get_userParameterLong_value(mrdHeader, "BitsStored")
+        maxVal = 2**BitsStored - 1
+
         # Normalize and convert to int16
-        data_masked = (data_masked.astype(np.float64) - 2048)*32767/2048
+        data_masked = (data_masked.astype(np.float64) - 2048)*maxVal/2048
         data_masked = np.around(data_masked).astype(np.int16)
 
         # Re-slice back into 2D images
         for sli in range(data_masked.shape[2]):
             for phs in range(data_masked.shape[3]):
                 # Create new MRD instance for the processed image
-                # NOTE: from_array() takes input data as [x y z coil], which is
-                # different than the internal representation in the "data" field as
-                # [coil z y x], so we need to transpose
-                tmpImg = ismrmrd.Image.from_array(data_masked[...,sli,phs].transpose())
+                # data has shape [y x sli phs]
+                # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+                # with this option, can take input as: [cha z y x], [z y x], or [y x]
+                tmpImg = ismrmrd.Image.from_array(data_masked[...,sli,phs], transpose=False)
 
                 # Set the header information
                 tmpHead = head[sli][phs]
@@ -181,8 +200,8 @@ def process_image(images, connection, config, metadata):
                 tmpMeta = meta[sli][phs]
                 tmpMeta['DataRole']               = 'Image'
                 tmpMeta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
-                tmpMeta['WindowCenter']           = '16384'
-                tmpMeta['WindowWidth']            = '32768'
+                tmpMeta['WindowCenter']           = str((maxVal+1)/2)
+                tmpMeta['WindowWidth']            = str((maxVal+1))
                 tmpMeta['Keep_image_geometry']    = 1
 
                 # Add image orientation directions to MetaAttributes if not already present

@@ -8,11 +8,13 @@
 	* 1.3. [Using raw data from an MRI scanner](#UsingrawdatafromanMRIscanner)
 	* 1.4. [Using DICOM images as input data](#UsingDICOMimagesasinputdata)
 * 2. [Setting up a working environment for the Python MRD client/server](#SettingupaworkingenvironmentforthePythonMRDclientserver)
-	* 2.1. [Setting up a conda environment](#Settingupacondaenvironment)
-	* 2.2. [Setting up a Docker environment](#SettingupaDockerenvironment)
+    * 2.1. [Setting up a devcontainer environment](#Settingupadevcontainerenvironment)
+	* 2.2. [Setting up a conda environment](#Settingupacondaenvironment)
+	* 2.3. [Setting up a Docker environment](#SettingupaDockerenvironment)
 * 3. [Code design](#Codedesign)
 * 4. [Saving incoming data](#Savingincomingdata)
 * 5. [Startup scripts](#Startupscripts)
+* 6. [Building a custom Docker image](#CustomDockers)
 
 <!-- vscode-markdown-toc-config
 	numbering=true
@@ -52,11 +54,11 @@
 
     If using [conda](#Settingupacondaenvironment), this should be run in a new command prompt.  For Docker, this can be run in the same container from step 1.
 
-    MRD image data are also stored in HDF files arranged by groups. If the ``-G`` argument is not provided, a group name will be automatically created with the current date and time.  This may be useful when running the client multiple times, as multiple groups, organized by date/time, can be stored in the same output file.  Images are further grouped by series index, with a sub-group named ``images_x``, where x is image_series_index in the ImageHeader.  For example:
+    MRD image data are also stored in HDF files arranged by groups. If the ``-G`` argument is not provided, a group name will be automatically created with the current date and time.  This may be useful when running the client multiple times, as multiple groups, organized by date/time, can be stored in the same output file.  Images are further grouped by series index, with a sub-group named ``image_x``, where x is image_series_index in the ImageHeader.  For example:
     ```
-    /dataset/images_0/data         Image data
-    /dataset/images_0/header       MRD ImageHeader structure
-    /dataset/images_0/attributes   MRD MetaAttributes text
+    /dataset/image_0/data         Image data
+    /dataset/image_0/header       MRD ImageHeader structure
+    /dataset/image_0/attributes   MRD MetaAttributes text
     ```
 
 1. The [mrd2gif.py](mrd2gif.py) program can be used to convert an MRD Image file into an animated GIF for quick previewing:
@@ -72,13 +74,14 @@
 
     In MATLAB, the [ISMRMRD](https://github.com/ismrmrd/ismrmrd) library contains helper classes to load and view MRD files.  The files can also be read using MATLAB’s built-in HDF functions:
     ```
-
-    img = h5read('/tmp/phantom_img.h5', '/dataset/images_0/data');
+    img = h5read('/tmp/phantom_img.h5', '/dataset/image_0/data');
     figure, imagesc(img), axis image, colormap(gray)
     ```
 
 ###  1.2. <a name='Creatingacustomreconstructionanalysismodule'></a>Creating a custom reconstruction/analysis module
-The MRD server has a modular design to allow for easy integration of custom reconstruction or image analysis code.  
+The MRD server has a modular design to allow for easy integration of custom reconstruction or image analysis code.  The config that is passed by the client (e.g. the `--config` (`-c`) argument in [client.py](client.py)) is interpreted by the server as the "module" that should be executed to parse the incoming data.  For example, a config of `invertcontrast` will select [invertcontrast.py](invertcontrast.py) as the module to be run.  Additional modules can be added simply be creating the appropriately named .py file in the Python path (e.g. the current folder).
+
+If a file/module corresponding to the selecting config cannot be found, the server will fall back to a default config.  The default config can be provided to [main.py](main.py) using the `--defaultConfig` (`-d`) argument.  It is recommended that the default config argument be set in the `CMD` line of the Dockerfile when building an image to indicate the intended config to be run.
 
 ####  1.2.1. <a name='Addingarawk-spacefilter'></a>Adding a raw k-space filter
 In this example, a Hanning filter is applied to raw k-space data.
@@ -138,12 +141,12 @@ In this example, a high-pass filter is applied to images.
     ```
     # Normalize and convert to int16
     data = data.astype(np.float64)
-    data *= 32767/data.max()
+    data *= maxVal/data.max()
     data = np.around(data)
     data = data.astype(np.int16)
 
     # Invert image contrast
-    data = 32767-data
+    data = maxVal-data
     data = np.abs(data)
     data = data.astype(np.int16)
     np.save(debugFolder + "/" + "imgInverted.npy", data)
@@ -164,7 +167,7 @@ In this example, a high-pass filter is applied to images.
         data[:,:,0,0,iImg] = np.asarray(im)[...,0]
 
     # Rescale back to 16-bit
-    data = data * 32767.0/data.max()
+    data = data * maxVal/data.max()
     data = data.astype(np.int16)
     np.save(debugFolder + "/" + "imgFiltered.npy", data)
     ```
@@ -226,52 +229,49 @@ For image processing workflows, DICOM images can be used as input by converting 
     ```
 
 ##  2. <a name='SettingupaworkingenvironmentforthePythonMRDclientserver'></a>Setting up a working environment for the Python MRD client/server
-###  2.1. <a name='Settingupacondaenvironment'></a>Setting up a conda environment
-Conda is a Python environment manager that is useful for creating and maintaining Python packages and their dependencies.  It is available either as part of the larger [Anaconda](https://www.anaconda.com/) product, or separately as part of [Miniconda](https://docs.conda.io/en/latest/miniconda.html).  Although not required, it's helpful in setting up an environment for the Python ISMRMD client/server.
+###  2.1. <a name='Settingupadevcontainerenvironment'></a>Setting up a devcontainer environment
+[Development containers (devcontainers)](https://code.visualstudio.com/docs/devcontainers/containers) are a convenient way of using a Docker image as a working environment instead of installing packages locally.  If the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension is installed in Visual Studio Code, then a prompt will appear when opening this folder to re-open it in a devcontainer.  The devcontainer is also compatible with [GitHub Codespaces](https://github.com/features/codespaces).  Further details can be found in [doc/devcontainers.md](doc/devcontainers.md).
+
+###  2.2. <a name='Settingupacondaenvironment'></a>Setting up a conda environment
+Conda is a Python environment manager that is useful for creating and maintaining Python packages and their dependencies.  It is available either as part of the larger [Anaconda](https://www.anaconda.com/) product, or separately as part of [Miniconda](https://docs.conda.io/en/latest/miniconda.html).  Although not required, it's helpful in setting up an environment for the Python ISMRMD client/server.  [Mamba](https://mamba.readthedocs.io/en/latest/) and [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html) are drop-in replacements for Conda that are often faster at resolving dependencies.  The following instructions are for micromamba, but the command `micromamba` can be replaced with `conda` if conda is preferred.
 
 1. Download and install [Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) for your operating system.
 
-1. Download and install [Anaconda](https://www.anaconda.com/) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for your operating system.
+1. Download and install [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for your operating system.
 
-1. For Windows, open "Anaconda Prompt" from the Start Menu.  In MacOS and Linux, open a standard command prompt.
-
-1. Create a new conda environment for MRD:
-    ```
-    conda create --name mrd python
-    ```
-
-1. Active the new MRD environment
-    ```
-    conda activate mrd
-    ```
-
-1. Create a directory where the Python MRD server and associated repositories should be stored and change to it in the command prompt.
-
-1. Install the ISMRMRD-Python library, which provides Python library functions for working with the MRD standard
-    ```
-    git clone https://github.com/ismrmrd/ismrmrd-python.git
-    pip3 install --no-cache-dir ./ismrmrd-python
-    ```
-
-1. Install the ISMRMRD Python Tools library, which provides additional tools for working with MRD data
-    ```
-    git clone https://github.com/ismrmrd/ismrmrd-python-tools.git
-    pip3 install --no-cache-dir ./ismrmrd-python-tools
-    ```
-
-1. Install additional dependencies used by this repository
-    ```
-    pip3 install --no-cache-dir matplotlib pydicom pynetdicom
-    ```
+1. For Windows, open a powershell prompt.  In MacOS and Linux, open a standard command prompt.
 
 1. Clone (download) this repository
     ```
     git clone https://github.com/kspaceKelvin/python-ismrmrd-server.git
     ```
 
-To use this environment in the future, open a command prompt (an Anaconda Prompt in Windows), and run ``conda activate mrd``.
+1. Change into this respository's directory and create a new conda environment for MRD using the dependencies listed in [environment.yml](environment.yml).  If using Windows, then [environment_windows.yml](environment_windows.yml) should be used instead.
+    ```
+    cd python-ismrmrd-server
+    micromamba create -f environment.yml
+    ```
 
-###  2.2. <a name='SettingupaDockerenvironment'></a>Setting up a Docker environment
+1. Active the new MRD environment
+    ```
+    micromamba activate mrd
+    ```
+
+1. If using Windows, then install the ISMRMRD Python library through pip.  For MacOS and Linux, this was installed through conda.
+    ```
+    pip install ismrmrd
+    ```
+
+1. The [ismrmrd-python-tools](https://github.com/ismrmrd/ismrmrd-python-tools) contain useful libraries for simulations, including generation of simulated raw k-space data used by [generate_cartesian_shepp_logan_dataset](./generate_cartesian_shepp_logan_dataset.py).  Install it by cloning the repository and using `pip install .` (note the trailing `.`) in the folder.
+    ```
+    git clone https://github.com/ismrmrd/ismrmrd-python-tools.git
+    cd ismrmrd-python-tools
+    pip3 install .
+    ```
+
+To use this environment in the future, open a command prompt and run ``micromamba activate mrd``.
+
+###  2.3. <a name='SettingupaDockerenvironment'></a>Setting up a Docker environment
 [Docker](https://www.docker.com/products/docker-desktop) is a virtualization platform that allows software to run in isolated environments called containers.  It provides a convenient mechanism to package up a reconstruction program and all its libraries in a manner that can be easily deployed to other computers without manually installing dependencies or other configuration steps.  
 
 A complete working environment of this respository has been compiled into a Docker image stored on [Docker Hub](https://hub.docker.com/r/kspacekelvin/fire-python).  This can be used to quickly get started, but [setting up a native Python environment](#SetupaDockerEnvironment) is recommended for development work.
@@ -296,7 +296,7 @@ A complete working environment of this respository has been compiled into a Dock
     ```
     -p=9002:9002      Allows access to port 9002 inside the container from port 9002 on the host.  
                       Change the first number to change the host port.
-    -it               Enables “interactive” mode with a pseudo-tty.  This is necessary for “ctrl-c” to
+    -it               Enables "interactive" mode with a pseudo-tty.  This is necessary for "ctrl-c" to
                       stop the program.
     --rm              Remove the container after it is stopped
     -v C:\tmp:/tmp    Maps the C:\tmp folder on the host to /tmp inside the container.
@@ -306,9 +306,16 @@ A complete working environment of this respository has been compiled into a Dock
 
     The server can be stopped by pressing ``ctrl-c``.
 
-1. <a name='Dockerclient'></a>The Python MRD client can also be run in a Docker container.  If the server is running in a Docker container already, open a new command prompt and run:
+1. <a name='Dockerclient'></a>The Python MRD client can also be run in a Docker container (the internal IP address `host.docker.internal` needs to be manually added to the host in the latest version of Docker). If the server is running in a Docker container already, open a new command prompt and run:
+    
+    In Windows:
     ```
-    docker run --rm -it -v C:\tmp:/tmp kspacekelvin/fire-python /bin/bash
+    docker run --rm -it --add-host=host.docker.internal:host-gateway -v C:\tmp:/tmp kspacekelvin/fire-python /bin/bash
+    ```
+
+    In MacOS/Linux:
+    ```
+    docker run --rm -it --add-host=host.docker.internal:host-gateway -v /tmp:/tmp kspacekelvin/fire-python /bin/bash
     ```
 
     In this invocation, the ``/bin/bash`` argument is used to start the container with a bash shell prompt instead of starting the Python MRD server.  The client can be called by running:
@@ -336,21 +343,13 @@ This code is designed to provide a reference implementation of an MRD client/ser
 
 - [main.py](main.py):  This is the main program, parsing input arguments and starting a "Server" class instance.
 
-- [server.py](server.py):  The “Server” class determines which reconstruction algorithm (e.g. "simplefft" or "invertcontrast") is used for the incoming data, based on the requested config information.
+- [server.py](server.py):  The "Server" class determines which reconstruction algorithm (e.g. "simplefft" or "invertcontrast") is used for the incoming data, based on the requested config information.
 
-- [connection.py](connection.py): The “Connection” class handles network communications to/from the client, parsing streaming messages of different types, as detailed in the section on MR Data Message Format.  The connection class also saves incoming data to MRD files if this option is selected.
+- [connection.py](connection.py): The "Connection" class handles network communications to/from the client, parsing streaming messages of different types, as detailed in the [MRD documentation](https://ismrmrd.readthedocs.io/en/latest/mrd_messages.html).  The connection class also saves incoming data to MRD files if this option is selected.
 
 - [constants.py](constants.py): This file contains constants that define the message types of the MRD streaming data format.
 
 - [mrdhelper.py](mrdhelper.py): This class contains helper functions for commonly used MRD tasks such as copying header information from raw data to image data and working with image metadata.
-
-- [simplefft.py](simplefft.py): This file contains code for performing a rudimentary image reconstruction from raw data, consisting of a Fourier transform, sum-of-squares coil combination, signal intensity normalization, and removal of phase oversampling.
-
-- [invertcontrast.py](invertcontrast.py): This program accepts both incoming raw data as well as image data.  The image contrast is inverted and images are sent back to the client.
-
-- [rgb.py](rgb.py): This program accepts incoming image data, applies a jet colormap, and sends RGB images back to the client.
-
-- [analyzeflow.py](analyzeflow.py): This program accepts velocity phase contrast image data and performs basic masking.
 
 - [client.py](client.py): This script can be used to function as the client for an MRD streaming session, sending data from a file to a server and saving the received images to a different file.  Additional description of its usage is provided below.
 
@@ -361,6 +360,18 @@ This code is designed to provide a reference implementation of an MRD client/ser
 - [mrd2dicom.py](mrd2dicom.py): This program converts an MRD image .h5 file to a folder of DICOM images.
 
 - [mrd2gif.py](mrd2gif.py): This program converts an MRD image .h5 file into an animated GIF for quick previews.
+
+There are several example "modules" that can be selected by specifying their name via the config (`-c`) argument:
+- [invertcontrast.py](invertcontrast.py): This module accepts both incoming raw data as well as image data.  The image contrast is inverted and images are sent back to the client.
+
+- [simplefft.py](simplefft.py): This module contains code for performing a rudimentary image reconstruction from raw data, consisting of a Fourier transform, sum-of-squares coil combination, signal intensity normalization, and removal of phase oversampling.
+
+- [analyzeflow.py](analyzeflow.py): This module accepts velocity phase contrast image data and performs basic masking.
+
+- [report.py](report.py): This module provides an example of generating report from a dictionary of parameters (keys) and their corresponding values.  An image with a text table is returned to the client and values are stored in the MetaAttributes to allow for batch scripted parsing.
+
+### 3.1 <a name='Jsonconfig'></a>Additional (JSON) config
+It is often useful for a client to provide additional configuration parameters during runtime to a module without changing code in the module itself.  For example this could be used to tune filter parameters, toggle additional outputs, or control optional processing steps.  The [client.py](client.py) is configured to look for a config file in the current folder, matching the name of the module and ending in `.json`, e.g. `invertcontrast.json` if the config module is named `invertcontrast`.  The example [invertcontrast.json](invertcontrast.json) can be modified with the `options` parameter set to `roi` to add an example ROI, `colormap` to add a color lookup table, and `rgb` to return an RGB image.
 
 ##  4. <a name='Savingincomingdata'></a>Saving incoming data
 It may be desirable for the MRD server to save a copy of incoming data from the client.  For example, if the client is an MRI scanner, then the saved data can be used for offline simulations at a later time.  This may be particularly useful when the MRI scanner client is sending image data, as images are not stored in a scanner's raw data file and would otherwise require offline simulation of the MRI scanner reconstruction as well.
@@ -384,3 +395,20 @@ There are three scripts that may be useful when starting the Python server in a 
 - [sync-code-and-start-fire-python-server.sh](sync-code-and-start-fire-python-server.sh):  This script copies all files from ``/tmp/share/code/`` to ``/opt/code/python-ismrmrd-server/``.  These paths are relative to the chroot container and when run with FIRE, ``/tmp/share/code/`` is a shared folder from the host computer at ``%CustomerIceProgs%\fire\share\code\``.  This "sync" step allows Python code to be modified on the host computer and executed by the Python reconstruction process.  The Python reconstruction program is then started in the same way as in [start-fire-python-server.sh](start-fire-python-server.sh).  This is the startup script specified in the default fire.ini configuration file.  However, this script should not be used in stable projects, as overwriting existing files with those in ``/tmp/share/code`` is likely undesirable.
 
 - [start-fire-python-server-with-data-storage.sh](start-fire-python-server-with-data-storage.sh):  This script is the same as [start-fire-python-server.sh](start-fire-python-server.sh), but saves incoming data (raw k-space readouts or images) to files in ``/tmp/share/saved_data``, which is on the host computer at ``%CustomerIceProgs%\fire\share\saved_data``.  This is useful to save a copy of MRD formatted data (particularly for image-based workflows) for offline development, but this option should be used carefully, as raw data can be quite large and can overwhelm the limited hard drive space on the Windows host.
+
+##  6. <a name='CustomDockers'></a>Building a custom Docker image
+Integration of a custom module into a MRD server using this repository can often be achieved by creating only the module itself and using the server framework of python-ismrmrd-server without modification.  This can greatly simplify development and maintenance.
+
+To implement a new module, create a copy of an example one (e.g. [invertcontrast.py](invertcontrast.py)) as a starting point with a new name.  Add the required functionality to this module and optionally create a JSON config for real-time configuration (see [invertcontrast.json](invertcontrast.json) for example).
+
+The `kspacekelvin/fire-python` and `kspacekelvin/fire-python-devcon` Docker images can be used as starting points for building a custom Docker image.  The custom Dockerfile then only needs to copy over the module's .py (and .json if applicable) files and install required dependencies/packages.
+
+An example of this approach is provided in the [custom](./custom) folder, which contains:
+- [filter.py](./custom/filter.py): A module derived from [invertcontrast.py](invertcontrast.py) that implements an image [median_filter from the scipy package](https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.median_filter.html).  Compare this file to [invertcontrast.py from this commit](https://github.com/kspaceKelvin/python-ismrmrd-server/blob/3f52bf1504b1fed56b28d29b9fff560c5138e9f3/invertcontrast.py) see to the changes made.
+- [filter.json](./custom/filter.json): A JSON config file that allows configuration of the median filter window size by the client during runtime.
+- [custom.dockerfile](./custom/custom.dockerfile): A simplified Dockerfile that uses this python-ismrmrd-server Docker as a starting point.
+
+To build the custom Docker image, open a terminal in the `custom` folder and run:
+```
+docker build --no-cache -t fire-python-custom -f custom.dockerfile ./
+```

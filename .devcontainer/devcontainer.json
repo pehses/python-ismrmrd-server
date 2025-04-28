@@ -1,0 +1,40 @@
+{
+	"name": "python-ismrmrd-server-devcon",
+
+	"build": {
+		"dockerfile": "../docker/Dockerfile",
+		"target":     "python-mrd-devcontainer",
+		"context":    "../",
+		"cacheFrom":  [
+			"docker.io/kspacekelvin/fire-python-devcon",
+			"docker.io/kspacekelvin/fire-python:buildcache"]
+	},
+
+	// To enable your local GPUs in container if they are on enabled by default
+	// "runArgs": [ "--gpus=all" ],
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	"forwardPorts": [
+		9002
+	],
+
+	// Default setting for Windows changes files to CRLF, so match this to avoid all files
+	// being marked as changed.  Could be disabled for non-Windows hosts
+	"postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel",
+
+	"customizations": {
+		"vscode": {
+			// Add the IDs of extensions you want installed when the container is created.
+			"extensions": [
+				"ms-python.debugpy",
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter"
+			],
+
+			"settings": { 
+				"terminal.integrated.defaultProfile.linux": "bash"
+			}
+		}
+	}
+}

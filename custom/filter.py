@@ -5,6 +5,7 @@ import logging
 import traceback
 import numpy as np
 import numpy.fft as fft
+from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 import xml.dom.minidom
 import base64
@@ -149,7 +150,7 @@ def process_raw(acqGroup, connection, config, mrdHeader):
 
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder, mode=0o774)
+        os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Format data into single [cha PE RO phs] array
@@ -260,7 +261,7 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder, mode=0o774)
+        os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     logging.debug("Processing data with %d images of type %s", len(imgGroup), ismrmrd.get_dtype_from_data_type(imgGroup[0].data_type))
@@ -302,10 +303,12 @@ def process_image(imgGroup, connection, config, mrdHeader):
         data = np.around(data)
         data = data.astype(np.int16)
 
-    # Invert image contrast
-    data = maxVal-data
-    data = np.abs(data)
-    np.save(debugFolder + "/" + "imgInverted.npy", data)
+    # Apply median filter
+    filterSize = mrdhelper.get_json_config_param(config, 'filterSize', default=0, type='int')
+    if filterSize > 0:
+        logging.info(f'Applying median filter with size {filterSize}')
+        data = median_filter(data, size=filterSize)
+        np.save(debugFolder + "/" + "imgFiltered.npy", data)
 
     if mrdhelper.get_json_config_param(config, 'options') == 'rgb':
         logging.info('Converting data into RGB')
@@ -371,10 +374,10 @@ def process_image(imgGroup, connection, config, mrdHeader):
         # Create a copy of the original ISMRMRD Meta attributes and update
         tmpMeta = meta[iImg]
         tmpMeta['DataRole']                       = 'Image'
-        tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'INVERT']
+        tmpMeta['ImageProcessingHistory']         = ['PYTHON', 'FILT']
         tmpMeta['WindowCenter']                   = str((maxVal+1)/2)
         tmpMeta['WindowWidth']                    = str((maxVal+1))
-        tmpMeta['SequenceDescriptionAdditional']  = 'FIRE'
+        tmpMeta['SequenceDescriptionAdditional']  = 'FILT'
         tmpMeta['Keep_image_geometry']            = 1
 
         if mrdhelper.get_json_config_param(config, 'options') == 'roi':
@@ -397,6 +400,18 @@ def process_image(imgGroup, connection, config, mrdHeader):
 
             # RGB images shouldn't undergo further processing, e.g. orientation or distortion correction
             tmpMeta['InternalSend'] = 1
+
+        # Note the filtering in the ImageComments
+        if filterSize > 0:
+            tmpMeta['ImageComments'] = f'Median filter size {filterSize}'
+
+        # Add additional comments passed from config
+        comments = mrdhelper.get_json_config_param(config, 'comments', default='')
+        if comments != '':
+            if tmpMeta.get('ImageComments') is None:
+                tmpMeta['ImageComments'] = comments
+            else:
+                tmpMeta['ImageComments'] = tmpMeta['ImageComments'] + '\n' + comments
 
         # Add image orientation directions to MetaAttributes if not already present
         if tmpMeta.get('ImageRowDir') is None:

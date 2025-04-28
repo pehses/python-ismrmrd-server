@@ -13,14 +13,21 @@ import multiprocessing
 from connection import Connection
 import time
 import os
+import json
 
 defaults = {
-    'address':        'localhost',
-    'port':           9002, 
-    'outfile':        'out.h5',
-    'out_group':      str(datetime.datetime.now()),
-    'config':         'default.xml',
-    'send_waveforms': False
+    'filename':           '',
+    'in_group':           '',
+    'address':            'localhost',
+    'port':               9002, 
+    'outfile':            'out.h5',
+    'out_group':          str(datetime.datetime.now()),
+    'config':             'invertcontrast',
+    'config_local':       '',
+    'ignore_json_config': False,
+    'send_waveforms':     False,
+    'verbose':            False,
+    'logfile':            ''
 }
 
 def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, recvAcqs, recvImages, recvWaveforms):
@@ -68,6 +75,16 @@ def main(args):
             logging.error("Could not find local config file %s", args.config_local)
             return
 
+    localConfigAdditionalText = None
+    if (args.config):
+        configAdditionalFile = args.config + '.json'
+        if os.path.exists(configAdditionalFile):
+            logging.info("Found additional config file %s", configAdditionalFile)
+
+            fid = open(configAdditionalFile, 'r')
+            localConfigAdditionalText = fid.read()
+            fid.close()
+
     dset = h5py.File(args.filename, 'r')
     if not dset:
         logging.error("Not a valid dataset: %s" % args.filename)
@@ -106,32 +123,22 @@ def main(args):
     #   /group/image_0/data        array of IsmrmrdImage data
     #   /group/image_0/header      array of ImageHeader
     #   /group/image_0/attributes  text of image MetaAttributes
-    isRaw   = False
-    isImage = False
+    hasRaw   = False
+    hasImage = False
     hasWaveforms = False
 
-    if ( ('data' in group) and ('xml' in group) ):
-        isRaw = True
-    else:
-        isImage = True
-        imageNames = group.keys()
-        logging.info("Found %d image sub-groups: %s", len(imageNames), ", ".join(imageNames))
-        # print(" ", "\n  ".join(imageNames))
-
-        for imageName in imageNames:
-            if ((imageName == 'xml') or (imageName == 'config') or (imageName == 'config_file')):
-                continue
-
-            image = group[imageName]
-            if not (('data' in image) and ('header' in image) and ('attributes' in image)):
-                isImage = False
+    if ('data' in group):
+        hasRaw = True
+    
+    if len([key for key in group.keys() if (key.startswith('image_') or key.startswith('images_'))]) > 0:
+        hasImage = True
 
     if ('waveforms' in group):
         hasWaveforms = True
 
     dset.close()
 
-    if ((isRaw is False) and (isImage is False)):
+    if ((hasRaw is False) and (hasImage is False)):
         logging.error("File does not contain properly formatted MRD raw or image data")
         return
 
@@ -139,7 +146,25 @@ def main(args):
     # Spawn a thread to connect and handle incoming data
     logging.info("Connecting to MRD server at %s:%d" % (args.address, args.port))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((args.address, args.port))
+
+    attempt     = 0
+    maxAttempts = 5
+    success     = False
+    while attempt < maxAttempts:
+        try:
+            sock.connect((args.address, args.port))
+        except socket.error as error:
+            logging.warning("Failed to connect (%d/%d): %s" % (attempt+1, maxAttempts, error))
+            time.sleep(1)
+            attempt += 1
+        else:
+            success = True
+            attempt = maxAttempts
+
+    if not success:
+        sock.close()
+        logging.error("... Aborting")
+        return
 
     recvAcqs      = multiprocessing.Value('i', 0)
     recvImages    = multiprocessing.Value('i', 0)
@@ -176,6 +201,55 @@ def main(args):
         xml_header = "Dummy XML header"
     connection.send_metadata(xml_header)
 
+    # --------------- Send additional config -----------------------
+    groups = dset.list()
+    if localConfigAdditionalText is None:
+        if ('configAdditional' in groups):
+            configAdditionalText = dset._dataset['configAdditional'][0]
+            configAdditionalText = configAdditionalText.decode("utf-8")
+
+            if args.ignore_json_config:
+                # Remove the config specified in the JSON, allowing the config passed via command line to the client to be used
+                configAdditional = json.loads(configAdditionalText)
+                if ('parameters' in configAdditional):
+                    if ('config' in configAdditional['parameters']):
+                        logging.warning(f"Input file contains JSON configAdditional that specifies config '{configAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
+                        del configAdditional['parameters']['config']
+
+                    if ('customconfig' in configAdditional['parameters']):
+                        if configAdditional['parameters']['customconfig'] != '':
+                            logging.warning(f"Input file contains JSON configAdditional that specifies customconfig '{configAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
+                        del configAdditional['parameters']['customconfig']
+
+                    configAdditionalText = json.dumps(configAdditional, indent=2)
+
+            logging.info("Sending configAdditional found in file %s:\n%s", args.filename, configAdditionalText)
+            connection.send_text(configAdditionalText)
+        else:
+            # Do nothing -- no additional config in local .json file or in MRD file
+            pass
+    else:
+        if ('configAdditional' in groups):
+            logging.warning("configAdditional found in file %s, but is overriden by local file %s!", args.filename, configAdditionalFile)
+
+        if args.ignore_json_config:
+            # Remove the config specified in the JSON, allowing the config passed via command line to the client to be used
+            localConfigAdditional = json.loads(localConfigAdditionalText)
+            if ('parameters' in localConfigAdditional):
+                if ('config' in localConfigAdditional['parameters']):
+                    logging.warning(f"configAdditional file '{configAdditionalFile}' specifies config '{localConfigAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
+                    del localConfigAdditional['parameters']['config']
+
+                if ('customconfig' in localConfigAdditional['parameters']):
+                    if localConfigAdditional['parameters']['customconfig'] != '':
+                        logging.warning(f"configAdditional file '{configAdditionalFile}' specifies customconfig '{localConfigAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
+                    del localConfigAdditional['parameters']['customconfig']
+
+                localConfigAdditionalText = json.dumps(localConfigAdditional, indent=2)
+
+        logging.info("Sending configAdditional found in file %s:\n%s", configAdditionalFile, localConfigAdditionalText)
+        connection.send_text(localConfigAdditionalText)
+
     # --------------- Send waveform data ----------------------
     # TODO: Interleave waveform and other data so they arrive chronologically
     if hasWaveforms:
@@ -188,12 +262,13 @@ def main(args):
                 try:
                     connection.send_waveform(wav)
                 except:
-                    logging.error('Failed to send waveform %d' % idx)
+                    logging.error('Failed to send waveform %d -- aborting!' % idx)
+                    break
         else:
             logging.info("Waveform data present, but send-waveforms option turned off")
 
     # --------------- Send raw data ----------------------
-    if isRaw:
+    if hasRaw:
         logging.info("Starting raw data session")
         logging.info("Found %d raw data readouts", dset.number_of_acquisitions())
 
@@ -202,16 +277,13 @@ def main(args):
             try:
                 connection.send_acquisition(acq)
             except:
-                logging.error('Failed to send acquisition %d' % idx)
+                logging.error('Failed to send acquisition %d -- aborting!' % idx)
+                break
 
     # --------------- Send image data ----------------------
-    else:
+    if hasImage:
         logging.info("Starting image data session")
-        for group in groups:
-            if ( (group == 'config') or (group == 'config_file') or (group == 'xml') ):
-                logging.info("Skipping group %s", group)
-                continue
-
+        for group in [key for key in groups if (key.startswith('image_') or key.startswith('images_'))]:
             logging.info("Reading images from '/" + args.in_group + "/" + group + "'")
 
             for imgNum in range(0, dset.number_of_images(group)):
@@ -221,10 +293,17 @@ def main(args):
                     image.attribute_string = image.attribute_string.decode('utf-8')
 
                 logging.debug("Sending image %d of %d", imgNum, dset.number_of_images(group)-1)
-                connection.send_image(image)
+                try:
+                    connection.send_image(image)
+                except:
+                    logging.error('Failed to send image %d -- aborting!' % imgNum)
+                    break
 
     dset.close()
-    connection.send_close()
+    try:
+        connection.send_close()
+    except:
+        logging.error('Failed to send close message!')
 
     # Wait for incoming data and cleanup
     logging.debug("Waiting for threads to finish")
@@ -240,9 +319,9 @@ def main(args):
     dset.close()
 
     logging.info("---------------------- Summary ----------------------")
-    logging.info("Sent %4d acquisitions  |  Received %4d acquisitions", connection.sentAcqs,      recvWaveforms.value)
-    logging.info("Sent %4d images        |  Received %4d images",       connection.sentImages,    recvImages.value)
-    logging.info("Sent %4d waveforms     |  Received %4d waveforms",    connection.sentWaveforms, recvWaveforms.value)
+    logging.info("Sent %5d acquisitions  |  Received %5d acquisitions", connection.sentAcqs,      recvWaveforms.value)
+    logging.info("Sent %5d images        |  Received %5d images",       connection.sentImages,    recvImages.value)
+    logging.info("Sent %5d waveforms     |  Received %5d waveforms",    connection.sentWaveforms, recvWaveforms.value)
     logging.info("Session complete")
 
     return
@@ -251,17 +330,18 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Example client for MRD streaming format',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('filename',                                    help='Input file')
-    parser.add_argument('-a', '--address',                             help='Address (hostname) of MRD server')
-    parser.add_argument('-p', '--port',           type=int,            help='Port')
-    parser.add_argument('-o', '--outfile',                             help='Output file')
-    parser.add_argument('-g', '--in-group',                            help='Input data group')
-    parser.add_argument('-G', '--out-group',                           help='Output group name')
-    parser.add_argument('-c', '--config',                              help='Remote configuration file')
-    parser.add_argument('-C', '--config-local',                        help='Local configuration file')
-    parser.add_argument('-w', '--send-waveforms', action='store_true', help='Send waveform (physio) data')
-    parser.add_argument('-v', '--verbose',        action='store_true', help='Verbose mode')
-    parser.add_argument('-l', '--logfile',                  type=str,  help='Path to log file')
+    parser.add_argument('filename',                                        help='Input file')
+    parser.add_argument('-a', '--address',                                 help='Address (hostname) of MRD server')
+    parser.add_argument('-p', '--port',               type=int,            help='Port')
+    parser.add_argument('-o', '--outfile',                                 help='Output file')
+    parser.add_argument('-g', '--in-group',                                help='Input data group')
+    parser.add_argument('-G', '--out-group',                               help='Output group name')
+    parser.add_argument('-c', '--config',                                  help='Remote configuration file')
+    parser.add_argument('-C', '--config-local',                            help='Local configuration file')
+    parser.add_argument('-w', '--send-waveforms',     action='store_true', help='Send waveform (physio) data')
+    parser.add_argument('-v', '--verbose',            action='store_true', help='Verbose mode')
+    parser.add_argument('-l', '--logfile',                      type=str,  help='Path to log file')
+    parser.add_argument(      '--ignore-json-config', action='store_true', help='Ignore config specified in JSON')
 
     parser.set_defaults(**defaults)
 
@@ -279,5 +359,9 @@ if __name__ == '__main__':
         logging.root.setLevel(logging.DEBUG)
     else:
         logging.root.setLevel(logging.INFO)
+
+    # If a config is specified via the command line arguments, then set ignore_json_config to True
+    if ('-c' in sys.argv) or ('--config' in sys.argv):
+        args.ignore_json_config = True
 
     main(args)

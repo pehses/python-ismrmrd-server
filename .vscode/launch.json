@@ -1,12 +1,7 @@
 {
     // For debugging inside a Docker Container:
-    // 1. Install the Remote-Container extension
-    // 2. Run the Container AS ROOT WITHOUT starting the MRD Server
-    // 3. Attach to container in the Remote-Container extension, a new window will open with a VS Code environment inside the container
-    // 4. Open the python-ismrmrd-server folder as workspace
-    // 5. Maybe the Python extension has to be installed inside the container
-    // 6. Run the debugger on any script -> MRD Server will be started
-    // 7. Send MRD data to the server and use debugging tools
+    // 1. Run "Dev Containers: Reopen in Container" from command palette
+    // 2. Run "Start server" from the Run and Debug panel on the left
 
     "version": "0.2.0",
     "configurations": [
@@ -17,13 +12,14 @@
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
             "args": [
-                "-p", "9020",
+                "-p", "9002",
                 // "-v",
                 // "-s"
             ],
             "console": "integratedTerminal",
             "consoleTitle": "Server",
             "justMyCode": true,
+            "python": "/opt/venv/bin/python",
         },
 
         // Run client
@@ -34,13 +30,14 @@
             "program": "${workspaceFolder}/client.py",
             "args": [
                 "${workspaceFolder}/data/shepplogan_raw.mrd",
-                "-p", "9020",
+                "-p", "9002",
                 "-c", "invertcontrast",
                 "-o", "${workspaceFolder}/data/shepplogan_recon.mrd"
             ],
             "console": "integratedTerminal",
             "consoleTitle": "Client",
             "justMyCode": true,
+            "python": "/opt/venv/bin/python",
         },
     ],
     "compounds":

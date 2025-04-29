@@ -1,26 +1,35 @@
 {
 	"name": "python-ismrmrd-server-devcon",
 
-	"build": {
-		"dockerfile": "../docker/Dockerfile",
-		"target":     "python-mrd-devcontainer",
-		"context":    "../",
-		"cacheFrom":  [
-			"docker.io/kspacekelvin/fire-python-devcon",
-			"docker.io/kspacekelvin/fire-python:buildcache"]
-	},
+	// "build": {
+	// 	"dockerfile": "../docker/bart_pg_gpu/Dockerfile",
+	// 	// "target":     "python-mrd-devcontainer",
+	// 	"context":    "../docker/bart_pg_gpu/"
+	// 	// "cacheFrom":  [
+	// 	// 	"docker.io/kspacekelvin/fire-python-devcon",
+	// 	// 	"docker.io/kspacekelvin/fire-python:buildcache"]
+	// },
+
+	"image": "bart_pg_gpu",
 
 	// To enable your local GPUs in container if they are on enabled by default
-	// "runArgs": [ "--gpus=all" ],
-
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [
-		9002
+	"runArgs": [
+		"--gpus=all",
+		"-p", "9022:9002",
+		"-v", "/dev/shm:/dev/shm:rw",
+		"-v", "${localEnv:RECO_SERVER_PATH}:/tmp/share:rw",
+		"-v", "${localEnv:FALLBACK_PROTOCOL_PATH}:/tmp/local/metadata:rw",
+		"-v", "${localEnv:RECO_SERVER_PATH}/python-ismrmrd-server:/opt/code/python-ismrmrd-server:rw"
 	],
+
+	// // Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [
+	// 	9002
+	// ],
 
 	// Default setting for Windows changes files to CRLF, so match this to avoid all files
 	// being marked as changed.  Could be disabled for non-Windows hosts
-	"postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel",
+	// "postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel",
 
 	"customizations": {
 		"vscode": {
@@ -33,7 +42,8 @@
 			],
 
 			"settings": { 
-				"terminal.integrated.defaultProfile.linux": "bash"
+				"terminal.integrated.defaultProfile.linux": "bash",
+				"python.pythonPath": "/opt/venv/bin/python"
 			}
 		}
 	}

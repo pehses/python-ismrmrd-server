@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.6.2-devel-ubuntu20.04 AS reco_base
+FROM nvidia/cuda:12.6.2-devel-ubuntu24.04 AS reco_base
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -7,16 +7,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
-       wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils \
+       wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils cmake \
        libfftw3-dev git build-essential gfortran liblapacke-dev libpng-dev libopenblas-dev libboost-all-dev libxml2-dev libxslt1-dev libssl-dev curl libpugixml-dev libxml2-utils
-
-# Install Latest CMake
-RUN  apt install software-properties-common --no-install-recommends --no-install-suggests --yes \
-     && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null \
-     && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
-     && apt update \
-     && apt install cmake-data=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes \
-     && apt install cmake=3.21.1-0kitware1ubuntu20.04.1 --no-install-recommends --no-install-suggests --yes
 
 # Install mkl
 COPY ./mkl.sh /tmp/
@@ -61,15 +53,15 @@ RUN  cd /opt/code \
 ### Dependencies for PowerGrid ###
 
 # Download and install NVIDIA HPC SDK
-RUN  wget https://developer.download.nvidia.com/hpc-sdk/22.11/nvhpc_2022_2211_Linux_x86_64_cuda_11.8.tar.gz \
-     && tar xpzf nvhpc_2022_2211_Linux_x86_64_cuda_11.8.tar.gz \
-     && nvhpc_2022_2211_Linux_x86_64_cuda_11.8/install
+RUN  wget https://developer.download.nvidia.com/hpc-sdk/25.1/nvhpc_2025_251_Linux_x86_64_cuda_12.6.tar.gz \
+     && tar xpzf nvhpc_2025_251_Linux_x86_64_cuda_12.6.tar.gz \
+     && nvhpc_2025_251_Linux_x86_64_cuda_12.6/install
 
 # Load NVIDIA HPC SDK modules
 ENV NVARCH=Linux_x86_64
 ENV NVHPC=/opt/nvidia/hpc_sdk
-ENV HPCSDK_VERSION=22.11
-ENV HPCSDK_RELEASE=2022
+ENV HPCSDK_VERSION=25.1
+ENV HPCSDK_RELEASE=2025
 ENV CUDA_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/cuda"
 ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/man"
 ENV LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH}"
@@ -89,8 +81,8 @@ ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/bin:${PATH}"
 ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/man"
 
 # Install custom compile of boost - only necessary runtime components
-RUN wget -O ~/boost_1_75_0.tar.bz2 -c 'https://sourceforge.net/projects/boost/files/boost/1.75.0/boost_1_75_0.tar.bz2/download' --max-redirect=100 \
-    && apt-get -y remove --purge libboost-all-dev \
+RUN apt-get -y remove --purge libboost-all-dev \
+    && wget -O ~/boost_1_75_0.tar.bz2 -c 'https://archives.boost.io/release/1.75.0/source/boost_1_75_0.tar.bz2' --max-redirect=100 \
     && cd ~ \
     && tar xjf ~/boost_1_75_0.tar.bz2 \
     && cd ~/boost_1_75_0/ \
@@ -136,7 +128,7 @@ RUN  cd /opt/code \
      && make -j4 && make install    
 
 # ----- Start another clean build without all of the build dependencies-----
-FROM nvidia/cuda:12.6.2-runtime-ubuntu20.04
+FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -181,19 +173,24 @@ COPY --from=reco_base ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3-dev python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils \
-     && pip3 install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd despike julia
+        ca-certificates nano git gcc python3-dev python3-venv h5utils libxslt1.1 libfftw3-double3 libfftw3-single3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils
 
+# Create virtual environment
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+RUN pip install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd despike julia
+     
 RUN  mkdir -p /opt/code
 
 RUN  cd /opt/code \
-     && pip3 install SpiralTraj* \
+     && pip install SpiralTraj* \
      && rm SpiralTraj*
 
 RUN  cd /opt/code \
      && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \
      && cd /opt/code/ismrmrd-python-tools \
-     && python3 setup.py install
+     && pip install .
 
 RUN  cd /opt/code \
      && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git

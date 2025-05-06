@@ -852,8 +852,10 @@ def fill_masked_voxels(input_array, mask, k=10):
     # Get the dimensionality of the input
     is_3d = input_array.ndim == 3
 
-    # Get indices of points inside the mask
+    # Get indices of points inside the mask and check if number of indices smaller than k
     inside_mask_indices = np.argwhere(mask)
+    max_k = inside_mask_indices.shape[0]
+    k = min(k, max_k)
 
     # Build KDTree for points inside the mask
     tree = KDTree(inside_mask_indices)
@@ -863,6 +865,9 @@ def fill_masked_voxels(input_array, mask, k=10):
 
     # Query the KDTree to find k nearest neighbors within the mask for all points outside the mask
     distances, ind = tree.query(outside_mask_indices, k=k)
+    if k == 1:
+        ind = ind[:, np.newaxis]
+        distances = distances[:, np.newaxis]
 
     # Get the coordinates of the k nearest neighbors for each point outside the mask
     neighbor_coords = inside_mask_indices[ind]

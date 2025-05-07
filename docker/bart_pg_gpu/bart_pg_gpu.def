@@ -1,0 +1,16 @@
+Bootstrap: docker
+
+From: mavel101/bart_pg_gpu:latest
+
+%runscript
+    #!/bin/bash
+
+    if [ -z "$1" ]; then
+        echo "Error: Port number must be provided as the first argument."
+        echo "Usage: apptainer run container.sif <port>"
+        exit 1
+    fi
+
+    PORT=$1
+
+    exec /opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p="$PORT" -l=/tmp/share/debug/python-ismrmrd-server.log

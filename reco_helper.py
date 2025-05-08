@@ -24,8 +24,15 @@ import scipy.ndimage as scn
 
 from bart import bart
 
-# Root sum of squares
+def log_bart_stdout():
+    try:
+        logging.debug(bart.stdout)
+        if bart.ERR < 0:
+            logging.debug(bart.stderr)
+    except:
+        print("BART logging failed. stdout not available.")
 
+# Root sum of squares
 def rss(img, axis=-1):
     # root sum of squares along a given axis
     return np.sqrt(np.sum(np.abs(img)**2, axis=axis))
@@ -526,6 +533,7 @@ def calc_dcf(traj):
 
 def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
+    log_bart_stdout()
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
 def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, softsense=False, chunk_sz=None, use_gpu=False):
@@ -605,6 +613,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
     while sensmaps.ndim < ndim:
         sensmaps = sensmaps[..., np.newaxis]
 
+    log_bart_stdout()
     logging.debug(f"Finished sensitivity map calculation after {time.perf_counter()-start:.2f} s.")
 
     return sensmaps

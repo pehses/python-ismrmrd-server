@@ -175,11 +175,12 @@ def process(connection, config, metadata, prot_file):
     # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1 # all slices acquired (not reduced by sms factor)
     n_contr = reco_n_contr if reco_n_contr else metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_phs = metadata.encoding[0].encodingLimits.phase.maximum + 1
     half_refscan = True if metadata.encoding[0].encodingLimits.segment.center else False # segment center is misused as indicator for halved number of refscan slices
     if half_refscan and n_slc%2:
         raise ValueError("Odd number of slices with halved number of refscan slices is invalid.")
 
-    acqGroup = [[[] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
+    acqGroup = [[[[] for _ in range(n_phs)] for _ in range(n_contr)] for _ in range(n_slc//sms_factor)]
     noiseGroup = []
 
     acsGroup = [[] for _ in range(n_slc)]
@@ -316,7 +317,7 @@ def process(connection, config, metadata, prot_file):
                     rh.remove_os_spiral(item)
 
                 # append item
-                acqGroup[item.idx.slice][item.idx.contrast].append(item)
+                acqGroup[item.idx.slice][item.idx.contrast][item.idx.phase].append(item)
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
@@ -340,11 +341,13 @@ def process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord
 
 def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=False):
 
+    acq0 = acqGroup[0][0][0][0]
+
     # Make temporary directory for PowerGrid file in debug folder
     tmpdir = tempfile.TemporaryDirectory(dir=debugFolder)
     tempdir = tmpdir.name
     logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
-    tmp_file = tempdir+"/PowerGrid_tmpfile.h5"
+    tmp_file = os.path.join(tempdir, "PowerGrid_tmpfile.h5")
 
     # Write ISMRMRD file for PowerGrid
     dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
@@ -363,11 +366,11 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
     # Calculate and insert DCF
-    rotmat = rh.calc_rotmat(acqGroup[0][0][0])
-    traj = rh.dcs_to_gcs(acqGroup[0][0][0].traj[:,:3].T, rotmat).T[:,:2]
+    rotmat = rh.calc_rotmat(acq0)
+    traj = rh.dcs_to_gcs(acq0.traj[:,:3].T, rotmat).T[:,:2]
     dcf = rh.calc_dcf(traj)
     dcf /= np.max(dcf)
-    dcf2 = np.tile(dcf, acqGroup[0][0][0].active_channels)
+    dcf2 = np.tile(dcf, acq0.active_channels)
     dset_tmp.append_array("DCF", dcf2.astype(np.float64))
 
     # Calculate and insert Sensitivity Maps
@@ -447,8 +450,9 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         avgData = [[] for _ in range(n_avg)]
         for slc in acqGroup:
             for contr in slc:
-                for acq in contr:
-                    avgData[acq.idx.average].append(acq.data[:])
+                for phs in contr:
+                    for acq in phs:
+                        avgData[acq.idx.average].append(acq.data[:])
         avgData = np.mean(avgData, axis=0)
 
     # Insert acquisitions
@@ -459,23 +463,23 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     contr_ctr = -1
     for slc in acqGroup:
         for contr in slc:
-            for acq in contr:
-                if avg_before:
-                    if acq.idx.average == 0:
-                        acq.data[:] = avgData[avg_ix]
-                        avg_ix += 1
-                    else:
+            for phs in contr:
+                for acq in phs:
+                    if avg_before:
+                        if acq.idx.average == 0:
+                            acq.data[:] = avgData[avg_ix]
+                            avg_ix += 1
+                        else:
+                            continue
+                    if reco_n_contr and acq.idx.repetition > 0:
                         continue
-                if reco_n_contr and acq.idx.repetition > 0:
-                    continue
-                if acq.idx.contrast > contr_ctr:
-                    contr_ctr += 1
-                    bvals.append(acq.user_int[0])
-                    dirs.append(acq.user_float[:3])
-                    if 'bDeltas' in prot_arrays:
-                        bDeltas.append(acq.user_int[1])
-
-                dset_tmp.append_acquisition(acq)
+                    if acq.idx.contrast > contr_ctr:
+                        contr_ctr += 1
+                        bvals.append(acq.user_int[0])
+                        dirs.append(acq.user_float[:3])
+                        if 'bDeltas' in prot_arrays:
+                            bDeltas.append(acq.user_int[1])
+                    dset_tmp.append_acquisition(acq)
 
     bvals = np.asarray(bvals)
     dirs = np.asarray(dirs)
@@ -694,9 +698,9 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                         for slc in range(dsets[key].shape[3]):
                             img_ix += 1
                             for nz in range(dsets[key].shape[4]):
-                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
-                                meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
-                                meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
+                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0][0])
+                                meta['ImageRowDir'] = ["{:.18f}".format(acq0.read_dir[0]), "{:.18f}".format(acq0.read_dir[1]), "{:.18f}".format(acq0.read_dir[2])]
+                                meta['ImageColumnDir'] = ["{:.18f}".format(acq0.phase_dir[0]), "{:.18f}".format(acq0.phase_dir[1]), "{:.18f}".format(acq0.phase_dir[2])]
                                 image.image_index = img_ix
                                 image.image_series_index = series_ix
                                 image.slice = slc
@@ -725,7 +729,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         else:
             # ADC maps, Refimg, Fmap & SNR maps
             for slc, img in enumerate(dsets[key]):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                image = ismrmrd.Image.from_array(img[0], acquisition=acq0)
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc

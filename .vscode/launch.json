@@ -13,7 +13,8 @@
             "program": "${workspaceFolder}/main.py",
             "args": [
                 "-p", "9002",
-                // "-v",
+                "-v",
+                "-l=/tmp/share/debug/python-ismrmrd-server.log",
                 // "-s"
             ],
             "console": "integratedTerminal",

@@ -514,9 +514,9 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
         # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
         mps_server = True
+        cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
         try:
             subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
         except subprocess.CalledProcessError as e:
             logging.debug("MPS Server not started. See error messages below.")
             logging.debug(e.stdout)

@@ -12,14 +12,14 @@ apt update && apt install -y --force-yes apt-transport-https && \
   (find /opt/intel -name "documentation*" -exec rm -rf {} \; || echo "removing documentation") ; \
   (rm -rf /opt/intel/mkl/interfaces ) ; \
   (rm -rf /opt/intel/mkl/lib/intel64/*.a ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*mpi*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*tbb*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*pgi*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*mc*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*blacs*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*scalapack*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*gf*.so ) ; \
-  (rm -rf /opt/intel/mkl/lib/intel64/*mic*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*mpi*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*tbb*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*pgi*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*mc*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*blacs*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*scalapack*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*gf*.so ) ; \
+  # (rm -rf /opt/intel/mkl/lib/intel64/*mic*.so ) ; \
   # apt purge intel-tbb* intel-psxe* && \
   apt-get clean autoclean && \
   apt-get autoremove -y && \

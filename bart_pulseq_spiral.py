@@ -383,6 +383,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         # correct orientation at scanner (consistent with ICE)
         data = np.swapaxes(data, 0, 1)
         data = np.flip(data, (0,1,2))
+        if data.ndim == 3: # if only 1 slice, BART removes the last 2 dims
+            data = data[..., np.newaxis, np.newaxis]
         data = np.moveaxis(data, -1, 0)[...,0] # [slc,x,y,z]
         newshape = [n_contr, n_slc] + list(data.shape[1:])
         data = data.reshape(newshape)

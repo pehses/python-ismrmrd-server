@@ -409,16 +409,19 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         
         images = []
         n_par = data.shape[-1]
+        rotmat = rh.calc_rotmat(group[0][0][0])
 
         for k,contr in enumerate(data):
-            for j,img in enumerate(contr):
+            for slc,img in enumerate(contr):
                 if n_par > 1:
                     image = ismrmrd.Image.from_array(img, acquisition=group[0][0][0])
                 else:
                     image = ismrmrd.Image.from_array(img[...,0], acquisition=group[0][0][0])
-                image.image_index = j
+                    offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
+                    image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
+                image.image_index = slc
                 image.image_series_index = k
-                image.slice = j
+                image.slice = slc
                 image.attribute_string = xml
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 

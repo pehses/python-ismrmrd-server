@@ -20,8 +20,7 @@ from skimage.filters import threshold_li
 from skimage.morphology import remove_small_holes
 import despike
 import nibabel as nib
-import scipy.ndimage as scn
-
+import h5py
 from bart import bart
 
 def log_bart_stdout():
@@ -36,6 +35,14 @@ def log_bart_stdout():
 def rss(img, axis=-1):
     # root sum of squares along a given axis
     return np.sqrt(np.sum(np.abs(img)**2, axis=axis))
+
+def read_cplx_mat_file(filename, key='imgs'):
+    with h5py.File(filename, 'r') as f:
+        dset = f[key]
+        real_part = dset['real'][:]
+        imag_part = dset['imag'][:]
+        data = real_part + 1j * imag_part
+        return data
 
 ## Noise-prewhitening
 
@@ -715,7 +722,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         fmap = np.sum(weights * np.take_along_axis(phasediff_uw_rs, ix, axis=-1), axis=-1)
         fmap = fmap.reshape(imgs.shape[:3])
         te_diff = echo_times[1] - echo_times[0]
-        fmap = -1 * fmap/te_diff # the sign in Powergrid is inverted
+        fmap = fmap/te_diff
 
         # Standard deviation filter (Robinson, MRM, 2011)
         if std_filter:
@@ -741,17 +748,17 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         else:
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
-        fmap = -1 * phasediff_uw/te_diff # the sign in Powergrid is inverted
+        fmap = phasediff_uw/te_diff
 
     # regularized field map calculation
     if regularized_fmap:
-        fmap_init = -1 * fmap / (2 * np.pi) # to Hz
+        fmap_init = fmap / (2 * np.pi) # to Hz
         nifti = nib.Nifti1Image(np.flip(np.transpose(fmap_init,[1,2,0]), (0,1,2)), np.eye(4)) # save initial field map for easier debugging
         nib.save(nifti, "/tmp/share/debug/fmap_init.nii")
         fmap = calc_regularized_fmap(imgs, echo_times, fmap_init, mask, sens)
         nifti = nib.Nifti1Image(np.flip(np.transpose(fmap,[1,2,0]), (0,1,2)), np.eye(4)) # save regularized field map for easier debugging
         nib.save(nifti, "/tmp/share/debug/fmap_regu.nii")
-        fmap = -1 * fmap * 2 * np.pi # to rad/s
+        fmap = fmap * 2 * np.pi # to rad/s
 
     # Despike filter
     if despike_filter:
@@ -1020,7 +1027,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
         if return_b0:
             subproc += " -B"
             process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash')
-            fmap = -1 * 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/s]
+            fmap = 2*np.pi * nib.load(tempdir+"/B0.nii").get_fdata() # to [rad/s]
             tmpdir.cleanup()
             return fmap # [x,y,z]
         else:

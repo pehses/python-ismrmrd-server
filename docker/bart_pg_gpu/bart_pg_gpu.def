@@ -1,6 +1,6 @@
 Bootstrap: docker
 
-From: mavel101/bart_pg_gpu:latest
+From: mavel101/bart_pg_gpu:v1.3_mkl_full
 
 %runscript
     #!/bin/bash

@@ -439,7 +439,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         fmap_shape = [sens.shape[0]*sens.shape[2], sens.shape[3], sens.shape[4]] # shape to check for correct dimensions
         fmap = rh.load_external_fmap(os.path.join(dependencyFolder, "fmaps", fmap_file), fmap_shape)
 
-    fmap_data = fmap['fmap']
+    fmap_data = -1 * fmap['fmap'] # flip sign for PowerGrid
     fmap_name = fmap['name']
     np.save(debugFolder+"/fmap_data.npy", fmap_data)
     if sms_factor > 1:

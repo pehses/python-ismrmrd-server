@@ -129,6 +129,7 @@ RUN  cd /opt/code \
 
 # ----- Start another clean build without all of the build dependencies-----
 FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04
+ARG INSTALL_MATLAB_RUNTIME=false
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
@@ -173,7 +174,8 @@ COPY --from=reco_base ${TOOLBOX_PATH} ${TOOLBOX_PATH}
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3-dev python3-venv h5utils libxslt1.1 libfftw3-double3 libfftw3-single3 liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils
+        ca-certificates nano git gcc python3-dev python3-venv h5utils libxslt1.1 libfftw3-double3 libfftw3-single3 \
+        liblapacke libhdf5-dev openmpi-bin libatomic1 environment-modules wget libpugixml-dev libxml2-utils
 
 # Create virtual environment
 ENV VIRTUAL_ENV=/opt/venv
@@ -216,6 +218,20 @@ RUN julia -e 'using Pkg; Pkg.add("PyCall"); using PyCall; PyCall.python_interpre
 # Install MRIFieldmaps.jl and its dependencies
 RUN julia -e 'using Pkg; Pkg.add(url="https://github.com/MagneticResonanceImaging/MRIFieldmaps.jl"); using MRIFieldmaps'
 
+# Install MATLAB Runtime R2024b
+RUN if [ "$INSTALL_MATLAB_RUNTIME" = "true" ]; then \
+    apt-get install --no-install-recommends --no-install-suggests --yes unzip xorg && \
+    export MATLAB_RUNTIME_VERSION=R2024b && \
+    export MATLAB_RUNTIME_INSTALLER=MATLAB_Runtime_R2024b_Update_5_glnxa64.zip && \
+    export MATLAB_RUNTIME_URL=https://ssd.mathworks.com/supportfiles/downloads/R2024b/Release/5/deployment_files/installer/complete/glnxa64/${MATLAB_RUNTIME_INSTALLER} && \
+    export MATLAB_RUNTIME_ROOT=/opt/matlab_runtime && \
+    mkdir -p /tmp/matlab_runtime && cd /tmp/matlab_runtime && \
+    wget ${MATLAB_RUNTIME_URL} && \
+    unzip ${MATLAB_RUNTIME_INSTALLER} && \
+    ./install -mode silent -agreeToLicense yes -destinationFolder ${MATLAB_RUNTIME_ROOT} && \
+    rm -rf /tmp/matlab_runtime ; \
+fi
+    
 # Cleanup files not required after compiling
 RUN  apt-get remove --yes gcc git python3-pip wget
 RUN  apt-get autoremove --yes 

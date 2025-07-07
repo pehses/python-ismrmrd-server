@@ -305,7 +305,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
 
     # Insert Field Map
     fmap = process_acs.fmap
-    fmap_data = fmap['fmap']
+    fmap_data = -1 * fmap['fmap'] # flip sign for PowerGrid
     fmap_name = fmap['name']
     fmap_data = np.asarray(fmap_data)
     np.save(debugFolder+"/fmap_data.npy", fmap_data)

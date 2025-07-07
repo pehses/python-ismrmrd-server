@@ -58,6 +58,8 @@ first_vol = 0 # index of first volume, that is reconstructed
 
 compressed_coils = None # if not None compress number of coils to the specified number of coils
 
+use_matmri = False
+
 ########################
 # Main Function
 ########################
@@ -70,6 +72,8 @@ def process(connection, config, metadata, prot_file):
     global read_ecalib
     global read_fmap
     global reco_n_contr
+    global use_matmri
+    global save_cmplx
     if snr_map:
         logging.debug("Calculate SNR maps for first contrast.")
         reco_n_contr = 1
@@ -82,7 +86,6 @@ def process(connection, config, metadata, prot_file):
         # parameter recon_slice defined in "IsmrmrdParameterMap_Siemens_pulseq_online.xsl"
         n_vol = up_long['recon_slice'] # number of volumes to be reconstructed
         reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
-        global save_cmplx
         save_cmplx = False
         online_recon = True
         snr_map = False
@@ -101,6 +104,14 @@ def process(connection, config, metadata, prot_file):
             logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
     else:
         process_acs.cc_cha = n_cha
+
+    if use_matmri:
+        if not os.path.exists(os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")):
+            use_matmri = False
+            logging.warning("run_matmri_reco.sh not found. Set use_matmri to False.")
+        if not os.path.exists("/opt/matlab_runtime/R2024b"):
+            use_matmri = False
+            logging.warning("MATLAB Runtime R2024b not found. Set use_matmri to False. ")
 
     # ----------------------------- #
 
@@ -297,8 +308,9 @@ def process(connection, config, metadata, prot_file):
                 k0 = item.traj[:,3]
                 item.data[:] *= np.exp(-1j*k0)
 
-                # invert trajectory sign (is necessary as field map and k0 also need sign change)
-                item.traj[:] *= -1
+                # In PowerGrid sign in exponential of encoding matrix is flipped
+                if not use_matmri:
+                    item.traj[:] *= -1
 
                 # replace k0 with time vector
                 nsamples = item.number_of_samples
@@ -343,37 +355,29 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
 
     acq0 = acqGroup[0][0][0][0]
 
-    # Make temporary directory for PowerGrid file in debug folder
-    tmpdir = tempfile.TemporaryDirectory(dir=debugFolder)
-    tempdir = tmpdir.name
-    logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
-    tmp_file = os.path.join(tempdir, "PowerGrid_tmpfile.h5")
+    if metadata.encoding[0].encodingLimits.slice.maximum > 0:
+        sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
+    else:
+        sms_factor = 1
 
-    # Write ISMRMRD file for PowerGrid
-    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
-
-    # Multiband factor
-    sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
-
-    # average acquisitions before reco
+    # If non-diffusion dataset, averaging can be done before reconstruction
+    # Assumes that averages are acquired in the same order for every slice, contrast, ...
     avg_before = True 
     if metadata.encoding[0].encodingLimits.contrast.maximum > 0:
-        avg_before = False # do not average before reco in diffusion imaging as this could introduce phase errors
+        avg_before = False
 
-    # Insert Coordinates
+    # Coordinates
     img_coord = np.asarray(img_coord) # [n_slc, 3, nx, ny, nz]
     img_coord = np.transpose(img_coord, [1,0,4,3,2]) # [3, n_slc, nz, ny, nx]
-    dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
 
-    # Calculate and insert DCF
+    # DCF
     rotmat = rh.calc_rotmat(acq0)
     traj = rh.dcs_to_gcs(acq0.traj[:,:3].T, rotmat).T[:,:2]
     dcf = rh.calc_dcf(traj)
     dcf /= np.max(dcf)
     dcf2 = np.tile(dcf, acq0.active_channels)
-    dset_tmp.append_array("DCF", dcf2.astype(np.float64))
 
-    # Calculate and insert Sensitivity Maps
+    # Sensitivity Maps
     if read_ecalib:
         sens = np.load(debugFolder + "/sensmaps.npy")
     else:
@@ -400,9 +404,8 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         if sms_factor > 1:
             sens = reshape_sens_sms(sens, sms_factor)
     np.save(debugFolder + "/sensmaps.npy", sens)
-    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
 
-    # Insert Field Map
+    # Field Map
     # process_acs.fmap = None # just for debugging
     if not read_fmap:
         if process_acs.fmap is not None:
@@ -425,14 +428,29 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         fmap = np.load(debugFolder+"/fmap.npz", allow_pickle=True)
 
     fmap_data = fmap['fmap']
+    if not use_matmri:
+        fmap_data *= -1 # flip sign for PowerGrid
     fmap_name = fmap['name']
+    logging.debug("Field Map name: %s", fmap_name)
     if sms_factor > 1:
         fmap_data = reshape_fmap_sms(fmap_data, sms_factor) # reshape for SMS imaging
+    else:
+        fmap_data = fmap_data[:,np.newaxis]
 
+    # Make temporary directory for PowerGrid file in debug folder
+    tmpdir = tempfile.TemporaryDirectory(dir=debugFolder)
+    tempdir = tmpdir.name
+    logging.debug(f"Temporary directory for PowerGrid results: {tempdir}")
+    tmp_file = os.path.join(tempdir, "data_tmp.mrd")
+
+    # ISMRMRD file
+    dset_tmp = ismrmrd.Dataset(tmp_file, create_if_needed=True)
+    dset_tmp.append_array("ImgCoord", img_coord.astype(np.float64))
+    dset_tmp.append_array("DCF", dcf2.astype(np.float64))
+    dset_tmp.append_array("SENSEMap", sens.astype(np.complex128))
     dset_tmp.append_array('FieldMap', fmap_data.astype(np.float64)) # [slices,nz,ny,nx] normally collapses to [slices/nz,ny,nx], 4 dims are only used in SMS case
-    logging.debug("Field Map name: %s", fmap_name)
 
-    # Write header
+    # Header
     if sms_factor > 1:
         metadata.encoding[0].encodedSpace.matrixSize.z = sms_factor
         metadata.encoding[0].encodingLimits.slice.maximum = int((metadata.encoding[0].encodingLimits.slice.maximum + 1) / sms_factor + 0.5) - 1
@@ -444,8 +462,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         metadata.encoding[0].encodingLimits.average.maximum = 0
     dset_tmp.write_xml_header(metadata.toXML())
 
-    # Average acquisition data before reco
-    # Assume that averages are acquired in the same order for every slice, contrast, ...
+    # Acquisitions
     if avg_before:
         avgData = [[] for _ in range(n_avg)]
         for slc in acqGroup:
@@ -455,7 +472,6 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                         avgData[acq.idx.average].append(acq.data[:])
         avgData = np.mean(avgData, axis=0)
 
-    # Insert acquisitions
     avg_ix = 0
     bvals = []
     dirs = []
@@ -486,67 +502,81 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     bDeltas = np.asarray(bDeltas)
     dset_tmp.close()
 
-    # MPI and hyperthreading
-    mpi = True
-    hyperthreading = False # seems to slow down recon in some cases
-    if mpi:
-        if hyperthreading:
-            cores = psutil.cpu_count(logical = True)
-            mpi_cmd = 'mpirun --use-hwthread-cpus'
-        else:
-            cores = psutil.cpu_count(logical = False)
-            mpi_cmd = 'mpirun'
-        is_root = os.geteuid() == 0
-        if is_root:
-            mpi_cmd += ' --allow-run-as-root'
-    else:
-        cores = 1
-        mpi_cmd = ''
-
-    # Source modules to use module load - module load sets correct LD_LIBRARY_PATH for MPI
-    # the LD_LIBRARY_PATH is causing problems with BART though, so it has to be done here
-    pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/25.1 && '
-
-    mps_server = False
-    if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi:
-        # Start an MPS Server for faster MPI on GPU
-        # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
-        # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
-        # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
-        mps_server = True
-        cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
+    # Run reconstruction - MatMRI or PowerGrid
+    if use_matmri:
+        matlab_runtime = "/opt/matlab_runtime/R2024b"
+        mat_mri_exec = os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")
+        cs_regu = 1e-3 # regularization for compressed sensing
+        subproc = f'{mat_mri_exec} {matlab_runtime} {tmp_file} {cs_regu}' 
         try:
-            subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            logging.debug(f"MatMRI reconstruction cmdline: {subproc}")
+            tic = perf_counter()
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            toc = perf_counter()
+            logging.debug(f"MatMRI reconstruction time: {toc-tic}.")
+            # logging.debug(process.stdout)
         except subprocess.CalledProcessError as e:
-            logging.debug("MPS Server not started. See error messages below.")
             logging.debug(e.stdout)
+        data = rh.read_cplx_mat_file(os.path.join(tempdir, "images_matmri.mat"))
+        # MatMRI reco currently supports only contrast/slice loops 
+        # data is [nx, ny, (nz), slc, contr], nz only if SMS
+        if data.ndim == 4:
+            data = data[np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+        else:
+            data = data[np.newaxis, np.newaxis, np.newaxis]
+        data = np.transpose(data, [6,0,7,1,2,3,4,5])
+    else:
+        mpi = True
+        mps_server = True
+        hyperthreading = False
+        if mpi:
+            if hyperthreading:
+                cores = psutil.cpu_count(logical = True)
+                mpi_cmd = 'mpirun --use-hwthread-cpus'
+            else:
+                cores = psutil.cpu_count(logical = False)
+                mpi_cmd = 'mpirun'
+            is_root = os.geteuid() == 0
+            if is_root:
+                mpi_cmd += ' --allow-run-as-root'
+        else:
+            cores = 1
+            mpi_cmd = ''
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi and mps_server:
+            # Start an MPS Server for faster MPI on GPU
+            # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
+            # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
+            # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
+            cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
+            try:
+                subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                logging.debug("MPS Server not started. See error messages below.")
+                logging.debug(e.stdout)
+        else:
+            mps_server = False
 
-    # Define PowerGrid options
-    regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
-    pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}'
-    subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
-    
-    # Run in bash
-    logging.debug("PowerGrid Reconstruction cmdline: %s",  subproc)
-    try:
-        tic = perf_counter()
-        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        toc = perf_counter()
-        logging.debug(f"PowerGrid Reconstruction time: {toc-tic}.")
-        # logging.debug(process.stdout)
-    except subprocess.CalledProcessError as e:
-        if mps_server:
-            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
-        logging.debug(e.stdout)
-        raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
+        # Make command - load CUDA MPI libraries with modulefiles
+        pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/25.1 && '
+        regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
+        pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}'
+        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
 
-    # Image data is saved as .npy
-    data = np.load(os.path.join(tempdir, "images_pg.npy"))
-    if not save_cmplx:
-        data = np.abs(data)
+        logging.debug(f"PowerGrid reconstruction cmdline: {subproc}")
+        try:
+            tic = perf_counter()
+            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            toc = perf_counter()
+            logging.debug(f"PowerGrid reconstruction time: {toc-tic}.")
+            # logging.debug(process.stdout)  
+        except subprocess.CalledProcessError as e:
+            logging.debug(e.stdout)
+            raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
+        finally:
+            if mps_server:
+                subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
 
-    """
-    """
+        data = np.load(os.path.join(tempdir, "images_pg.npy"))
 
     # data should have output [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
     # change to [Avg, Rep, Contrast/Echo, Phase, Slice, Nz, Ny, Nx] and average
@@ -555,6 +585,8 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     newshape = [_ for _ in data.shape]
     newshape[3:5] = [newshape[3]*newshape[4], 1]
     data = data.reshape(newshape, order='f')
+    if not save_cmplx:
+        data = np.abs(data)
 
     logging.debug("Image data is size %s" % (data.shape,))
    
@@ -617,12 +649,15 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                 dset_tmp.write_acquisition(acq, j)
             dset_tmp.close()
             try:
+                if mps_server:
+                    subprocess.run('nvidia-cuda-mps-control -d', shell=True)
                 process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             except subprocess.CalledProcessError as e:
-                if mps_server:
-                    subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
                 logging.debug(e.stdout)
                 raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
+            finally:
+                if mps_server:
+                    subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
             data_snr = abs(np.load(os.path.join(tempdir,"images_pg.npy")))
             data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
             data_snr_list.append(data_snr.reshape(newshape, order='f'))
@@ -633,9 +668,6 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
         snr = snr[0,0,0]
         dsets['snr_map'] = snr
-
-    if mps_server:
-        subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True) 
 
     # Correct orientation, normalize and convert to int16 for online recon
     uint_max = np.iinfo(np.uint16).max

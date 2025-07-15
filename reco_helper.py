@@ -640,8 +640,8 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
     despike_filter = True # apply despiking
-    median_filtering = False # apply median filtering
-    gaussian_filtering = True # apply Gaussian filtering
+    median_filter_size = None # median filter size (if None, no median filter is applied)
+    gaussian_filter_sigma = 1.5 # Gaussian filter sigma (if None, no Gaussian filter is applied)
     gaussian_filtering_high_offres = False # apply extra Gaussian filtering to areas with large offresonance
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
@@ -780,10 +780,10 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         fmap[abs(fmap) > thresh] = fmap2[abs(fmap) > thresh]
 
     # Gauss/median filter
-    if gaussian_filtering:
-        fmap = scpnd.gaussian_filter(fmap, sigma=1.5)
-    if median_filtering:
-        fmap = scpnd.median_filter(fmap, size=2)
+    if gaussian_filter_sigma is not None:
+        fmap = scpnd.gaussian_filter(fmap, sigma=gaussian_filter_sigma)
+    if median_filter_size is not None:
+        fmap = scpnd.median_filter(fmap, size=median_filter_size)
 
     # interpolate to correct matrix size
     if nz == 1:

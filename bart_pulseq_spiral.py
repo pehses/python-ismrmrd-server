@@ -344,6 +344,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             nufft_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + nufft_config
             data = bart(1, nufft_config, traj, ksp) # iterative inverse nufft
 
+            if data.ndim == 4:
+                data = data[..., np.newaxis]
+
             # Sum of squares coil combination
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-2))
         else:

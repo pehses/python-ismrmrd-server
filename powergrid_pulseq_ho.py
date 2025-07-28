@@ -506,8 +506,8 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     if use_matmri:
         matlab_runtime = "/opt/matlab_runtime/R2024b"
         mat_mri_exec = os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")
-        cs_regu = 1e-3 # regularization for compressed sensing
-        subproc = f'{mat_mri_exec} {matlab_runtime} {tmp_file} {cs_regu}' 
+        fista_thresh = 1e-3 # threshold for FISTA convergence
+        subproc = f'{mat_mri_exec} {matlab_runtime} {tmp_file} {fista_thresh}' 
         try:
             logging.debug(f"MatMRI reconstruction cmdline: {subproc}")
             tic = perf_counter()
@@ -559,7 +559,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         # Make command - load CUDA MPI libraries with modulefiles
         pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/25.1 && '
         regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
-        pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}'
+        pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}' # -e is the relative threshold for convergence
         subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
 
         logging.debug(f"PowerGrid reconstruction cmdline: {subproc}")

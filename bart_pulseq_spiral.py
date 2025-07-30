@@ -24,6 +24,9 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 parallel_reco = True # parallel reconstruction of slices/contrasts
 save_complex = False
 
+snr_map = False # calculate SNR map (only if parallel_reco is True)
+n_replica = 50 # number of replicas
+
 compressed_coils = None
 
 ########################
@@ -339,6 +342,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         ksp = np.moveaxis(np.asarray(ksp), 0, -1)
         traj = np.moveaxis(np.asarray(traj)[...,np.newaxis], 0, -1)
 
+        snr = None
         if sensmaps is None:
             logging.debug("Do inverse nufft")
             nufft_config = f'--parallel-loop {2**(ksp.ndim-1)} -e {ksp.shape[-1]} ' + nufft_config
@@ -374,14 +378,37 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                     res_z = up_double["res_z"] if "res_z" in up_double else 1 # voxel size in z
                     shift = n_slc // sms_factor * slc_res / res_z
                     data[...,1] = rh.fov_shift_img_axis(data[...,1], shift, axis=2)
-                data = data.reshape( data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f' ) # merge slice and sms dim
+                data = data.reshape(data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f') # merge slice and sms dim
             else:
                 data = bart(1, pics_config, ksp, sensmaps, t=traj)
             if data.ndim == 6:
-                data = data[...,0,:]            
+                data = data[...,0,:]
             if not save_complex:
                 data = np.abs(data)
         
+        if snr_map and not "slice_profile_meas" in up_base:
+            data_snr = []
+            for k in range(n_replica):
+                logging.debug(f"Reconstruct replica {k+1} of {n_replica}.")
+                noise = np.random.randn(np.prod(ksp.shape)).reshape(ksp.shape) + 1j* np.random.randn(np.prod(ksp.shape)).reshape(ksp.shape)
+                ksp_noise = ksp + noise
+                if sms_factor > 1:
+                    img_snr = bart(1, pics_config, ksp, sensmaps, t=traj, p=pat)
+                    img_snr = img_snr.reshape(img_snr.shape[:4] + (img_snr.shape[4]*img_snr.shape[sms_dim],), order='f')
+                    data_snr.append(img_snr)
+                else:
+                    data_snr.append(bart(1, pics_config, ksp_noise, sensmaps, t=traj))
+            data_snr = np.abs(np.asarray(data_snr))
+            std_dev = np.std(data_snr + np.max(data_snr), axis=0)
+            snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
+            snr = np.swapaxes(snr, 0, 1)
+            snr = np.flip(snr, (0,1,2))
+            if snr.ndim == 3:
+                snr = snr[..., np.newaxis, np.newaxis]
+            snr = np.moveaxis(snr, -1, 0)[...,0]
+            newshape = [n_contr, n_slc] + list(snr.shape[1:])
+            snr = snr.reshape(newshape)
+
         if nz > rNz:
             # remove oversampling in slice direction
             data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
@@ -455,6 +482,26 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
+
+        if snr is not None:
+            meta['ImgType'] = 'snr_map'
+            xml = meta.serialize()
+            for k,contr in enumerate(snr):
+                for slc,img in enumerate(contr):
+                    if n_par > 1:
+                        image = ismrmrd.Image.from_array(img, acquisition=group[0][0][0])
+                    else:
+                        image = ismrmrd.Image.from_array(img[...,0], acquisition=group[0][0][0])
+                        offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
+                        image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
+                    image.image_index = slc
+                    image.image_series_index = n_contr + 1
+                    image.slice = slc
+                    image.attribute_string = xml
+                    image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                        ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                    images.append(image)
 
         return images
     

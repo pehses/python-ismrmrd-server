@@ -580,7 +580,9 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
         if softsense:
             ecal_str += ' -S'
         if ndim == 5 and acs.shape[-1] > 1:
-            ecal_str = f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} ' + ecal_str
+            if n_maps > 1:
+                acs = acs[...,np.newaxis,:]
+            ecal_str = f'--parallel-loop {2**(acs.ndim-1)} -e {acs.shape[-1]} ' + ecal_str
             sensmaps = bart(1, ecal_str, acs)
         else:
             sensmaps = bart(1, ecal_str, acs)
@@ -671,7 +673,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     if regularized_fmap or not (mc_fmap or romeo_fmap):
         imgs_sens = np.moveaxis(imgs[...,0], 0, -1)
         ksp_sens= fft_dim(imgs_sens, axes=(0,1))
-        sens = bart(1, f"--parallel-loop {(ksp_sens.ndim-1)**2} -e {ksp_sens.shape[-1]} ecalib -m1", ksp_sens)
+        sens = bart(1, f"--parallel-loop {2**(ksp_sens.ndim-1)} -e {ksp_sens.shape[-1]} ecalib -m1", ksp_sens)
         nifti = nib.Nifti1Image(np.flip(np.transpose(abs(sens[:,:,0]),[0,1,3,2]), (0,1,2)), np.eye(4))
         nib.save(nifti, "/tmp/share/debug/sens.nii")
         sens = np.moveaxis(sens, -1, 0)

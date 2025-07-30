@@ -391,7 +391,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             gpu = True
             chunk_sz = None
         sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=gpu, chunk_sz=chunk_sz)
-        # sensmaps = bart(1, f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} caldir 32', acs)
+        # sensmaps = bart(1, f'--parallel-loop {2**(acs.ndim-1)} -e {acs.shape[-1]} caldir 32', acs)
         sensmaps = np.moveaxis(np.asarray(sensmaps),-1,0) # [n_slc,nx,ny,nz,nc]
         nz = metadata.encoding[0].encodingLimits.slice.maximum + 1
         if sensmaps[0].shape[-2] > 1 and nz > 1:

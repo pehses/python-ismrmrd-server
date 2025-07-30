@@ -341,7 +341,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         if sensmaps is None:
             logging.debug("Do inverse nufft")
-            nufft_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + nufft_config
+            nufft_config = f'--parallel-loop {2**(ksp.ndim-1)} -e {ksp.shape[-1]} ' + nufft_config
             data = bart(1, nufft_config, traj, ksp) # iterative inverse nufft
 
             if data.ndim == 4:
@@ -351,7 +351,11 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-2))
         else:
             sensmaps = np.moveaxis(np.asarray(sensmaps), 0, -1)
-            pics_config = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + pics_config
+            if sensmaps.ndim == 6:
+                #  add empty maps dimension if more than one ecalib map is used
+                ksp = ksp[..., np.newaxis, :]
+                traj = traj[..., np.newaxis, :]
+            pics_config = f'--parallel-loop {2**(ksp.ndim-1)} -e {ksp.shape[-1]} ' + pics_config
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-3)
             if sms_factor > 1:
@@ -373,6 +377,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 data = data.reshape( data.shape[:4] + (data.shape[4]*data.shape[sms_dim],), order='f' ) # merge slice and sms dim
             else:
                 data = bart(1, pics_config, ksp, sensmaps, t=traj)
+            if data.ndim == 6:
+                data = data[...,0,:]            
             if not save_complex:
                 data = np.abs(data)
         

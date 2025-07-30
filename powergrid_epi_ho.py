@@ -279,7 +279,7 @@ def process_raw(acqGroup, metadata, img_coord):
     else:
         acs = np.moveaxis(acs,0,-1) # move slice dimension to last
         sens = rh.ecalib(acs, chunk_sz=0, n_maps=1, kernel_size=6, use_gpu=False)
-        # sens = bart(1, f'--parallel-loop {(acs.ndim-1)**2} -e {acs.shape[-1]} caldir 32', acs)
+        # sens = bart(1, f'--parallel-loop {2**(acs.ndim-1)} -e {acs.shape[-1]} caldir 32', acs)
         sens = np.transpose(sens, [-1,3,2,1,0]) # [slices,nc,nz,ny,nx]
         sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation
 

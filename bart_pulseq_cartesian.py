@@ -260,7 +260,7 @@ def process_acs(acs_ksp, gpu=False):
     if gpu and acs_ksp.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         sensmaps = bart(1, 'ecalib -g -m 1 -k 6 -I', acs_ksp)
     elif acs_ksp.shape[-1] > 1:
-        sensmaps = bart(1, f'--parallel-loop {(acs_ksp.ndim-1)**2} -e {acs_ksp.shape[-1]} ecalib -m 1 -k 6 -I', acs_ksp) 
+        sensmaps = bart(1, f'--parallel-loop {2**(acs_ksp.ndim-1)} -e {acs_ksp.shape[-1]} ecalib -m 1 -k 6 -I', acs_ksp) 
     else: 
         sensmaps = bart(1, 'ecalib -m 1 -k 6 -I', acs_ksp) 
 
@@ -319,7 +319,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
         if gpu and ksp.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
             pics_str += ' -g'
         if parallel:
-            pics_str = f'--parallel-loop {(ksp.ndim-1)**2} -e {ksp.shape[-1]} ' + pics_str
+            pics_str = f'--parallel-loop {2**(ksp.ndim-1)} -e {ksp.shape[-1]} ' + pics_str
 
         img_uncmb = bart(1, pics_str, ksp, sensmaps)
         while img_uncmb.ndim < 4:

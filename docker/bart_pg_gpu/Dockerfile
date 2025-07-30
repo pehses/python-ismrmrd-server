@@ -40,11 +40,13 @@ RUN cd /opt/code \
 RUN  cd /opt/code \
      && git clone https://github.com/mrirecon/bart \
      && cd bart \
-     && git checkout v0.9.00 \
+     # && git checkout v0.9.00 \
      && echo MKL=1 >> Makefile.local \
      && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
      && echo PARALLEL=1 >> Makefile.local \
      && echo CUDA=1 >> Makefile.local \
+     && echo OPENMP=1 >> Makefile.local \
+     && echo MPI=1 >> Makefile.local \
      && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
      && echo CUDA_LIB=/lib64 >> Makefile.local \
      && make \
@@ -63,7 +65,6 @@ ENV NVHPC=/opt/nvidia/hpc_sdk
 ENV HPCSDK_VERSION=25.1
 ENV HPCSDK_RELEASE=2025
 ENV CUDA_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/cuda"
-ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/man"
 ENV LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH}"
 ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/lib:${LD_LIBRARY_PATH}"
 ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/compilers/lib:${LD_LIBRARY_PATH}"
@@ -78,7 +79,6 @@ ENV LD_LIBRARY_PATH="${NVHPC}/${NVARCH}/${HPCSDK_RELEASE}/comm_libs/nvshmem/lib:
 ENV OPAL_PREFIX="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/"
 ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/compilers/bin:${PATH}"
 ENV PATH="${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/bin:${PATH}"
-ENV MANPATH="${MANPATH}:${NVHPC}/${NVARCH}/${HPCSDK_VERSION}/comm_libs/mpi/man"
 
 # Install custom compile of boost - only necessary runtime components
 RUN apt-get -y remove --purge libboost-all-dev \
@@ -163,13 +163,6 @@ RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so  \
   ldconfig && \
   echo "MKL_THREADING_LAYER=GNU" >> /etc/environment
 
-# Set Pythonpath for BART
-ENV TOOLBOX_PATH="/opt/code/bart"
-ENV PYTHONPATH="${PYTHONPATH}:${TOOLBOX_PATH}/python"
-
-# copy bart python interface to pythonpath
-COPY --from=reco_base ${TOOLBOX_PATH} ${TOOLBOX_PATH}
-
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \
      && apt-get dist-upgrade --yes \
@@ -182,8 +175,13 @@ ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN pip install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd despike julia
-     
+
 RUN  mkdir -p /opt/code
+
+# Install BART Python interface
+ENV BART_TOOLBOX_PATH="/opt/code/bart"
+COPY --from=reco_base ${BART_TOOLBOX_PATH} ${BART_TOOLBOX_PATH}
+RUN pip install --no-cache-dir ${BART_TOOLBOX_PATH}/pkg/python
 
 RUN  cd /opt/code \
      && pip install SpiralTraj* \

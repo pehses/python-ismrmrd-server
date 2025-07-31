@@ -55,6 +55,7 @@ n_replica = 50 # number of replicas used for SNR map calculation
 
 reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
 first_vol = 0 # index of first volume, that is reconstructed
+phase_ix = 0 # index of phase counter, that is reconstructed, if reco_n_contr > 0
 
 compressed_coils = None # if not None compress number of coils to the specified number of coils
 
@@ -329,7 +330,8 @@ def process(connection, config, metadata, prot_file):
                     rh.remove_os_spiral(item)
 
                 # append item
-                acqGroup[item.idx.slice][item.idx.contrast][item.idx.phase].append(item)
+                if not reco_n_contr or item.idx.phase == phase_ix:
+                    acqGroup[item.idx.slice][item.idx.contrast][item.idx.phase].append(item)
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
@@ -457,6 +459,7 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     if reco_n_contr:
         metadata.encoding[0].encodingLimits.contrast.maximum = reco_n_contr - 1
         metadata.encoding[0].encodingLimits.repetition.maximum = 0
+        metadata.encoding[0].encodingLimits.phase.maximum = 0
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
@@ -518,13 +521,13 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         except subprocess.CalledProcessError as e:
             logging.debug(e.stdout)
         data = rh.read_cplx_mat_file(os.path.join(tempdir, "images_matmri.mat"))
-        # MatMRI reco currently supports only contrast/slice loops 
-        # data is [nx, ny, (nz), slc, contr], nz only if SMS
-        if data.ndim == 4:
-            data = data[np.newaxis, np.newaxis, np.newaxis, np.newaxis]
-        else:
+        # MatMRI reco currently supports only phase/contrast/slice loops 
+        # data is [(nz), ny, nx, slc, contr, phase], nz only if SMS
+        if data.ndim == 5:
             data = data[np.newaxis, np.newaxis, np.newaxis]
-        data = np.transpose(data, [6,0,7,1,2,3,4,5])
+        else:
+            data = data[np.newaxis, np.newaxis]
+        data = np.transpose(data, [5,7,6,0,1,2,3,4]) # [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
     else:
         mpi = True
         mps_server = True

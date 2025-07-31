@@ -642,8 +642,11 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
     despike_filter = True # apply despiking
+    despike_n = 0.8 # n x standard deviations for despiking
+    despike_size = 5 # size of the despiking filter
+    despike_fill_size = 2 # fill size for despiking
     median_filter_size = None # median filter size (if None, no median filter is applied)
-    gaussian_filter_sigma = 1.5 # Gaussian filter sigma (if None, no Gaussian filter is applied)
+    gaussian_filter_sigma = 1 # Gaussian filter sigma (if None, no Gaussian filter is applied)
     gaussian_filtering_high_offres = False # apply extra Gaussian filtering to areas with large offresonance
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
@@ -696,19 +699,14 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
     nib.save(nifti, "/tmp/share/debug/mask.nii")
 
-    # mask images
-    imgs = imgs * mask[...,np.newaxis, np.newaxis]
-    if sens is not None:
-        sens = sens * mask[...,np.newaxis]
-
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)
-        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=mask, mc_unwrap=False, return_b0=True)
+        fmap = romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_b0=True)
     elif mc_fmap:
         # Multi-coil field map calculation (Robinson, MRM, 2011)
         phasediff = imgs[...,1] * np.conj(imgs[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=mask, mc_unwrap=True, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=None, mc_unwrap=True, return_b0=False)
         else:
             phasediff_uw = np.zeros_like(phasediff,dtype=np.float64)
             pool = Pool(processes=cores)
@@ -746,7 +744,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         nib.save(nifti, "/tmp/share/debug/mag.nii")
         phasediff = imgs_cc[...,1] * np.conj(imgs_cc[...,0])
         if romeo_uw:
-            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=mask, mc_unwrap=False, return_b0=False)
+            phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=None, mc_unwrap=False, return_b0=False)
         else:
             phasediff_uw = unwrap_phase(np.angle(phasediff))
         te_diff = echo_times[1] - echo_times[0]
@@ -765,7 +763,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     # Despike filter
     if despike_filter:
         pool = Pool(processes=cores)
-        results = [pool.apply_async(do_despike, [fmap[k]]) for k in range(len(fmap))]
+        results = [pool.apply_async(do_despike, [fmap[k], despike_n, despike_size, despike_fill_size]) for k in range(len(fmap))]
         for k, val in enumerate(results):
             fmap[k] = val.get()
         pool.close()
@@ -948,8 +946,8 @@ def load_external_fmap(path, shape):
 def do_unwrap_phase(phasediff):
     return unwrap_phase(np.angle(phasediff))
 
-def do_despike(fmap):
-    return despike.clean(fmap, n=0.8, size=2, mask='mean', fill_method='median', fill_size=2)
+def do_despike(fmap, n=0.8, size=5, fill_size=2):
+    return despike.clean(fmap, n=n, size=size, mask='mean', fill_method='median', fill_size=fill_size)
 
 # Unwrapping with ROME0
 def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_b0=False):
@@ -1003,7 +1001,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     mag_romeo = nib.Nifti1Image(mag_in, affine)
     nib.save(mag_romeo, mag_name)
 
-    mask_name = "robustmask" # "qualitymask 0.3"
+    mask_name = "qualitymask 0.4" # robustmask
     if mask is not None:
         mask_name = tempdir+"/mask_romeo.nii"
         mask_romeo = nib.Nifti1Image(mask, affine)

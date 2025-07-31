@@ -393,14 +393,14 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 noise = np.random.randn(np.prod(ksp.shape)).reshape(ksp.shape) + 1j* np.random.randn(np.prod(ksp.shape)).reshape(ksp.shape)
                 ksp_noise = ksp + noise
                 if sms_factor > 1:
-                    img_snr = bart(1, pics_config, ksp, sensmaps, t=traj, p=pat)
+                    img_snr = bart(1, pics_config, ksp_noise, sensmaps, t=traj, p=pat)
                     img_snr = img_snr.reshape(img_snr.shape[:4] + (img_snr.shape[4]*img_snr.shape[sms_dim],), order='f')
                     data_snr.append(img_snr)
                 else:
                     data_snr.append(bart(1, pics_config, ksp_noise, sensmaps, t=traj))
             data_snr = np.abs(np.asarray(data_snr))
             std_dev = np.std(data_snr + np.max(data_snr), axis=0)
-            snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
+            snr = np.divide(np.abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
             snr = np.swapaxes(snr, 0, 1)
             snr = np.flip(snr, (0,1,2))
             if snr.ndim == 3:

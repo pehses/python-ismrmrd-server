@@ -307,7 +307,6 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
             ksp = np.moveaxis(ksp, 0, -1)
             coildim = -2
         img_uncmb = cifftn(ksp, axes=(0, 1, 2))
-        img = np.sqrt(np.sum(np.abs(img_uncmb)**2, axis=coildim)) # Sum of squares coil combination
     else:
         if parallel:
             ksp = np.moveaxis(ksp, 0, -1) # move slices/contrasts to last dimension
@@ -324,7 +323,19 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
         img_uncmb = bart(1, pics_str, ksp, sensmaps)
         while img_uncmb.ndim < 4:
             img_uncmb = img_uncmb[...,np.newaxis] # add nz, nc axis if necessary
-        img = abs(img_uncmb[...,0,:])
+
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
+    rNz = metadata.encoding[0].reconSpace.matrixSize.z
+    if nz > 1:
+        img_uncmb = rh.fov_shift_img_axis(img_uncmb, 0.5, axis=2)
+    if nz > rNz:
+        img_uncmb = img_uncmb[:,:,(nz - rNz)//2:-(nz - rNz)//2] # remove oversampling in slice direction
+
+    # coil combination if necessary
+    if sensmaps is None:
+        img = np.sqrt(np.sum(np.abs(img_uncmb)**2, axis=coildim)) # Sum of squares coil combination
+    else:
+        img = np.abs(img_uncmb[...,0,:])
 
     # correct orientation at scanner (consistent with ICE)
     img = np.swapaxes(img, 0, 1)

@@ -678,7 +678,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
         ksp_sens= fft_dim(imgs_sens, axes=(0,1))
         sens = bart(1, f"--parallel-loop {2**(ksp_sens.ndim-1)} -e {ksp_sens.shape[-1]} ecalib -m1", ksp_sens)
         nifti = nib.Nifti1Image(np.flip(np.transpose(abs(sens[:,:,0]),[0,1,3,2]), (0,1,2)), np.eye(4))
-        nib.save(nifti, "/tmp/share/debug/sens.nii")
+        nib.save(nifti, "/tmp/share/debug/fmap_sens.nii")
         sens = np.moveaxis(sens, -1, 0)
 
     # from [slices,nx,ny,nz,coils,echoes] to either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
@@ -697,7 +697,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     img_mask = rss(imgs[...,0], axis=-1)
     mask = get_fmap_mask(img_mask)
     nifti = nib.Nifti1Image(np.flip(np.transpose(mask,[1,2,0]), (0,1,2)), np.eye(4)) # save mask for easier debugging
-    nib.save(nifti, "/tmp/share/debug/mask.nii")
+    nib.save(nifti, "/tmp/share/debug/fmap_mask.nii")
 
     if romeo_fmap:
         # ROMEO unwrapping and field map calculation (Dymerska, MRM, 2020)

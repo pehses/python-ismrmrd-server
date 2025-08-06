@@ -194,9 +194,9 @@ def sort_into_kspace(group, metadata, dmtx=None, zf_around_center=False):
 
     # initialize k-space
     nc = metadata.acquisitionSystemInformation.receiverChannels
-    nx = metadata.encoding[0].reconSpace.matrixSize.x
-    ny = metadata.encoding[0].reconSpace.matrixSize.y
-    nz = metadata.encoding[0].reconSpace.matrixSize.z
+    nx = metadata.encoding[0].encodedSpace.matrixSize.x
+    ny = metadata.encoding[0].encodedSpace.matrixSize.y
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
     kspace = np.zeros([ny, nz, nc, nx], dtype=group[0].data.dtype)
     counter = np.zeros([ny, nz], dtype=np.uint16)

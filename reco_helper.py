@@ -642,11 +642,12 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     
     mc_fmap = True # calculate multi-coil field maps to remove outliers (Robinson, MRM. 2011) - recommended
     despike_filter = True # apply despiking
-    despike_n = 0.8 # n x standard deviations for despiking
+    despike_n = 2 # n x standard deviations for despiking
     despike_size = 5 # size of the despiking filter
     despike_fill_size = 2 # fill size for despiking
-    median_filter_size = None # median filter size (if None, no median filter is applied)
-    gaussian_filter_sigma = 1 # Gaussian filter sigma (if None, no Gaussian filter is applied)
+    median_filter_size = 5 # median filter size (if None, no median filter is applied)
+    median_filtering_high_offres = True # apply extra median filtering to areas with large offresonance
+    gaussian_filter_sigma = None # Gaussian filter sigma (if None, no Gaussian filter is applied)
     gaussian_filtering_high_offres = False # apply extra Gaussian filtering to areas with large offresonance
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
@@ -774,10 +775,14 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     for k,fmap_slc in enumerate(fmap):
         fmap[k] = fill_masked_voxels(fmap_slc, mask[k], k=10)
 
+    thresh_high_offres = 0.6 * np.percentile(abs(fmap), 95)
     if gaussian_filtering_high_offres:
         fmap2 = scpnd.gaussian_filter(fmap, sigma=3)
-        thresh = 0.6 * np.percentile(abs(fmap), 95)
-        fmap[abs(fmap) > thresh] = fmap2[abs(fmap) > thresh]
+        fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
+
+    if median_filtering_high_offres:
+        fmap2 = scpnd.median_filter(fmap, size=15)
+        fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
 
     # Gauss/median filter
     if gaussian_filter_sigma is not None:
@@ -978,7 +983,7 @@ def romeo_unwrap(imgs, echo_times, metadata, mask=None, mc_unwrap=False, return_
     # tempfile.tempdir = "/dev/shm"
     tmpdir = tempfile.TemporaryDirectory()
     tempdir = tmpdir.name
-    tempdir = "/tmp/share/debug/"
+    # tempdir = "/tmp/share/debug/"
 
     # set affine for nifti
     res_x = metadata.encoding[0].encodedSpace.fieldOfView_mm.x / metadata.encoding[0].encodedSpace.matrixSize.x

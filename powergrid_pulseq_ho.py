@@ -476,10 +476,12 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
         avgData = np.mean(avgData, axis=0)
 
     avg_ix = 0
-    bvals = []
-    dirs = []
-    bDeltas = []
-    contr_ctr = -1
+    n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    n_phs = metadata.encoding[0].encodingLimits.phase.maximum + 1
+    bvals = np.zeros([n_contr, n_phs], dtype=int)
+    bvals[:] = -1
+    dirs = np.zeros([n_contr, n_phs, 3])
+    bDeltas = np.zeros([n_contr, n_phs], dtype=int)
     for slc in acqGroup:
         for contr in slc:
             for phs in contr:
@@ -492,17 +494,12 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                             continue
                     if reco_n_contr and acq.idx.repetition > 0:
                         continue
-                    if acq.idx.contrast > contr_ctr:
-                        contr_ctr += 1
-                        bvals.append(acq.user_int[0])
-                        dirs.append(acq.user_float[:3])
-                        if 'bDeltas' in prot_arrays:
-                            bDeltas.append(acq.user_int[1])
+                    if bvals[acq.idx.contrast, acq.idx.phase] == -1:
+                        bvals[acq.idx.contrast, acq.idx.phase] = acq.user_int[0]
+                        dirs[acq.idx.contrast, acq.idx.phase] = acq.user_float[:3]
+                        bDeltas[acq.idx.contrast, acq.idx.phase] = acq.user_int[1]
                     dset_tmp.append_acquisition(acq)
 
-    bvals = np.asarray(bvals)
-    dirs = np.asarray(dirs)
-    bDeltas = np.asarray(bDeltas)
     dset_tmp.close()
 
     # Run reconstruction - MatMRI or PowerGrid
@@ -597,15 +594,14 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
     dsets = {}
     dsets['data'] = data.copy()
 
-    # If we have a diffusion dataset, b-value and direction contrasts are stored in contrast index
-    # as otherwise we run into problems with the PowerGrid acquisition tracking.
-    # We now (in case of diffusion imaging) split the b=0 image from other images and reshape to b-values (contrast) and directions (phase)
-    if "b_values" in prot_arrays and not reco_n_contr:
+    # ADC calculation
+    if bvals.any() and not reco_n_contr:
         try:
             data_eval = abs(data)
 
             # Calculate ADC maps
-            adc_maps = process_diffusion_images(data_eval, bvals)
+            bvals_adc = bvals[:,0] # only use first phase contrast (SE in case of mesmerised) 
+            adc_maps = process_diffusion_images(data_eval, bvals_adc)
             adc_maps = adc_maps[:,np.newaxis] # add empty nz dimension for correct flip
 
             # Append data
@@ -745,12 +741,9 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                                 image.user_int[1] = sms_factor
                                 # b-values and directions should already be correct, as they are in the acquisition header
                                 # but we set them here explicitly again
-                                if 'b_values' in prot_arrays:
-                                    image.user_int[0] = bvals[contr]
-                                if 'Directions' in prot_arrays:
-                                    image.user_float[:3] = dirs[contr]
-                                if 'bDeltas' in prot_arrays:
-                                    image.user_int[3] = bDeltas[contr]
+                                image.user_int[0] = bvals[contr, phs]
+                                image.user_float[:3] = dirs[contr, phs]
+                                image.user_int[3] = bDeltas[contr, phs]
                                 if img_ix <= len(affine):
                                     image.user_int[2] = 1 # indicate affine is set
                                     image.user_float[3:7] = affine[img_ix-1]

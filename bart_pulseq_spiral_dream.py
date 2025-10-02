@@ -268,7 +268,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         raise ValueError(f"This reconstruction currently supports only STE first, but STE has index {ste_ix} and FID has index {fid_ix}.")
 
     # Compute g-factor map of the unfiltered FID contrast (see https://github.com/mrirecon/bart-workshop-OLD/blob/master/demos/gfactor-demo/gfactor-demo-real_data.ipynb) 
-    calc_g_factor = True
+    calc_g_factor = False
 
     if calc_g_factor and (group[0].idx.contrast == fid_ix) and not (sensmaps is None):
         logging.info("Computation of g-factor map activated.")

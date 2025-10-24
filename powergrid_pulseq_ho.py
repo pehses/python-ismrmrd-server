@@ -241,8 +241,8 @@ def process(connection, config, metadata, prot_file):
                     for acq in noiseGroup:
                         noise_data.append(acq.data[:])
                     noise_data = np.concatenate(noise_data, axis=1)
-                    # calculate pre-whitening matrix - noise data has same dwelltime as spiral scan, but oversampling is not removed, therefore add os_factor to scale_facotr
-                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=os_factor*0.793) # scale factor considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
+                    # calculate pre-whitening matrix - noise data has same dwelltime as spiral scan, but oversampling is not removed, therefore add os_factor to scale_factor
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=os_factor, os_removed=False)
                     del(noise_data)
                     noiseGroup.clear()
                                
@@ -657,13 +657,13 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
             finally:
                 if mps_server:
                     subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
-            data_snr = abs(np.load(os.path.join(tempdir,"images_pg.npy")))
+            data_snr = np.load(os.path.join(tempdir,"images_pg.npy"))
             data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
             data_snr_list.append(data_snr.reshape(newshape, order='f'))
         data_snr = np.array(data_snr_list)
 
         # calculate SNR maps
-        std_dev = np.std(data_snr + np.max(data_snr), axis=0)
+        std_dev = np.std(np.abs(data_snr + np.max(np.abs(data_snr))), axis=0)
         snr = np.divide(abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
         snr = snr[0,0,0]
         dsets['snr_map'] = snr

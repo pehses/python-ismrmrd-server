@@ -114,6 +114,9 @@ def process(connection, config, metadata, prot_file):
     except:
         logging.info("Improperly formatted metadata: \n%s", metadata)
 
+    # Oversampling factor
+    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+
     # Log some measurement parameters
     freq = metadata.experimentalConditions.H1resonanceFrequency_Hz
     shim_currents = [v for k,v in up_double.items() if "ShimCurrent" in k]
@@ -171,7 +174,7 @@ def process(connection, config, metadata, prot_file):
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
-                    dmtx = rh.calculate_prewhitening(noise_data)
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=os_factor, os_removed=False)
                     del(noise_data)
                     noiseGroup.clear()
                                
@@ -219,7 +222,6 @@ def process(connection, config, metadata, prot_file):
                 item.data[:] = rh.filt_ksp(item.data[:], traj, filt_fac=0.95)
 
                 # remove ADC oversampling
-                os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                 if os_factor == 2:
                     rh.remove_os_spiral(item)
                 

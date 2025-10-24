@@ -46,7 +46,7 @@ def read_cplx_mat_file(filename, key='imgs'):
 
 ## Noise-prewhitening
 
-def calculate_prewhitening(noise, scale_factor=1.):
+def calculate_prewhitening(noise, scale_factor=1., os_removed=True):
     '''Calculates the noise prewhitening matrix
 
     :param noise: Input noise data (2D array), ``[coil, nsamples]``
@@ -57,6 +57,9 @@ def calculate_prewhitening(noise, scale_factor=1.):
 
     :returns w: Prewhitening matrix, ``[coil, coil]``, w @ data is prewhitened
     '''
+    if not os_removed:
+        scale_factor *= 0.793 # considers filtered area in ADC, see Kellman, 2005, value is fixed for Siemens scanner
+
     dmtx = (noise @ np.conj(noise).T)/(noise.shape[1]-1)
     dmtx = np.linalg.inv(np.linalg.cholesky(dmtx))
     dmtx *= np.sqrt(2)*np.sqrt(scale_factor)

@@ -134,6 +134,9 @@ def process_spiral(connection, config, metadata, prot_file):
 
     base_trj = None
 
+    # Oversampling factor
+    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
+
     # read protocol acquisitions - faster than doing it one by one
     logging.debug("Reading in protocol acquisitions.")
     acqs = read_acqs(prot_file)
@@ -163,7 +166,7 @@ def process_spiral(connection, config, metadata, prot_file):
                         noise_data.append(acq.data)
                     noise_data = np.concatenate(noise_data, axis=1)
                     # calculate pre-whitening matrix
-                    dmtx = rh.calculate_prewhitening(noise_data)
+                    dmtx = rh.calculate_prewhitening(noise_data, scale_factor=os_factor, os_removed=False)
                     del(noise_data)
                     noiseGroup.clear()
                     
@@ -215,7 +218,6 @@ def process_spiral(connection, config, metadata, prot_file):
                     last_item.data[:] = rh.fov_shift_spiral_reapply(last_item.data[:], pred_trj, base_trj, shift, matr_sz)
 
                     # remove oversampling
-                    os_factor = up_double["os_factor"] if "os_factor" in up_double else 1
                     if os_factor == 2:
                         rh.remove_os_spiral(last_item)
 
@@ -310,14 +312,17 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
 
+    scale_fac_pics = 1500
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'
-        pics_config = 'pics -g -S -e -l1 -r 0.001 -i 50'
+        pics_config = f'pics -g -S -e -l1 -r 0.001 -i 50'
     else:
         nufft_config = 'nufft -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -m 1 -I'
-        pics_config = 'pics -S -e -l1 -r 0.001 -i 50'
+        pics_config = f'pics -S -e -l1 -r 0.001 -i 50'
+    if scale_fac_pics is not None:
+        pics_config += f' -w {scale_fac_pics}'
 
     if parallel:
         ksp = []
@@ -398,8 +403,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                     data_snr.append(img_snr)
                 else:
                     data_snr.append(bart(1, pics_config, ksp_noise, sensmaps, t=traj))
-            data_snr = np.abs(np.asarray(data_snr))
-            std_dev = np.std(data_snr + np.max(data_snr), axis=0)
+            data_snr = np.asarray(data_snr)
+            std_dev = np.std(np.abs(data_snr + np.max(np.abs(data_snr))), axis=0)
             snr = np.divide(np.abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
             snr = np.swapaxes(snr, 0, 1)
             snr = np.flip(snr, (0,1,2))

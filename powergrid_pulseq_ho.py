@@ -734,7 +734,7 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
                         for slc in range(dsets[key].shape[3]):
                             img_ix += 1
                             for nz in range(dsets[key].shape[4]):
-                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0][0])
+                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acq0)
                                 meta['ImageRowDir'] = ["{:.18f}".format(acq0.read_dir[0]), "{:.18f}".format(acq0.read_dir[1]), "{:.18f}".format(acq0.read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acq0.phase_dir[0]), "{:.18f}".format(acq0.phase_dir[1]), "{:.18f}".format(acq0.phase_dir[2])]
                                 image.image_index = img_ix

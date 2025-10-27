@@ -312,7 +312,10 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
 
-    scale_fac_pics = 1500
+    if n_slc > 1:
+        scale_fac_pics = 1500
+    else:
+        scale_fac_pics = None
     if gpu and nz>1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
         nufft_config = 'nufft -g -i -m 15 -l 0.005 -t -d %d:%d:%d'%(nx, nx, nz)
         ecalib_config = 'ecalib -g -m 1 -I'

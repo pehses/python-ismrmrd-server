@@ -279,7 +279,7 @@ def process(connection, config, metadata, prot_file):
                 # trigger recon early
                 if reco_n_contr and item.idx.contrast > reco_n_contr + first_vol - 1:
                     if len(acqGroup) > 0:
-                        process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
+                        process_and_send(connection, acqGroup, metadata, acs, img_coord, online_recon=online_recon)
                         processed = True
                     continue
                 if item.idx.contrast < first_vol:
@@ -335,7 +335,7 @@ def process(connection, config, metadata, prot_file):
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
-                    process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=online_recon)
+                    process_and_send(connection, acqGroup, metadata, acs, img_coord, online_recon=online_recon)
 
     finally:
         connection.send_close()
@@ -345,17 +345,20 @@ def process(connection, config, metadata, prot_file):
 # Process Data
 #########################
 
-def process_and_send(connection, acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=False):
+def process_and_send(connection, acqGroup, metadata, acs, img_coord, online_recon=False):
     # Start data processing
     logging.info("Processing a group of k-space data")
-    images = process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon)
+    images = process_raw(acqGroup, metadata, acs, img_coord, online_recon)
     logging.debug("Sending images to client.")
     connection.send_image(images)
     acqGroup.clear()
 
-def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=False):
+def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
 
-    acq0 = acqGroup[0][0][0][0]
+    if reco_n_contr:
+        acq0 = acqGroup[0][0][phase_ix][0]
+    else:
+        acq0 = acqGroup[0][0][0][0]
 
     if metadata.encoding[0].encodingLimits.slice.maximum > 0:
         sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
@@ -492,8 +495,10 @@ def process_raw(acqGroup, metadata, acs, prot_arrays, img_coord, online_recon=Fa
                             avg_ix += 1
                         else:
                             continue
-                    if reco_n_contr and acq.idx.repetition > 0:
-                        continue
+                    if reco_n_contr:
+                        acq.idx.phase = 0
+                        if acq.idx.repetition > 0:
+                            continue
                     if bvals[acq.idx.contrast, acq.idx.phase] == -1:
                         bvals[acq.idx.contrast, acq.idx.phase] = acq.user_int[0]
                         dirs[acq.idx.contrast, acq.idx.phase] = acq.user_float[:3]

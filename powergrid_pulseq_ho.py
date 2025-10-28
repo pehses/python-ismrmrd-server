@@ -509,19 +509,7 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
 
     # Run reconstruction - MatMRI or PowerGrid
     if use_matmri:
-        matlab_runtime = "/opt/matlab_runtime/R2024b"
-        mat_mri_exec = os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")
-        fista_thresh = 1e-3 # threshold for FISTA convergence
-        subproc = f'{mat_mri_exec} {matlab_runtime} {tmp_file} {fista_thresh}' 
-        try:
-            logging.debug(f"MatMRI reconstruction cmdline: {subproc}")
-            tic = perf_counter()
-            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            toc = perf_counter()
-            logging.debug(f"MatMRI reconstruction time: {toc-tic}.")
-            # logging.debug(process.stdout)
-        except subprocess.CalledProcessError as e:
-            logging.debug(e.stdout)
+        subproc = run_recon(tmp_file, pg_recon=False)
         data = rh.read_cplx_mat_file(os.path.join(tempdir, "images_matmri.mat"))
         # MatMRI reco currently supports only phase/contrast/slice loops 
         # data is [(nz), ny, nx, slc, contr, phase], nz only if SMS
@@ -531,56 +519,7 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
             data = data[np.newaxis, np.newaxis]
         data = np.transpose(data, [5,7,6,0,1,2,3,4]) # [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
     else:
-        mpi = True
-        mps_server = True
-        hyperthreading = False
-        if mpi:
-            if hyperthreading:
-                cores = psutil.cpu_count(logical = True)
-                mpi_cmd = 'mpirun --use-hwthread-cpus'
-            else:
-                cores = psutil.cpu_count(logical = False)
-                mpi_cmd = 'mpirun'
-            is_root = os.geteuid() == 0
-            if is_root:
-                mpi_cmd += ' --allow-run-as-root'
-        else:
-            cores = 1
-            mpi_cmd = ''
-        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi and mps_server:
-            # Start an MPS Server for faster MPI on GPU
-            # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
-            # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
-            # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
-            cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
-            try:
-                subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError as e:
-                logging.debug("MPS Server not started. See error messages below.")
-                logging.debug(e.stdout)
-        else:
-            mps_server = False
-
-        # Make command - load CUDA MPI libraries with modulefiles
-        pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/25.1 && '
-        regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
-        pg_opts = f'-i {tmp_file} -o {tempdir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}' # -e is the relative threshold for convergence
-        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
-
-        logging.debug(f"PowerGrid reconstruction cmdline: {subproc}")
-        try:
-            tic = perf_counter()
-            process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            toc = perf_counter()
-            logging.debug(f"PowerGrid reconstruction time: {toc-tic}.")
-            # logging.debug(process.stdout)  
-        except subprocess.CalledProcessError as e:
-            logging.debug(e.stdout)
-            raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
-        finally:
-            if mps_server:
-                subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
-
+        subproc = run_recon(tmp_file, pg_recon=True)
         data = np.load(os.path.join(tempdir, "images_pg.npy"))
 
     # data should have output [Slice, Phase, Contrast/Echo, Avg, Rep, Nz, Ny, Nx]
@@ -652,17 +591,17 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
                 acq.data[:] = acqs_save[j] + noise
                 dset_tmp.write_acquisition(acq, j)
             dset_tmp.close()
-            try:
-                if mps_server:
-                    subprocess.run('nvidia-cuda-mps-control -d', shell=True)
-                process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError as e:
-                logging.debug(e.stdout)
-                raise RuntimeError("PowerGrid Reconstruction failed. See logfiles for errors.")
-            finally:
-                if mps_server:
-                    subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
-            data_snr = np.load(os.path.join(tempdir,"images_pg.npy"))
+            if use_matmri:
+                subproc = run_recon(tmp_file, pg_recon=False)
+                data_snr = rh.read_cplx_mat_file(os.path.join(tempdir, "images_matmri.mat"))
+                if data_snr.ndim == 5:
+                    data_snr = data_snr[np.newaxis, np.newaxis, np.newaxis]
+                else:
+                    data_snr = data_snr[np.newaxis, np.newaxis]
+                data_snr = np.transpose(data_snr, [5,7,6,0,1,2,3,4])
+            else:
+                subproc = run_recon(tmp_file, pg_recon=True)
+                data_snr = np.load(os.path.join(tempdir,"images_pg.npy"))
             data_snr = np.transpose(data_snr, [3,4,2,1,0,5,6,7]).mean(axis=0)
             data_snr_list.append(data_snr.reshape(newshape, order='f'))
         data_snr = np.array(data_snr_list)
@@ -900,6 +839,67 @@ def process_diffusion_images(data, bvals):
 
     return adc_map
     
+def run_recon(raw_file, pg_recon=True):
+
+    if pg_recon:
+        mpi = True
+        mps_server = True
+        hyperthreading = False
+
+        if mpi:
+            if hyperthreading:
+                cores = psutil.cpu_count(logical = True)
+                mpi_cmd = 'mpirun --use-hwthread-cpus'
+            else:
+                cores = psutil.cpu_count(logical = False)
+                mpi_cmd = 'mpirun'
+            is_root = os.geteuid() == 0
+            if is_root:
+                mpi_cmd += ' --allow-run-as-root'
+        else:
+            cores = 1
+            mpi_cmd = ''
+        if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and mpi and mps_server:
+            # Start an MPS Server for faster MPI on GPU
+            # On some GPUs, the reconstruction seems to fail with an MPS server activated. In this case, comment out this "if"-block.
+            # See: https://stackoverflow.com/questions/34709749/how-do-i-use-nvidia-multi-process-service-mps-to-run-multiple-non-mpi-cuda-app
+            # and https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf
+            cores = min(cores, 48) # maximum processes for MPS is 48 (https://docs.nvidia.com/deploy/mps/index.html)
+            try:
+                subprocess.run('nvidia-cuda-mps-control -d', shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                logging.debug("MPS Server not started. See error messages below.")
+                logging.debug(e.stdout)
+        else:
+            mps_server = False
+        pre_cmd = 'source /etc/profile.d/modules.sh && module load /opt/nvidia/hpc_sdk/modulefiles/nvhpc/25.1 && '
+        regu = 'QUAD' # regularization (QUAD - quadratic or TV - total variation)
+        out_dir = os.path.dirname(raw_file)
+        pg_opts = f'-i {raw_file} -o {out_dir} -n 20 -B 500 -D 2 -e 0.0001 -R {regu}' # -e is the relative threshold for convergence
+        subproc = pre_cmd + f'{mpi_cmd} -n {cores} PowerGridSenseMPI_ho ' + pg_opts
+    else:
+        mps_server = False
+        matlab_runtime = "/opt/matlab_runtime/R2024b"
+        mat_mri_exec = os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")
+        fista_thresh = 1e-3 # threshold for FISTA convergence
+        subproc = f'{mat_mri_exec} {matlab_runtime} {raw_file} {fista_thresh}' 
+
+    logging.debug(f"Reconstruction subprocess: {subproc}")
+    try:
+        tic = perf_counter()
+        process = subprocess.run(subproc, shell=True, check=True, text=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        toc = perf_counter()
+        logging.debug(f"Reconstruction time: {toc-tic}.")
+        # logging.debug(process.stdout)  
+    except subprocess.CalledProcessError as e:
+        logging.debug(e.stdout)
+        raise RuntimeError("Reconstruction failed. See logfiles for errors.")
+    finally:
+        if mps_server:
+            subprocess.run('echo quit | nvidia-cuda-mps-control', shell=True)
+
+    return subproc
+
 # %%
 #########################
 # Sort Data

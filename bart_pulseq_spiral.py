@@ -44,16 +44,6 @@ def process_spiral(connection, config, metadata, prot_file):
         bart_pulseq_spiral_dream.process_spiral_dream(connection, config, metadata, prot_file)
         return
 
-    # -- Some manual parameters --- #
-    
-    # Select a slice (only for debugging purposes) - if "None" reconstruct all slices
-    slc_sel = None
-    up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
-    if 'recon_slice' in up_long:
-        online_slc = up_long['recon_slice'] # Only online reco can send single slice number (different xml)
-        if online_slc >= 0:
-            slc_sel = int(online_slc)
-
     # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     global compressed_coils
@@ -170,10 +160,6 @@ def process_spiral(connection, config, metadata, prot_file):
                     del(noise_data)
                     noiseGroup.clear()
                     
-                # skip slices in single slice reconstruction
-                if slc_sel is not None and item.idx.slice != slc_sel:
-                    continue
-                
                 # Accumulate all imaging readouts in a group
                 if item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                     continue

@@ -12,6 +12,8 @@ import os
 import json
 import signal
 
+from pulseq_helper import clear_traj_cache
+
 class Server:
     """
     Something something docstring.
@@ -103,6 +105,9 @@ class Server:
                     logging.error("Failed to parse as JSON")
             else:
                 configAdditional = config
+
+            # Clear trajectory cache (GIRF prediction)
+            clear_traj_cache()
 
             # Decide what program to use based on config
             # If not one of these explicit cases, try to load file matching name of config

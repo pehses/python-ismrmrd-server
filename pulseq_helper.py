@@ -11,6 +11,18 @@ import os
 import logging
 from reco_helper import calc_rotmat, gcs_to_dcs, dcs_to_gcs, intp_axis
 
+import hashlib
+
+def array_hash(a):
+    a = np.ascontiguousarray(a)
+    return hashlib.md5(a.tobytes()).digest()
+
+_grad_pred_cache = {}
+
+def clear_traj_cache():
+    global _grad_pred_cache
+    _grad_pred_cache = {}
+
 def insert_hdr(prot_file, metadata): 
     """
         Inserts the header from an ISMRMRD protocol file
@@ -370,6 +382,8 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     
     # delay before trajectory begins - WIP: allow to provide an array of delays - this would be useful e.g. for EPI
     gradshift = up_double["traj_delay"]
+    if gradshift == -1 and acq.user_float[-1] != 0:
+        gradshift = acq.user_float[-1]
 
     # ADC sampling time
     adctime = dwelltime * np.arange(0.5, ncol)
@@ -460,6 +474,11 @@ def grad_pred(grad, girf):
     grad: nominal gradient [dims, samples]
     girf: gradient impulse response function [input dims, output dims (incl k0), samples] in frequency space
     """
+
+    key = array_hash(grad)
+    if key in _grad_pred_cache:
+        return _grad_pred_cache[key]
+
     ndim = grad.shape[0]
     grad_sampl = grad.shape[-1]
     girf_sampl = girf.shape[-1]
@@ -486,5 +505,8 @@ def grad_pred(grad, girf):
     
     # cut out relevant part
     pred_grad = pred_grad[:,:grad_sampl]
+
+    # cache result
+    _grad_pred_cache[key] = pred_grad
 
     return pred_grad

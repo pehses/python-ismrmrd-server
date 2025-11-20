@@ -538,8 +538,44 @@ def calc_dcf(traj):
     return abs(dcf)
 
 ######################################
-#### Ecalib (3D is done in chunks)
+#### BART functions
 ######################################
+
+def bart_parallel(pdim, prange, nargout, cmd, *args, cores=None, **kwargs):
+    """
+    Wrapper for BART commands with parallel loop.
+
+    Parameters
+    ----------
+    pdim : int
+        Dimension index for parallelization (BART expects 2^pdim).
+    prange : int
+        End index for the parallel loop.
+    nargout : int
+        Number of outputs requested from BART.
+    cmd : str
+        Base BART command, without parallel-loop options.
+    cores : int, optional
+        Number of CPU cores to use. Defaults to physical cores.
+    args, kwargs :
+        Passed directly to bart(...) call.
+
+    Returns
+    -------
+    BART output(s)
+    """
+    if cores is None:
+        cores = psutil.cpu_count(logical=False) or 1
+
+    if pdim < 0:
+        raise ValueError("pdim must be non-negative.")
+    if prange <= 0:
+        raise ValueError("prange must be a positive integer.")
+
+    parallel_prefix = f"--parallel-loop {2**pdim} -e {prange} -t {cores}"
+    full_cmd = parallel_prefix + " " + cmd
+
+    return bart(nargout, full_cmd, *args, **kwargs)
 
 def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     maps = bart(1, f'ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {sig.shape[2]}', sig)
@@ -585,8 +621,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
         if ndim == 5 and acs.shape[-1] > 1:
             if n_maps > 1:
                 acs = acs[...,np.newaxis,:]
-            ecal_str = f'--parallel-loop {2**(acs.ndim-1)} -e {acs.shape[-1]} ' + ecal_str
-            sensmaps = bart(1, ecal_str, acs)
+            sensmaps = bart_parallel(acs.ndim-1, acs.shape[-1], 1, ecal_str, acs)
         else:
             sensmaps = bart(1, ecal_str, acs)
     else:
@@ -680,7 +715,7 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     if regularized_fmap or not (mc_fmap or romeo_fmap):
         imgs_sens = np.moveaxis(imgs[...,0], 0, -1)
         ksp_sens= fft_dim(imgs_sens, axes=(0,1))
-        sens = bart(1, f"--parallel-loop {2**(ksp_sens.ndim-1)} -e {ksp_sens.shape[-1]} ecalib -m1", ksp_sens)
+        sens = bart_parallel(ksp_sens.ndim-1, ksp_sens.shape[-1], 1, "ecalib -m1", ksp_sens)
         nifti = nib.Nifti1Image(np.flip(np.transpose(abs(sens[:,:,0]),[0,1,3,2]), (0,1,2)), np.eye(4))
         nib.save(nifti, "/tmp/share/debug/fmap_sens.nii")
         sens = np.moveaxis(sens, -1, 0)

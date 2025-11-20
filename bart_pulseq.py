@@ -4,9 +4,8 @@ import os
 import logging
 import importlib
 
-import bart_pulseq_spiral 
+import bart_pulseq_noncart
 import bart_pulseq_cartesian
-import bart_pulseq_radial
 import bart_jemris
 from pulseq_helper import check_signature
 
@@ -50,17 +49,17 @@ def process(connection, config, metadata):
     check_signature(metadata, prot_hdr) # check MD5 signature
 
     if trajtype == 'spiral':
-        importlib.reload(bart_pulseq_spiral)
+        importlib.reload(bart_pulseq_noncart)
         logging.info("Starting spiral reconstruction.")
-        bart_pulseq_spiral.process_spiral(connection, config, metadata, prot_file)
+        bart_pulseq_noncart.process_noncart(connection, config, metadata, prot_file)
     elif trajtype == 'cartesian':
         importlib.reload(bart_pulseq_cartesian)
         logging.info("Starting cartesian reconstruction.")
         bart_pulseq_cartesian.process_cartesian(connection, config, metadata, prot_file)
     elif trajtype == 'radial':
-        importlib.reload(bart_pulseq_radial)
+        importlib.reload(bart_pulseq_noncart)
         logging.info("Starting radial reconstruction.")
-        bart_pulseq_radial.process_radial(connection, config, metadata, prot_file)
+        bart_pulseq_noncart.process_noncart(connection, config, metadata, prot_file)
     elif trajtype == 'other':
         importlib.reload(bart_jemris)
         logging.info("Starting JEMRIS reconstruction.")

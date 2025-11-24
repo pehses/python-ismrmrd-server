@@ -95,7 +95,7 @@ def process(connection, config, metadata, prot_file):
     if 'first_vol' in up_long:
         first_vol = up_long['first_vol']
     if reco_n_contr > 0:
-        logging.debug(f"Only {n_vol} contrasts are reconstructed.")
+        logging.debug(f"Only {reco_n_contr} contrasts are reconstructed.")
         logging.debug(f"First volume to be reconstructed: {first_vol}.")
 
     # Coil Compression

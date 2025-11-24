@@ -810,6 +810,13 @@
                 </xsl:if>
                  -->
                 <userParameterLong>
+                    <name>first_vol</name>
+                    <value>
+                        <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[62]"/>
+                    </value>
+                </userParameterLong>
+
+                <userParameterLong>
                     <name>recon_slice</name>
                     <value>
                         <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[63]"/>

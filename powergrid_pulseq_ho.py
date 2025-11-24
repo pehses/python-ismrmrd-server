@@ -73,6 +73,7 @@ def process(connection, config, metadata, prot_file):
     global read_ecalib
     global read_fmap
     global reco_n_contr
+    global first_vol
     global use_matmri
     global save_cmplx
     if snr_map:
@@ -83,7 +84,6 @@ def process(connection, config, metadata, prot_file):
     online_recon = False
     up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
     if 'recon_slice' in up_long:
-        logging.debug(f"Dataset is processed online. Only first contrast is reconstructed.")
         # parameter recon_slice defined in "IsmrmrdParameterMap_Siemens_pulseq_online.xsl"
         n_vol = up_long['recon_slice'] # number of volumes to be reconstructed
         reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
@@ -92,6 +92,11 @@ def process(connection, config, metadata, prot_file):
         snr_map = False
         read_ecalib = False
         read_fmap = False
+    if 'first_vol' in up_long:
+        first_vol = up_long['first_vol']
+    if reco_n_contr > 0:
+        logging.debug(f"Only {n_vol} contrasts are reconstructed.")
+        logging.debug(f"First volume to be reconstructed: {first_vol}.")
 
     # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels

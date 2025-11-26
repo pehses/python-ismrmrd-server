@@ -335,8 +335,7 @@ def process(connection, config, metadata, prot_file):
                     rh.remove_os_spiral(item)
 
                 # append item
-                if not reco_n_contr or item.idx.phase == phase_ix:
-                    acqGroup[item.idx.slice][item.idx.contrast][item.idx.phase].append(item)
+                acqGroup[item.idx.slice][item.idx.contrast][item.idx.phase].append(item)
                     
                 # Process acquisitions with PowerGrid - full recon
                 if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
@@ -360,10 +359,7 @@ def process_and_send(connection, acqGroup, metadata, acs, img_coord, online_reco
 
 def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
 
-    if reco_n_contr:
-        acq0 = acqGroup[0][0][phase_ix][0]
-    else:
-        acq0 = acqGroup[0][0][0][0]
+    acq0 = acqGroup[0][0][0][0]
 
     if metadata.encoding[0].encodingLimits.slice.maximum > 0:
         sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2)
@@ -467,7 +463,6 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
     if reco_n_contr:
         metadata.encoding[0].encodingLimits.contrast.maximum = reco_n_contr - 1
         metadata.encoding[0].encodingLimits.repetition.maximum = 0
-        metadata.encoding[0].encodingLimits.phase.maximum = 0
     if avg_before:
         n_avg = metadata.encoding[0].encodingLimits.average.maximum + 1
         metadata.encoding[0].encodingLimits.average.maximum = 0
@@ -500,10 +495,8 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
                             avg_ix += 1
                         else:
                             continue
-                    if reco_n_contr:
-                        acq.idx.phase = 0
-                        if acq.idx.repetition > 0:
-                            continue
+                    if reco_n_contr and acq.idx.repetition > 0:
+                        continue
                     if bvals[acq.idx.contrast, acq.idx.phase] == -1:
                         bvals[acq.idx.contrast, acq.idx.phase] = acq.user_int[0]
                         dirs[acq.idx.contrast, acq.idx.phase] = acq.user_float[:3]

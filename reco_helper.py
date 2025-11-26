@@ -819,12 +819,11 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     if gaussian_filter_sigma_high_offres is not None:
         fmap2 = scpnd.gaussian_filter(fmap, sigma=gaussian_filter_sigma_high_offres)
-        fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
+        fmap[abs(fmap) > 2*np.pi*thresh_high_offres] = fmap2[abs(fmap) > 2*np.pi*thresh_high_offres]
 
     if median_filter_sigma_high_offres is not None:
         fmap2 = scpnd.median_filter(fmap, size=median_filter_sigma_high_offres)
-        fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
-
+        fmap[abs(fmap) > 2*np.pi*thresh_high_offres] = fmap2[abs(fmap) > 2*np.pi*thresh_high_offres]
     # Gauss/median filter
     if gaussian_filter_sigma is not None:
         fmap = scpnd.gaussian_filter(fmap, sigma=gaussian_filter_sigma)

@@ -684,9 +684,10 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     despike_size = 5 # size of the despiking filter
     despike_fill_size = 2 # fill size for despiking
     median_filter_size = 5 # median filter size (if None, no median filter is applied)
-    median_filtering_high_offres = True # apply extra median filtering to areas with large offresonance
+    median_filter_sigma_high_offres = None # if not None, apply extra median filtering to areas with large offresonance
     gaussian_filter_sigma = None # Gaussian filter sigma (if None, no Gaussian filter is applied)
-    gaussian_filtering_high_offres = False # apply extra Gaussian filtering to areas with large offresonance
+    gaussian_filter_sigma_high_offres = None # if not None, apply extra Gaussian filtering to areas with large offresonance
+    thresh_high_offres = 250 # threshold for high offresonance areas [Hz]
     nlm_filter = False # apply non-local means filter to field map in the end
     std_filter = False # apply standard deviation filter (only if mc_fmap selected)
     std_fac = 1.5 # factor for standard deviation denoising (see below)
@@ -697,6 +698,9 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     cores = psutil.cpu_count(logical = False)
 
     logging.info("Starting field map calculation.")
+
+    if len(echo_times) < 3:
+        romeo_fmap = False
 
     if online_recon:
         std_filter = False
@@ -813,13 +817,12 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
     for k,fmap_slc in enumerate(fmap):
         fmap[k] = fill_masked_voxels(fmap_slc, mask[k], k=10)
 
-    thresh_high_offres = 0.6 * np.percentile(abs(fmap), 95)
-    if gaussian_filtering_high_offres:
-        fmap2 = scpnd.gaussian_filter(fmap, sigma=3)
+    if gaussian_filter_sigma_high_offres is not None:
+        fmap2 = scpnd.gaussian_filter(fmap, sigma=gaussian_filter_sigma_high_offres)
         fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
 
-    if median_filtering_high_offres:
-        fmap2 = scpnd.median_filter(fmap, size=15)
+    if median_filter_sigma_high_offres is not None:
+        fmap2 = scpnd.median_filter(fmap, size=median_filter_sigma_high_offres)
         fmap[abs(fmap) > thresh_high_offres] = fmap2[abs(fmap) > thresh_high_offres]
 
     # Gauss/median filter

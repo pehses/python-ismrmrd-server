@@ -16,7 +16,7 @@ import scipy.ndimage as scpnd
 from scipy.spatial import KDTree
 from skimage.transform import resize
 from skimage.restoration import unwrap_phase, denoise_nl_means, estimate_sigma
-from skimage.filters import threshold_li
+from skimage.filters import threshold_li, threshold_otsu
 from skimage.morphology import remove_small_holes
 import despike
 import nibabel as nib
@@ -859,16 +859,14 @@ def get_fmap_mask(img):
     erosions = 2
 
     # threshold mask
-    mask = img/np.max(img)
-    thresh = threshold_li(mask)
-    mask[mask<thresh] = 0
-    mask[mask>=thresh] = 1
+    thresh = threshold_li(img, initial_guess=threshold_otsu)
+    mask = img > thresh
+    mask = remove_small_holes(mask, area_threshold=area_threshold, connectivity=connectivity)
     for k, mask_slc in enumerate(mask):
-        mask_slc = remove_small_holes(mask_slc.astype(bool), area_threshold=area_threshold, connectivity=connectivity)
         mask_slc = scpnd.binary_erosion(mask_slc, iterations=erosions)
         mask[k] = mask_slc
 
-    return mask
+    return mask.astype(np.uint8)
 
 def calc_regularized_fmap(imgs, te, fmap_init, mask, sens):
 

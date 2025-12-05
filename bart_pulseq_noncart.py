@@ -335,10 +335,10 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         if sensmaps is None:
             if redfac > 1:
                 logging.debug("Do nlinv reconstruction")
-                data = rh.bart_parallel(ksp.ndim-1, ksp.shape[-1], 1, nlinv_config, ksp, t=traj) # iterative inverse nufft
+                data = rh.bart_parallel(ksp.ndim-1, ksp.shape[-1], 1, nlinv_config, ksp, t=traj)
             else:
                 logging.debug("Do inverse nufft")
-                data = rh.bart_parallel(ksp.ndim-1, ksp.shape[-1], 1, nufft_config, ksp, t=traj) # direct inverse nufft
+                data = rh.bart_parallel(ksp.ndim-1, ksp.shape[-1], 1, nufft_config, ksp, t=traj)
 
             if data.ndim == 4:
                 data = data[..., np.newaxis]

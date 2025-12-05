@@ -55,7 +55,6 @@ n_replica = 50 # number of replicas used for SNR map calculation
 
 reco_n_contr = 0 # if >0 only the volumes up to the specified number will be reconstructed
 first_vol = 0 # index of first volume, that is reconstructed
-phase_ix = 0 # index of phase counter, that is reconstructed, if reco_n_contr > 0
 
 compressed_coils = None # if not None compress number of coils to the specified number of coils
 

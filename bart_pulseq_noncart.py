@@ -1,6 +1,7 @@
 
 import ismrmrd
 import os
+import re
 import logging
 import numpy as np
 import ctypes
@@ -287,15 +288,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
+    center_slc = n_slc // 2
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     redfac = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_1)
     slc_res = metadata.encoding[0].encodedSpace.fieldOfView_mm.z
 
-    if n_slc > 1:
-        scale_fac = 1500
-    else:
-        scale_fac = None
     nufft_config = f'nufft -i -m 15 -l 0.005 -d {nx}:{nx}:{nz}'
     nlinv_config = f'nlinv -i 8 -S -x {nx}:{nx}:{nz}'
     ecalib_config = 'ecalib -m 1 -I'
@@ -305,8 +303,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         nlinv_config += ' -g'
         ecalib_config += ' -g'
         pics_config += ' -g'
-    if scale_fac is not None:
-        pics_config += f' -w {scale_fac}'
+    pics_config_scaling = pics_config.replace('-i 50', '-i 1') + ' -d 3'
 
     if parallel:
         ksp = []
@@ -367,6 +364,17 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 sensmaps = np.moveaxis(sensmaps, sms_dim_old, sms_dim)
                 pat = bart(1, 'pattern', ksp)
                 pics_config += " -M"
+                
+                # Extract scaling from central slice with 1 iteration
+                if n_slc > 1:
+                    _ = bart(1, pics_config_scaling, ksp[...,center_slc,np.newaxis], sensmaps[...,center_slc,np.newaxis], t=traj[...,center_slc,np.newaxis], p=pat[...,center_slc,np.newaxis])
+                    match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stdout, re.IGNORECASE)
+                    scaling = float(match.group(1)) if match else None
+                    logging.debug(f"Extracted scaling factor: {scaling}")
+                    if scaling:
+                        pics_config += f' -w {scaling}'
+                    
+                # Reco
                 data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj, p=pat)
                 if "slice_profile_meas" in up_base:
                     # upper mb slices need FOV shift, which is the slice distance in voxel
@@ -375,6 +383,16 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                     data[...,1] = rh.fov_shift_img_axis(data[...,1], shift, axis=2)
                 data = data.reshape(data.shape[:parallel_dim] + (data.shape[parallel_dim]*data.shape[sms_dim],), order='f') # merge slice and sms dim
             else:
+                if n_slc > 1:
+                    # Extract scaling from central slice with 1 iteration
+                    _ = bart(1, pics_config_scaling, ksp[...,center_slc,np.newaxis], sensmaps[...,center_slc,np.newaxis], t=traj[...,center_slc,np.newaxis])
+                    match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stdout, re.IGNORECASE)
+                    scaling = float(match.group(1)) if match else None
+                    logging.debug(f"Extracted scaling factor: {scaling}")
+                    if scaling:
+                        pics_config += f' -w {scaling}'
+                
+                # Reco
                 data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj)
             if ecalib_maps > 1:
                 data = data[...,0,:]

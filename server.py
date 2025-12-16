@@ -77,6 +77,12 @@ class Server:
 
             # Second messages is the metadata (text)
             metadata_xml = next(connection)
+
+            # Break if no MRD header was received before a close message (e.g. Gadgetron dependency query)
+            if ((metadata_xml is None) & (connection.is_exhausted is True)):
+                logging.info("Connection closed without an MRD header received")
+                return
+
             logging.debug("XML Metadata: %s", metadata_xml)
             try:
                 metadata = ismrmrd.xsd.CreateFromDocument(metadata_xml)

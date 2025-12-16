@@ -10,13 +10,12 @@
 			"docker.io/kspacekelvin/fire-python:buildcache"]
 	},
 
-	// To enable your local GPUs in container if they are on enabled by default
+	// Use to enable local GPUs in container if available
 	// "runArgs": [ "--gpus=all" ],
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [
-		9002
-	],
+	// Use appPort to "publish" a port to the host machine. Compared to forwardPorts,
+	// appPort allows connections from non-localhost
+	"appPort": ["9020:9020"],
 
 	// Default setting for Windows changes files to CRLF, so match this to avoid all files
 	// being marked as changed.  Could be disabled for non-Windows hosts

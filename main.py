@@ -55,21 +55,36 @@ if __name__ == '__main__':
     else:
         fmt='%(asctime)s - %(message)s'
 
+    if args.verbose:
+        logLevel = logging.DEBUG
+    else:
+        logLevel = logging.INFO
+
     if args.logfile:
         print("Logging to file:", args.logfile)
 
-        if not os.path.exists(os.path.dirname(args.logfile)):
-            os.makedirs(os.path.dirname(args.logfile))
+        # Get full path to the log file
+        absLogPath = os.path.abspath(args.logfile)
+        if not os.path.exists(os.path.dirname(absLogPath)):
+            os.makedirs(os.path.dirname(absLogPath))
 
-        logging.basicConfig(filename=args.logfile, format=fmt, level=logging.WARNING)
-        logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+        logging.basicConfig(
+            format=fmt,
+            level=logLevel,
+            handlers=[
+                logging.FileHandler(args.logfile),
+                logging.StreamHandler(sys.stdout)
+            ],
+            force=True
+        )
     else:
         print("No logfile provided")
-        logging.basicConfig(format=fmt, level=logging.WARNING)
-
-    if args.verbose:
-        logging.root.setLevel(logging.DEBUG)
-    else:
-        logging.root.setLevel(logging.INFO)
-
+        logging.basicConfig(
+            format=fmt,
+            level=logLevel,
+            handlers=[
+                logging.StreamHandler(sys.stdout)
+            ],
+            force=True
+        )
     main(args)

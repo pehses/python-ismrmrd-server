@@ -1,14 +1,79 @@
-# ----- 1. Create devcontainer image -----
-# Start from the fire-python devcontainer image that has all base dependencies
-# Note: This does not contain the actual code for python-ismrmrd-server!
-FROM kspacekelvin/fire-python-devcon AS python-mrd-pytorch-devcontainer
+# ----- 1. First stage to build ismrmrd and siemens_to_ismrmrd -----
+FROM pytorch/pytorch:2.3.0-cuda11.8-cudnn8-runtime AS mrd_converter
+ARG  DEBIAN_FRONTEND=noninteractive
+ENV  TZ=America/Chicago
 
-# Install PyTorch and its dependencies
-RUN pip3 install --no-cache-dir torch torchvision \
-    && rm -rf /root/.cache/pip
+RUN  apt-get update && apt-get install -y git cmake g++ libhdf5-dev libxml2-dev libxslt1-dev libboost-all-dev libfftw3-dev libpugixml-dev
+RUN  mkdir -p /opt/code
 
-# ----- 2. Copy deployed code into the devcontainer for deployment -----
-FROM python-mrd-pytorch-devcontainer as python-mrd-pytorch-runtime
+# ISMRMRD library
+RUN cd /opt/code && \
+    git clone https://github.com/ismrmrd/ismrmrd.git && \
+    cd ismrmrd && \
+    git checkout d364e03 && \
+    mkdir build && \
+    cd build && \
+    cmake ../ && \
+    make -j $(nproc) && \
+    make install
+
+# siemens_to_ismrmrd converter
+RUN cd /opt/code && \
+    git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git && \
+    cd siemens_to_ismrmrd && \
+    git checkout v1.2.11 && \
+    mkdir build && \
+    cd build && \
+    cmake ../ && \
+    make -j $(nproc) && \
+    make install
+
+# Create archive of ISMRMRD libraries (including symlinks) for second stage
+RUN cd /usr/local/lib && tar -czvf libismrmrd.tar.gz libismrmrd*
+
+# ----- 2. Create a devcontainer without all of the build dependencies of MRD -----
+FROM pytorch/pytorch:2.3.0-cuda11.8-cudnn8-runtime AS python-mrd-cuda-devcontainer
+
+LABEL org.opencontainers.image.description="Python MRD Image Reconstruction and Analysis Server"
+LABEL org.opencontainers.image.url="https://github.com/kspaceKelvin/python-ismrmrd-server"
+LABEL org.opencontainers.image.authors="Kelvin Chow (kelvin.chow@siemens-healthineers.com)"
+
+# Copy ISMRMRD files from last stage
+COPY --from=mrd_converter /usr/local/include/ismrmrd        /usr/local/include/ismrmrd/
+COPY --from=mrd_converter /usr/local/share/ismrmrd          /usr/local/share/ismrmrd/
+COPY --from=mrd_converter /usr/local/bin/ismrmrd*           /usr/local/bin/
+COPY --from=mrd_converter /usr/local/lib/libismrmrd.tar.gz  /usr/local/lib/
+RUN cd /usr/local/lib && tar -zxvf libismrmrd.tar.gz && rm libismrmrd.tar.gz && ldconfig
+
+# Copy siemens_to_ismrmrd from last stage
+COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd  /usr/local/bin/siemens_to_ismrmrd
+
+# Add dependencies for siemens_to_ismrmrd
+RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103 libboost-program-options1.74.0 libpugixml1v5 git dos2unix nano
+RUN mkdir -p /opt/code
+
+# Tell nano to remember its position from the last time it opened a file
+RUN echo "set positionlog" > ~/.nanorc
+
+# Python MRD library
+RUN pip3 install h5py==3.10.0 ismrmrd==1.14.1
+
+RUN cd /opt/code && \
+    git clone https://github.com/ismrmrd/ismrmrd-python-tools.git && \
+    cd /opt/code/ismrmrd-python-tools && \
+    pip3 install --no-cache-dir .
+
+# matplotlib is used by rgb.py and provides various visualization tools including colormaps
+# pydicom is used by dicom2mrd.py to parse DICOM data
+RUN pip3 install --no-cache-dir matplotlib==3.8.2 pydicom==3.0.1
+
+# Cleanup files not required after installation
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /root/.cache/pip
+
+# ----- 3. Copy deployed code into the devcontainer for deployment -----
+FROM python-mrd-cuda-devcontainer AS python-mrd-runtime
 
 # If building from the GitHub repo, uncomment the below section, open a command
 # prompt in the folder containing this Dockerfile and run the command:

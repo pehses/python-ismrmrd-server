@@ -66,11 +66,11 @@ def get_userParameterDouble_value(metadata, name):
     return None
 
 def get_userParameterString_value(metadata, name):
-    """Get a value from MRD Header userParameterDouble (returns None if key not found)"""
+    """Get a value from MRD Header userParameterString (returns None if key not found)"""
     if metadata.userParameters is not None:
-        for param in metadata.userParameters.userParameterDouble:
+        for param in metadata.userParameters.userParameterString:
             if param.name == name:
-                return float(param.value)
+                return param.value
     return None
 
 def get_userParameterBase64_value(metadata, name):

@@ -82,9 +82,9 @@ def process(connection, config, metadata, prot_file):
     # check if images reconstructed at scanner
     online_recon = False
     up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
-    if 'recon_slice' in up_long:
-        # parameter recon_slice defined in "IsmrmrdParameterMap_Siemens_pulseq_online.xsl"
-        n_vol = up_long['recon_slice'] # number of volumes to be reconstructed
+    if 'recon_vol' in up_long:
+        # parameter recon_vol defined in "IsmrmrdParameterMap_Siemens_pulseq_online.xsl"
+        n_vol = up_long['recon_vol'] # number of volumes to be reconstructed
         reco_n_contr = n_vol if n_vol > 0 else 0 # reconstruct n contrasts, if data is processed online
         save_cmplx = False
         online_recon = True

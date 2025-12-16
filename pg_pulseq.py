@@ -22,6 +22,18 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 def process(connection, config, metadata):
   
+    # Enable savedata for online reconstruction (when recon_vol parameter is present)
+    try:
+        up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
+        if 'recon_vol' in up_long and up_long['recon_vol'] > 0:
+            if not connection.savedata:
+                logging.info("Enabling savedata as not all volumes are reconstructed online.")
+                connection.savedata = True
+                connection.create_save_file()
+                connection.dset.write_xml_header(bytes(metadata.toXML(), 'utf-8'))
+    except Exception as e:
+        logging.warning("Failed to check for recon_vol parameter: %s", e)
+
     prot_folder = os.path.join(dependencyFolder, "metadata")
     up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
     prot_filename = os.path.basename(os.path.splitext(up_string['protfile'])[0]) # protocol filename from Siemens protocol parameter tFree

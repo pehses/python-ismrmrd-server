@@ -817,7 +817,7 @@
                 </userParameterLong>
 
                 <userParameterLong>
-                    <name>recon_slice</name>
+                    <name>recon_vol</name>
                     <value>
                         <xsl:value-of select="siemens/MEAS/sWipMemBlock/alFree[63]"/>
                     </value>

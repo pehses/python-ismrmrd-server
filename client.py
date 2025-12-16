@@ -19,8 +19,8 @@ defaults = {
     'filename':           '',
     'in_group':           '',
     'address':            'localhost',
-    'port':               9002, 
-    'outfile':            'out.h5',
+    'port':               9002,
+    'outfile':            None,
     'out_group':          str(datetime.datetime.now()),
     'config':             'invertcontrast',
     'config_local':       '',
@@ -76,7 +76,7 @@ def main(args):
             return
 
     localConfigAdditionalText = None
-    if (args.config):
+    if (args.config) and (not args.config_local):
         configAdditionalFile = args.config + '.json'
         if os.path.exists(configAdditionalFile):
             logging.info("Found additional config file %s", configAdditionalFile)
@@ -85,58 +85,55 @@ def main(args):
             localConfigAdditionalText = fid.read()
             fid.close()
 
-    dset = h5py.File(args.filename, 'r')
-    if not dset:
-        logging.error("Not a valid dataset: %s" % args.filename)
-        return
+    with h5py.File(args.filename, 'r') as dset:
+        if not dset:
+            logging.error("Not a valid dataset: %s" % args.filename)
+            return
+        dsetNames = dset.keys()
+        logging.info("File %s contains %d groups:", args.filename, len(dset.keys()))
+        print(" ", "\n  ".join(dsetNames))
 
-    dsetNames = dset.keys()
-    logging.info("File %s contains %d groups:", args.filename, len(dset.keys()))
-    print(" ", "\n  ".join(dsetNames))
+        if not args.in_group:
+            if len(dset.keys()) == 1:
+                args.in_group = list(dset.keys())[0]
+            else:
+                logging.error("Input group not specified and multiple groups are present")
+                return
 
-    if not args.in_group:
-        if len(dset.keys()) == 1:
-            args.in_group = list(dset.keys())[0]
-        else:
-            logging.error("Input group not specified and multiple groups are present")
+
+        if args.in_group not in dset:
+            logging.error("Could not find group %s", args.in_group)
             return
 
+        group = dset.get(args.in_group)
 
-    if args.in_group not in dset:
-        logging.error("Could not find group %s", args.in_group)
-        return
+        logging.info("Reading data from group '%s' in file '%s'", args.in_group, args.filename)
 
-    group = dset.get(args.in_group)
+        # ----- Determine type of data stored --------------------------------------
+        # Raw data is stored as:
+        #   /group/config      text of recon config parameters (optional)
+        #   /group/xml         text of ISMRMRD flexible data header
+        #   /group/data        array of IsmsmrdAcquisition data + header
+        #   /group/waveforms   array of waveform (e.g. PMU) data
 
-    logging.info("Reading data from group '%s' in file '%s'", args.in_group, args.filename)
+        # Image data is stored as:
+        #   /group/config              text of recon config parameters (optional)
+        #   /group/xml                 text of ISMRMRD flexible data header (optional)
+        #   /group/image_0/data        array of IsmrmrdImage data
+        #   /group/image_0/header      array of ImageHeader
+        #   /group/image_0/attributes  text of image MetaAttributes
+        hasRaw   = False
+        hasImage = False
+        hasWaveforms = False
 
-    # ----- Determine type of data stored --------------------------------------
-    # Raw data is stored as:
-    #   /group/config      text of recon config parameters (optional)
-    #   /group/xml         text of ISMRMRD flexible data header
-    #   /group/data        array of IsmsmrdAcquisition data + header
-    #   /group/waveforms   array of waveform (e.g. PMU) data
+        if ('data' in group):
+            hasRaw = True
+        
+        if len([key for key in group.keys() if (key.startswith('image_') or key.startswith('images_'))]) > 0:
+            hasImage = True
 
-    # Image data is stored as:
-    #   /group/config              text of recon config parameters (optional)
-    #   /group/xml                 text of ISMRMRD flexible data header (optional)
-    #   /group/image_0/data        array of IsmrmrdImage data
-    #   /group/image_0/header      array of ImageHeader
-    #   /group/image_0/attributes  text of image MetaAttributes
-    hasRaw   = False
-    hasImage = False
-    hasWaveforms = False
-
-    if ('data' in group):
-        hasRaw = True
-    
-    if len([key for key in group.keys() if (key.startswith('image_') or key.startswith('images_'))]) > 0:
-        hasImage = True
-
-    if ('waveforms' in group):
-        hasWaveforms = True
-
-    dset.close()
+        if ('waveforms' in group):
+            hasWaveforms = True
 
     if ((hasRaw is False) and (hasImage is False)):
         logging.error("File does not contain properly formatted MRD raw or image data")
@@ -189,117 +186,115 @@ def main(args):
         logging.info("Sending remote config file name '%s'", args.config)
         connection.send_config_file(args.config)
 
-    dset = ismrmrd.Dataset(args.filename, args.in_group, False)
+    with ismrmrd.Dataset(args.filename, args.in_group, create_if_needed=False) as dset:
+        # --------------- Send MRD metadata -----------------------
+        groups = dset.list()
+        if ('xml' in groups):
+            xml_header = dset.read_xml_header()
+            xml_header = xml_header.decode("utf-8")
+        else:
+            logging.warning("Could not find MRD metadata xml in file")
+            xml_header = "Dummy XML header"
+        connection.send_metadata(xml_header)
 
-    # --------------- Send MRD metadata -----------------------
-    groups = dset.list()
-    if ('xml' in groups):
-        xml_header = dset.read_xml_header()
-        xml_header = xml_header.decode("utf-8")
-    else:
-        logging.warning("Could not find MRD metadata xml in file")
-        xml_header = "Dummy XML header"
-    connection.send_metadata(xml_header)
+        # --------------- Send additional config -----------------------
+        groups = dset.list()
+        if localConfigAdditionalText is None:
+            if ('configAdditional' in groups):
+                configAdditionalText = dset._dataset['configAdditional'][0]
+                configAdditionalText = configAdditionalText.decode("utf-8")
 
-    # --------------- Send additional config -----------------------
-    groups = dset.list()
-    if localConfigAdditionalText is None:
-        if ('configAdditional' in groups):
-            configAdditionalText = dset._dataset['configAdditional'][0]
-            configAdditionalText = configAdditionalText.decode("utf-8")
+                if args.ignore_json_config:
+                    # Remove the config specified in the JSON, allowing the config passed via command line to the client to be used
+                    configAdditional = json.loads(configAdditionalText)
+                    if ('parameters' in configAdditional):
+                        if ('config' in configAdditional['parameters']):
+                            logging.warning(f"Input file contains JSON configAdditional that specifies config '{configAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
+                            del configAdditional['parameters']['config']
+
+                        if ('customconfig' in configAdditional['parameters']):
+                            if configAdditional['parameters']['customconfig'] != '':
+                                logging.warning(f"Input file contains JSON configAdditional that specifies customconfig '{configAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
+                            del configAdditional['parameters']['customconfig']
+
+                        configAdditionalText = json.dumps(configAdditional, indent=2)
+
+                logging.info("Sending configAdditional found in file %s:\n%s", args.filename, configAdditionalText)
+                connection.send_text(configAdditionalText)
+            else:
+                # Do nothing -- no additional config in local .json file or in MRD file
+                pass
+        else:
+            if ('configAdditional' in groups):
+                logging.warning("configAdditional found in file %s, but is overriden by local file %s!", args.filename, configAdditionalFile)
 
             if args.ignore_json_config:
                 # Remove the config specified in the JSON, allowing the config passed via command line to the client to be used
-                configAdditional = json.loads(configAdditionalText)
-                if ('parameters' in configAdditional):
-                    if ('config' in configAdditional['parameters']):
-                        logging.warning(f"Input file contains JSON configAdditional that specifies config '{configAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
-                        del configAdditional['parameters']['config']
+                localConfigAdditional = json.loads(localConfigAdditionalText)
+                if ('parameters' in localConfigAdditional):
+                    if ('config' in localConfigAdditional['parameters']):
+                        logging.warning(f"configAdditional file '{configAdditionalFile}' specifies config '{localConfigAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
+                        del localConfigAdditional['parameters']['config']
 
-                    if ('customconfig' in configAdditional['parameters']):
-                        if configAdditional['parameters']['customconfig'] != '':
-                            logging.warning(f"Input file contains JSON configAdditional that specifies customconfig '{configAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
-                        del configAdditional['parameters']['customconfig']
+                    if ('customconfig' in localConfigAdditional['parameters']):
+                        if localConfigAdditional['parameters']['customconfig'] != '':
+                            logging.warning(f"configAdditional file '{configAdditionalFile}' specifies customconfig '{localConfigAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
+                        del localConfigAdditional['parameters']['customconfig']
 
-                    configAdditionalText = json.dumps(configAdditional, indent=2)
+                    localConfigAdditionalText = json.dumps(localConfigAdditional, indent=2)
 
-            logging.info("Sending configAdditional found in file %s:\n%s", args.filename, configAdditionalText)
-            connection.send_text(configAdditionalText)
-        else:
-            # Do nothing -- no additional config in local .json file or in MRD file
-            pass
-    else:
-        if ('configAdditional' in groups):
-            logging.warning("configAdditional found in file %s, but is overriden by local file %s!", args.filename, configAdditionalFile)
+            logging.info("Sending configAdditional found in file %s:\n%s", configAdditionalFile, localConfigAdditionalText)
+            connection.send_text(localConfigAdditionalText)
 
-        if args.ignore_json_config:
-            # Remove the config specified in the JSON, allowing the config passed via command line to the client to be used
-            localConfigAdditional = json.loads(localConfigAdditionalText)
-            if ('parameters' in localConfigAdditional):
-                if ('config' in localConfigAdditional['parameters']):
-                    logging.warning(f"configAdditional file '{configAdditionalFile}' specifies config '{localConfigAdditional['parameters']['config']}', but will be ignored because '--ignore-json-config' was specified!")
-                    del localConfigAdditional['parameters']['config']
+        # --------------- Send waveform data ----------------------
+        # TODO: Interleave waveform and other data so they arrive chronologically
+        if hasWaveforms:
+            if args.send_waveforms:
+                logging.info("Sending waveform data")
+                logging.info("Found %d waveforms", dset.number_of_waveforms())
 
-                if ('customconfig' in localConfigAdditional['parameters']):
-                    if localConfigAdditional['parameters']['customconfig'] != '':
-                        logging.warning(f"configAdditional file '{configAdditionalFile}' specifies customconfig '{localConfigAdditional['parameters']['customconfig']}', but will be ignored because '--ignore-json-config' was specified!")
-                    del localConfigAdditional['parameters']['customconfig']
+                for idx in range(0, dset.number_of_waveforms()):
+                    wav = dset.read_waveform(idx)
+                    try:
+                        connection.send_waveform(wav)
+                    except:
+                        logging.error('Failed to send waveform %d -- aborting!' % idx)
+                        break
+            else:
+                logging.info("Waveform data present, but send-waveforms option turned off")
 
-                localConfigAdditionalText = json.dumps(localConfigAdditional, indent=2)
+        # --------------- Send raw data ----------------------
+        if hasRaw:
+            logging.info("Starting raw data session")
+            logging.info("Found %d raw data readouts", dset.number_of_acquisitions())
 
-        logging.info("Sending configAdditional found in file %s:\n%s", configAdditionalFile, localConfigAdditionalText)
-        connection.send_text(localConfigAdditionalText)
-
-    # --------------- Send waveform data ----------------------
-    # TODO: Interleave waveform and other data so they arrive chronologically
-    if hasWaveforms:
-        if args.send_waveforms:
-            logging.info("Sending waveform data")
-            logging.info("Found %d waveforms", dset.number_of_waveforms())
-
-            for idx in range(0, dset.number_of_waveforms()):
-                wav = dset.read_waveform(idx)
+            for idx in range(dset.number_of_acquisitions()):
+                acq = dset.read_acquisition(idx)
                 try:
-                    connection.send_waveform(wav)
+                    connection.send_acquisition(acq)
                 except:
-                    logging.error('Failed to send waveform %d -- aborting!' % idx)
-                    break
-        else:
-            logging.info("Waveform data present, but send-waveforms option turned off")
-
-    # --------------- Send raw data ----------------------
-    if hasRaw:
-        logging.info("Starting raw data session")
-        logging.info("Found %d raw data readouts", dset.number_of_acquisitions())
-
-        for idx in range(dset.number_of_acquisitions()):
-            acq = dset.read_acquisition(idx)
-            try:
-                connection.send_acquisition(acq)
-            except:
-                logging.error('Failed to send acquisition %d -- aborting!' % idx)
-                break
-
-    # --------------- Send image data ----------------------
-    if hasImage:
-        logging.info("Starting image data session")
-        for group in [key for key in groups if (key.startswith('image_') or key.startswith('images_'))]:
-            logging.info("Reading images from '/" + args.in_group + "/" + group + "'")
-
-            for imgNum in range(0, dset.number_of_images(group)):
-                image = dset.read_image(group, imgNum)
-
-                if not isinstance(image.attribute_string, str):
-                    image.attribute_string = image.attribute_string.decode('utf-8')
-
-                logging.debug("Sending image %d of %d", imgNum, dset.number_of_images(group)-1)
-                try:
-                    connection.send_image(image)
-                except:
-                    logging.error('Failed to send image %d -- aborting!' % imgNum)
+                    logging.error('Failed to send acquisition %d -- aborting!' % idx)
                     break
 
-    dset.close()
+        # --------------- Send image data ----------------------
+        if hasImage:
+            logging.info("Starting image data session")
+            for group in [key for key in groups if (key.startswith('image_') or key.startswith('images_'))]:
+                logging.info("Reading images from '/" + args.in_group + "/" + group + "'")
+
+                for imgNum in range(0, dset.number_of_images(group)):
+                    image = dset.read_image(group, imgNum)
+
+                    if not isinstance(image.attribute_string, str):
+                        image.attribute_string = image.attribute_string.decode('utf-8')
+
+                    logging.debug("Sending image %d of %d", imgNum, dset.number_of_images(group)-1)
+                    try:
+                        connection.send_image(image)
+                    except:
+                        logging.error('Failed to send image %d -- aborting!' % imgNum)
+                        break
+
     try:
         connection.send_close()
     except:
@@ -322,6 +317,7 @@ def main(args):
     logging.info("Sent %5d acquisitions  |  Received %5d acquisitions", connection.sentAcqs,      recvWaveforms.value)
     logging.info("Sent %5d images        |  Received %5d images",       connection.sentImages,    recvImages.value)
     logging.info("Sent %5d waveforms     |  Received %5d waveforms",    connection.sentWaveforms, recvWaveforms.value)
+    logging.info("Results written to %s", args.outfile)
     logging.info("Session complete")
 
     return
@@ -340,7 +336,7 @@ if __name__ == '__main__':
     parser.add_argument('-C', '--config-local',                            help='Local configuration file')
     parser.add_argument('-w', '--send-waveforms',     action='store_true', help='Send waveform (physio) data')
     parser.add_argument('-v', '--verbose',            action='store_true', help='Verbose mode')
-    parser.add_argument('-l', '--logfile',                      type=str,  help='Path to log file')
+    parser.add_argument('-l', '--logfile',            type=str,            help='Path to log file')
     parser.add_argument(      '--ignore-json-config', action='store_true', help='Ignore config specified in JSON')
 
     parser.set_defaults(**defaults)
@@ -359,6 +355,11 @@ if __name__ == '__main__':
         logging.root.setLevel(logging.DEBUG)
     else:
         logging.root.setLevel(logging.INFO)
+
+    if args.outfile is None:
+        base, ext = os.path.splitext(args.filename)
+        args.outfile = base + '_results' + ext
+        logging.info("Output file not specified -- writing results to %s", args.outfile)
 
     # If a config is specified via the command line arguments, then set ignore_json_config to True
     if ('-c' in sys.argv) or ('--config' in sys.argv):

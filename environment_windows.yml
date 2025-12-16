@@ -1,6 +1,5 @@
 name: mrd
 channels:
-  - ismrmrd
   - conda-forge
 dependencies:
   - python=3.10.13

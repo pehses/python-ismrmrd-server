@@ -233,7 +233,7 @@ For image processing workflows, DICOM images can be used as input by converting 
 [Development containers (devcontainers)](https://code.visualstudio.com/docs/devcontainers/containers) are a convenient way of using a Docker image as a working environment instead of installing packages locally.  If the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension is installed in Visual Studio Code, then a prompt will appear when opening this folder to re-open it in a devcontainer.  The devcontainer is also compatible with [GitHub Codespaces](https://github.com/features/codespaces).  Further details can be found in [doc/devcontainers.md](doc/devcontainers.md).
 
 ###  2.2. <a name='Settingupacondaenvironment'></a>Setting up a conda environment
-Conda is a Python environment manager that is useful for creating and maintaining Python packages and their dependencies.  It is available either as part of the larger [Anaconda](https://www.anaconda.com/) product, or separately as part of [Miniconda](https://docs.conda.io/en/latest/miniconda.html).  Although not required, it's helpful in setting up an environment for the Python ISMRMD client/server.  [Mamba](https://mamba.readthedocs.io/en/latest/) and [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html) are drop-in replacements for Conda that are often faster at resolving dependencies.  The following instructions are for micromamba, but the command `micromamba` can be replaced with `conda` if conda is preferred.
+Conda is a Python environment manager that is useful for creating and maintaining Python packages and their dependencies.  It is available either as part of the larger [Anaconda](https://www.anaconda.com/) framework, or separately as part of [Miniconda](https://docs.conda.io/en/latest/miniconda.html).  Although not required, it's helpful in setting up an environment for the Python ISMRMD client/server.  [Mamba](https://mamba.readthedocs.io/en/latest/) and [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html) are drop-in replacements for Conda that are often faster at resolving dependencies.  The following instructions are for micromamba, but the command `micromamba` can be replaced with `conda` if conda is preferred.
 
 1. Download and install [Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) for your operating system.
 
@@ -270,6 +270,17 @@ Conda is a Python environment manager that is useful for creating and maintainin
     ```
 
 To use this environment in the future, open a command prompt and run ``micromamba activate mrd``.
+
+**Important Note** Anaconda has [changed its terms of service in 2024](https://www.anaconda.com/blog/update-on-anacondas-terms-of-service-for-academia-and-research) and requires a paid license and subscription for non-university companies with 200+ employees.  Miniconda, Miniforge, and micromamba remain free to use.  The `defaults` channel has the same licensing conditions, but is not used by this repo.  The `conda-forge` channel remains open-source, but package artifacts are often hosted on anaconda.org.
+
+When creating the conda environment, an error like the one below may be encountered:
+```
+critical libmamba Multiple errors occurred:
+    Download error (23) Failed writing received data to disk/application [https://conda.anaconda.org/conda-forge/noarch/repodata.json.zst?_sm_nck=1]
+    Failure writing output to destination, passed 15208 returned 15209
+    Subdir conda-forge/noarch not loaded!
+```
+This may be the result of the entire anaconda.org domain being blocked as a proactive measure due to the licensing changes.  This can be verified by browsing to https://anaconda.org/conda-forge in a browser -- if the page cannot be loaded, then it is likely that anaconda.org is blocked.  A [mirror of conda-forge is hosted by https://prefix.dev](https://prefix.dev/blog/towards_a_vendor_lock_in_free_conda_experience) and can be used instead.  To do so, edit [environment_windows.yml](./environment_windows.yml) and replace the [line `- conda-forge` in the channels section](https://github.com/kspaceKelvin/python-ismrmrd-server/blob/f28a2365a1fcca8e2366a4019de2b4ab1bdc53e4/environment_windows.yml#L3) with `- https://prefix.dev/conda-forge`.  If using non-Windows, also use the environment_windows.yml file and manually pip install the ismrmrd package as described above.
 
 ###  2.3. <a name='SettingupaDockerenvironment'></a>Setting up a Docker environment
 [Docker](https://www.docker.com/products/docker-desktop) is a virtualization platform that allows software to run in isolated environments called containers.  It provides a convenient mechanism to package up a reconstruction program and all its libraries in a manner that can be easily deployed to other computers without manually installing dependencies or other configuration steps.  

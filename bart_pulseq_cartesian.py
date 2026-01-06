@@ -417,9 +417,9 @@ def send_images(imgs, metadata, group):
     return images
 
 def calc_fieldmap(imgs, echo_times, metadata, group):
-    """ Calculate field maps from reference images with two different contrasts
+    """ Calculate field maps from reference images with multiple echo times
 
-        imgs: [slices,nx,ny,nz,nc,n_contr] - atm: n_contr=2 mandatory
+        imgs: [slices,nx,ny,nz,nc,n_contr]
         echo_times: list of echo times [s]
 
     """

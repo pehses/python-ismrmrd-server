@@ -247,21 +247,6 @@ def process_noncart(connection, config, metadata, prot_file):
             else:
                 logging.error("Unsupported data type %s", type(item).__name__)
 
-        # Process any remaining groups of raw or image data.  This can 
-        # happen if the trigger condition for these groups are not met.
-        # This is also a fallback for handling image data, as the last
-        # image in a series is typically not separately flagged.
-        if item is not None:
-            if len(acqGroup[item.idx.contrast][item.idx.slice]) > 0:
-                logging.info("Processing a group of k-space data (untriggered)")
-                if sensmaps[item.idx.slice] is None:
-                    # run parallel imaging calibration
-                    sensmaps[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, dmtx) 
-                image = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps[item.idx.slice])
-                logging.debug("Sending image to client:\n%s", image)
-                connection.send_image(image)
-                acqGroup = []
-
     finally:
         connection.send_close()
 
@@ -608,26 +593,26 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
         images.append(image)
 
-    # send reference image if available
-    if process_raw.refimg[group[0].idx.slice] is not None and group[0].idx.contrast == 0:
-        meta['ImgType'] = 'refimg'
-        xml = meta.serialize()
-        refimg = np.swapaxes(process_raw.refimg[group[0].idx.slice], 0, 1)
-        refimg = np.flip(refimg, (0,1,2))
-        refimg *= 32767 / np.max(refimg)
-        refimg = np.around(refimg)
-        refimg = refimg.astype(np.int16)
-        
-        image = ismrmrd.Image.from_array(refimg, acquisition=group[0])
-        image.image_index = group[0].idx.slice
-        image.image_series_index = n_contr
-        image.attribute_string = xml
-        image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
-                            ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        images.append(image)
+        # send reference image if available
+        if process_raw.refimg[group[0].idx.slice] is not None and group[0].idx.contrast == 0:
+            meta['ImgType'] = 'refimg'
+            xml = meta.serialize()
+            refimg = np.swapaxes(process_raw.refimg[group[0].idx.slice], 0, 1)
+            refimg = np.flip(refimg, (0,1,2))
+            refimg *= 32767 / np.max(refimg)
+            refimg = np.around(refimg)
+            refimg = refimg.astype(np.int16)
+            
+            image = ismrmrd.Image.from_array(refimg, acquisition=group[0])
+            image.image_index = group[0].idx.slice
+            image.image_series_index = n_contr
+            image.attribute_string = xml
+            image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            images.append(image)
 
-    return images
+        return images
 
 def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
     if len(group)>0:

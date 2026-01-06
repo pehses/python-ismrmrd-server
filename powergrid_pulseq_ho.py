@@ -420,7 +420,7 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
             else:
                 refimgs = np.asarray(fmap['fmap']) # 2D refscan [slices,nx,ny,nz=1,coils,echoes]
             echo_times = fmap['TE']
-            fmap['fmap'] = rh.calc_fmap(refimgs, echo_times, metadata, online_recon)
+            fmap['fmap'] = rh.calc_fmap(refimgs, echo_times, metadata)
         else: # external field map
             fmap_list = os.path.join(dependencyFolder, "fmaps", "fmap_list.txt")
             if not rh.check_dependency_data(fmap_list):

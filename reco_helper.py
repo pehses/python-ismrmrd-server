@@ -669,8 +669,8 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
 # Field map calculation
 #############################
 
-def calc_fmap(imgs, echo_times, metadata, online_recon=False):
-    """ Calculate field maps from reference images with two different contrasts
+def calc_fmap(imgs, echo_times, metadata):
+    """ Calculate field maps from reference images with multiple echo times
 
         imgs: [slices,nx,ny,nz,nc,n_contr]
         echo_times: list of echo times [s]
@@ -701,9 +701,6 @@ def calc_fmap(imgs, echo_times, metadata, online_recon=False):
 
     if len(echo_times) < 3:
         romeo_fmap = False
-
-    if online_recon:
-        std_filter = False
 
     nx = metadata.encoding[0].reconSpace.matrixSize.x
     ny = metadata.encoding[0].reconSpace.matrixSize.y

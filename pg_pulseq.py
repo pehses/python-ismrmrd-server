@@ -24,13 +24,16 @@ def process(connection, config, metadata):
   
     # Enable savedata for online reconstruction (when recon_vol parameter is present)
     try:
-        up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
-        if 'recon_vol' in up_long and up_long['recon_vol'] > 0:
+        up_long = {item.name: item for item in metadata.userParameters.userParameterLong}
+        if 'recon_vol' in up_long and up_long['recon_vol'].value > 0:
             if not connection.savedata:
                 logging.info("Enabling savedata as not all volumes are reconstructed online.")
                 connection.savedata = True
                 connection.create_save_file()
+                recon_vol = up_long['recon_vol'].value
+                up_long['recon_vol'].value = 0 # online reco "flag" needs to be zero in saved file
                 connection.dset.write_xml_header(bytes(metadata.toXML(), 'utf-8'))
+                up_long['recon_vol'].value = recon_vol
     except Exception as e:
         logging.warning("Failed to check for recon_vol parameter: %s", e)
 

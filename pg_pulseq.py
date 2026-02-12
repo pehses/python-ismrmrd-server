@@ -30,10 +30,10 @@ def process(connection, config, metadata):
                 logging.info("Enabling savedata as not all volumes are reconstructed online.")
                 connection.savedata = True
                 connection.create_save_file()
-                recon_vol = up_long['recon_vol'].value
-                up_long['recon_vol'].value = 0 # online reco "flag" needs to be zero in saved file
+                recon_vol_param = up_long['recon_vol']
+                metadata.userParameters.userParameterLong.remove(recon_vol_param) # online reco "flag" needs to be removed in saved file
                 connection.dset.write_xml_header(bytes(metadata.toXML(), 'utf-8'))
-                up_long['recon_vol'].value = recon_vol
+                metadata.userParameters.userParameterLong.append(recon_vol_param)
     except Exception as e:
         logging.warning("Failed to check for recon_vol parameter: %s", e)
 

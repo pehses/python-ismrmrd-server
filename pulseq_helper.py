@@ -331,7 +331,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
                 dset_acq.data[:] = data_tmp
             else:
                 # gradients in protocol file - calculate trajectory with girf
-                base_trj, dset_acq.traj[:,:3], dset_acq.traj[:,3] = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf, traj_phys=traj_phys) # [samples, dims]        
+                base_trj, dset_acq.traj[:,:3], _ = calc_traj(prot_acq, metadata, nsamples_full, rotmat, use_girf=use_girf, traj_phys=traj_phys) # [samples, dims]        
                 dset_acq.data[:] = np.concatenate((data_tmp, np.zeros([dset_acq.active_channels, nsamples_full - nsamples])), axis=-1) # fill extended part of data with zeros
 
         # remove first ADCs of spirals as they can be corrupted

@@ -56,7 +56,7 @@ RUN mkdir -p /opt/code
 RUN echo "set positionlog" > ~/.nanorc
 
 # Python MRD library
-RUN pip3 install h5py==3.10.0 ismrmrd==1.14.1
+RUN pip3 install h5py==3.10.0 ismrmrd==1.14.1 antspyx==0.6.3 antspynet==0.3.2
 
 RUN cd /opt/code && \
     git clone https://github.com/ismrmrd/ismrmrd-python-tools.git && \

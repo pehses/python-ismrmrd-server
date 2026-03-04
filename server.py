@@ -14,6 +14,7 @@ import signal
 import simplefft
 import invertcontrast
 import analyzeflow
+import or_ants
 
 class Server:
     """
@@ -124,6 +125,10 @@ class Server:
             elif (config == "analyzeflow"):
                 logging.info("Starting analyzeflow processing based on config")
                 analyzeflow.process(connection, configAdditional, metadata)
+            elif (config == "or_ants"):
+                importlib.reload(or_ants)
+                logging.info("Starting or_ants processing based on config")
+                or_ants.process(connection, configAdditional, metadata)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:

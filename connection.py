@@ -365,10 +365,10 @@ class Connection:
         logging.debug("   Reading in %d bytes of attributes", attribute_length.value)
 
         attribute_bytes = self.read(attribute_length.value)
-        if (attribute_length.value > 25000):
-            logging.debug("   Attributes (truncated): %s", attribute_bytes[0:24999].decode('utf-8'))
-        else:
-            logging.debug("   Attributes: %s", attribute_bytes.decode('utf-8'))
+        # if (attribute_length.value > 25000):
+        #     logging.debug("   Attributes (truncated): %s", attribute_bytes[0:24999].decode('utf-8'))
+        # else:
+        #     logging.debug("   Attributes: %s", attribute_bytes.decode('utf-8'))
 
         image = ismrmrd.Image(header_bytes, attribute_bytes.split(b'\x00',1)[0].decode('utf-8'))  # Strip off null teminator
 

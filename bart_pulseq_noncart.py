@@ -23,7 +23,7 @@ debugFolder = os.path.join(shareFolder, "debug")
 dependencyFolder = os.path.join(shareFolder, "dependency")
 
 parallel_reco = True # parallel reconstruction of slices/contrasts
-save_complex = False
+save_complex = True
 
 snr_map = False # calculate SNR map (only if parallel_reco is True)
 n_replica = 50 # number of replicas
@@ -45,6 +45,11 @@ def process_noncart(connection, config, metadata, prot_file):
         importlib.reload(bart_pulseq_spiral_dream)
         bart_pulseq_spiral_dream.process_spiral_dream(connection, config, metadata, prot_file)
         return
+
+    up_long = {item.name: item.value for item in metadata.userParameters.userParameterLong}
+    global save_complex
+    if 'recon_vol' in up_long:
+        save_complex = False
 
     # Coil Compression
     n_cha = metadata.acquisitionSystemInformation.receiverChannels

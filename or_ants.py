@@ -133,7 +133,7 @@ class ImageFactory:
 
         if len(seq_descrip_add)>0:
             self.image_series_index_offset += 1
-            self.SequenceDescriptionAdditional.append(seq_descrip_add)
+            self.SequenceDescriptionAdditional = seq_descrip_add
 
         # Reformat data from [y x img] to [y x z cha img]
         data = ants_image.numpy()[:,:,np.newaxis,np.newaxis,:].astype(np.int16)

@@ -133,7 +133,7 @@ class ImageFactory:
 
         if len(seq_descrip_add)>0:
             self.image_series_index_offset += 1
-            self.SequenceDescriptionAdditional = seq_descrip_add
+            self.SequenceDescriptionAdditional = [seq_descrip_add]
 
         # Reformat data from [y x img] to [y x z cha img]
         data = ants_image.numpy()[:,:,np.newaxis,np.newaxis,:].astype(np.int16)
@@ -351,12 +351,12 @@ def process_image(images, connection, config, metadata):
             ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
             images_out      += imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
             ants_image_n4_dn = ants.denoise_image(ants_image_n4, v=1, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_n4_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
+            images_out      += imgfactory.ANTsImageToMRD(ants_image_n4_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='N4_Dn')
 
         elif ANTsConfig == 'DnN4':
             ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
             images_out      += imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
             ants_image_dn_n4 = ants.n4_bias_field_correction(ants_image_dn, verbose=True, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_dn_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
+            images_out      += imgfactory.ANTsImageToMRD(ants_image_dn_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='Dn_N4')
 
     return images_out

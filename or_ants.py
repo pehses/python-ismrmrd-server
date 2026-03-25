@@ -10,9 +10,35 @@ import constants
 import ants
 import antspynet
 
-
 # Folder for debug output files
 debugFolder = "/tmp/share/debug"
+
+
+def _get_sequence_description(image: ismrmrd.Image) -> str:
+    try:
+        meta = ismrmrd.Meta.deserialize(image.attribute_string)
+        return str(meta.get('SequenceDescription', ''))
+    except Exception:
+        return ''
+
+def _config_with_ants_none(config):
+    if not isinstance(config, dict):
+        logging.info("Received non-dict config; creating default config dict")
+        config_override = {}
+    else:
+        config_override = dict(config)
+
+    parameters_raw = config_override.get('parameters', {})
+    if not isinstance(parameters_raw, dict):
+        logging.info("Config 'parameters' is not a dict; creating default parameters dict")
+        parameters = {}
+    else:
+        parameters = dict(parameters_raw)
+
+    parameters['ANTsConfig'] = 'None'
+    parameters['BrainMaskConfig'] = 'None'
+    config_override['parameters'] = parameters
+    return config_override
 
 def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
@@ -35,6 +61,7 @@ def process(connection, config, metadata):
 
     # Continuously parse incoming data parsed from MRD messages
     currentSeries = 0
+    process_image.image_series_index_offset = 0
     imgGroup = []
     try:
         for item in connection:
@@ -54,8 +81,29 @@ def process(connection, config, metadata):
                 if item.image_series_index != currentSeries:
                     logging.info("Processing a group of images because series index changed to %d", item.image_series_index)
                     currentSeries = item.image_series_index
-                    image = process_image(imgGroup, connection, config, metadata)
+                    config_for_group = config
+                    if len(imgGroup) > 0:
+                        previous_desc = _get_sequence_description(imgGroup[0])
+                        current_desc = _get_sequence_description(item)
+                        previous_base = previous_desc[:-3] if previous_desc.endswith('_ND') else ''
+
+                        if (len(previous_base) > 0) and (current_desc == previous_base):
+                            logging.info(
+                                "Do not process non-distortion corrected images '%s' when distortion correction is active.",
+                                previous_desc,
+                            )
+                            config_for_group = _config_with_ants_none(config)
+
+                    image = process_image(imgGroup, config_for_group)
                     connection.send_image(image)
+
+                    if len(imgGroup) > 0:
+                        process_image.image_series_index_offset += 1
+                        logging.info(
+                            "Incremented image series offset between groups: %d",
+                            process_image.image_series_index_offset,
+                        )
+
                     imgGroup = []
 
                 # Only process magnitude images -- send phase images back without modification (fallback for images with unknown type)
@@ -81,7 +129,7 @@ def process(connection, config, metadata):
         # image in a series is typically not separately flagged.
         if len(imgGroup) > 0:
             logging.info("Processing a group of images (untriggered)")
-            image = process_image(imgGroup, connection, config, metadata)
+            image = process_image(imgGroup, config)
             connection.send_image(image)
             imgGroup = []
 
@@ -229,7 +277,9 @@ def get_direction(image_header):
 
     return direction
 
-def process_image(images, connection, config, metadata):
+def process_image(images, config):
+    if not hasattr(process_image, 'image_series_index_offset'):
+        process_image.image_series_index_offset = 0
     
     if len(images) == 0:
         return []
@@ -244,7 +294,7 @@ def process_image(images, connection, config, metadata):
     # OR parameters
     BrainMaskConfig    = check_OR_arguments(config, 'BrainMaskConfig'   , str , 'ApplyInBrainMask')
     ANTsConfig         = check_OR_arguments(config, 'ANTsConfig'        , str , 'N4Dn'            )
-    SaveOriginalImages = check_OR_arguments(config, 'SaveOriginalImages', bool, True              )
+    SaveOriginalImages = check_OR_arguments(config, 'SaveOriginalImages', bool, False             )
 
     # Extract image data into a 5D array of size [img cha z y x]
     data = np.stack([img.data                              for img in images])
@@ -277,6 +327,7 @@ def process_image(images, connection, config, metadata):
     logging.info(f'MRD slice_dir        [x y z] : {slice_dir}')
 
     imgfactory = ImageFactory()
+    imgfactory.image_series_index_offset = process_image.image_series_index_offset
     imgfactory.mrdHeader = head
     imgfactory.mrdMeta   = meta
 
@@ -298,65 +349,41 @@ def process_image(images, connection, config, metadata):
         masking_label = '@AntspynetMask'
 
     # default configuration, just copy original images
-    images_out = imgfactory.ANTsImageToMRD(ants_image_in) # !!! still need to "Keep_image_geometry"
-
-    if not SaveOriginalImages:
-
-        if BrainMaskConfig == 'SkullStripping':
-            ants_image_in = ants.mask_image(ants_image_in, mask)
-
-        if ANTsConfig == 'None':
-            images_out       = imgfactory.ANTsImageToMRD(ants_image_in, history=masking_label)
-        
-        elif ANTsConfig == 'N4':
-            ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
-            images_out       = imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label)
-
-        elif ANTsConfig == 'Dn':
-            ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
-            images_out       = imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label)
-
-        elif ANTsConfig == 'N4Dn':
-            ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
-            ants_image_n4_dn = ants.denoise_image(ants_image_n4, v=1, **masking_args)
-            images_out       = imgfactory.ANTsImageToMRD(ants_image_n4_dn, history=['ANTsN4BiasFieldCorrection'+masking_label, 'ANTsDenoiseImage'+masking_label])
-
-        elif ANTsConfig == 'DnN4':
-            ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
-            ants_image_dn_n4 = ants.n4_bias_field_correction(ants_image_dn, verbose=True, **masking_args)
-            images_out       = imgfactory.ANTsImageToMRD(ants_image_dn_n4, history=['ANTsDenoiseImage'+masking_label, 'ANTsN4BiasFieldCorrection'+masking_label])
-
+    if SaveOriginalImages:
+        images_out = imgfactory.ANTsImageToMRD(ants_image_in) # !!! still need to "Keep_image_geometry"
     else:
+        images_out = []
 
-        if   BrainMaskConfig == 'ApplyInBrainMask':
-            images_out      += imgfactory.ANTsImageToMRD(mask, history='AntspynetMask', seq_descrip_add='Brainmask')
-        elif BrainMaskConfig == 'SkullStripping':
-            images_out      += imgfactory.ANTsImageToMRD(mask, history='AntspynetMask', seq_descrip_add='Brainmask')
-            ants_image_in    = ants.mask_image(ants_image_in, mask)
-            imgfactory.SequenceDescriptionAdditional.pop()
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_in, history='AntspynetMasked', seq_descrip_add='SS')
+    if   BrainMaskConfig == 'ApplyInBrainMask':
+        images_out      += imgfactory.ANTsImageToMRD(mask, history='AntspynetMask', seq_descrip_add='Brainmask')
+    elif BrainMaskConfig == 'SkullStripping':
+        images_out      += imgfactory.ANTsImageToMRD(mask, history='AntspynetMask', seq_descrip_add='Brainmask')
+        ants_image_in    = ants.mask_image(ants_image_in, mask)
+        imgfactory.SequenceDescriptionAdditional.pop()
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_in, history='AntspynetMasked', seq_descrip_add='SS')
 
-        if ANTsConfig == 'None':
-            pass
-        
-        elif ANTsConfig == 'N4':
-            ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
+    if ANTsConfig == 'None':
+        pass
+    
+    elif ANTsConfig == 'N4':
+        ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
 
-        elif ANTsConfig == 'Dn':
-            ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
+    elif ANTsConfig == 'Dn':
+        ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
 
-        elif ANTsConfig == 'N4Dn':
-            ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
-            ants_image_n4_dn = ants.denoise_image(ants_image_n4, v=1, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_n4_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='N4_Dn')
+    elif ANTsConfig == 'N4Dn':
+        ants_image_n4    = ants.n4_bias_field_correction(ants_image_in, verbose=True, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='N4')
+        ants_image_n4_dn = ants.denoise_image(ants_image_n4, v=1, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_n4_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='N4_Dn')
 
-        elif ANTsConfig == 'DnN4':
-            ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
-            ants_image_dn_n4 = ants.n4_bias_field_correction(ants_image_dn, verbose=True, **masking_args)
-            images_out      += imgfactory.ANTsImageToMRD(ants_image_dn_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='Dn_N4')
+    elif ANTsConfig == 'DnN4':
+        ants_image_dn    = ants.denoise_image(ants_image_in, v=1, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_dn, history='ANTsDenoiseImage'+masking_label, seq_descrip_add='Dn')
+        ants_image_dn_n4 = ants.n4_bias_field_correction(ants_image_dn, verbose=True, **masking_args)
+        images_out      += imgfactory.ANTsImageToMRD(ants_image_dn_n4, history='ANTsN4BiasFieldCorrection'+masking_label, seq_descrip_add='Dn_N4')
 
+    process_image.image_series_index_offset = imgfactory.image_series_index_offset
     return images_out

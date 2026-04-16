@@ -292,7 +292,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         
         use_girf = False
         girf_support = ['Investigational_Device_7T_Plus', 'Skyra']
-        if metadata.acquisitionSystemInformation.systemModel in girf_support:
+        if any(girf_str.lower() in metadata.acquisitionSystemInformation.systemModel.lower() for girf_str in girf_support):
             use_girf = True
 
         # calculate full number of samples - for segmented ADCs

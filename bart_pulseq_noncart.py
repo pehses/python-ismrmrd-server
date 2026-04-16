@@ -101,13 +101,16 @@ def process_noncart(connection, config, metadata, prot_file):
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+    nz = metadata.encoding[0].encodedSpace.matrixSize.z
 
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor == 0:
         sms_factor = 1
+    global parallel_reco
     if sms_factor > 1:
-        global parallel_reco
         parallel_reco = True
+    if nz > 1:
+        parallel_reco = False
 
     acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]
     noiseGroup = []
@@ -188,11 +191,8 @@ def process_noncart(connection, config, metadata, prot_file):
                     continue
                 if acs[0] is not None and sensmaps is None:
                     # ESPIRiT calibration
-                    use_gpu_sens = False
                     acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim
-                    if gpu and acs.shape[2] > 1: # only use GPU for 3D data, as otherwise the overhead makes it slower than CPU
-                        use_gpu_sens = True
-                    sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=use_gpu_sens)
+                    sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=False)
                     sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
                     if sms_factor > 1:
                         sensmaps = reshape_sens_sms(sensmaps, sms_factor)
@@ -229,7 +229,7 @@ def process_noncart(connection, config, metadata, prot_file):
                     else:
                         sensmaps_slc = sensmaps[item.idx.slice]
                     images = process_raw(acqGroup[item.idx.contrast][item.idx.slice], metadata, cc_cha, dmtx, sensmaps_slc, gpu)
-                    logging.debug("Sending images to client:\n%s", images)
+                    # logging.debug("Sending images to client:\n%s", images)
                     connection.send_image(images)
                     acqGroup[item.idx.contrast][item.idx.slice].clear() # free memory
 
@@ -414,7 +414,11 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         if nz > rNz:
             # remove oversampling in slice direction
-            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+            crop = (nz - rNz) // 2
+            data = data[:,:,crop:-crop]
+            for i, refimg in enumerate(process_raw.refimg):
+                if refimg is not None:
+                    process_raw.refimg[i] = refimg[:, :, crop:-crop]
 
         logging.debug("Image data is size %s" % (data.shape,))
         np.save(debugFolder + "/" + "img.npy", data)
@@ -467,23 +471,25 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
 
-        for j in range(n_slc):
-            if process_raw.refimg[j] is not None:
+        for slc in range(n_slc):
+            if process_raw.refimg[slc] is not None:
                 meta['ImgType'] = 'refimg'
                 xml = meta.serialize()
-                refimg = np.swapaxes(process_raw.refimg[j], 0, 1)
+                refimg = np.swapaxes(process_raw.refimg[slc], 0, 1)
                 refimg = np.flip(refimg, (0,1,2))
                 refimg *= 32767 / np.max(refimg)
                 refimg = np.around(refimg)
                 refimg = refimg.astype(np.int16)
                 
                 image = ismrmrd.Image.from_array(refimg, acquisition=group[0][0][0])
-                image.image_index = j
+                image.image_index = slc
                 image.image_series_index = n_contr
                 image.attribute_string = xml
                 image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+                offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]
+                image.position[:] += rh.gcs_to_pcs(offset, rotmat)
                 images.append(image)
 
         if snr is not None:
@@ -554,7 +560,10 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         if nz > rNz:
             # remove oversampling in slice direction
-            data = data[:,:,(nz - rNz)//2:-(nz - rNz)//2]
+            crop = (nz - rNz) // 2
+            data = data[:,:,crop:-crop]
+            if process_raw.refimg[slc] is not None:
+                process_raw.refimg[slc] = process_raw.refimg[slc][:,:,crop:-crop]
 
         logging.debug("Image data is size %s" % (data.shape,))
 
@@ -583,15 +592,19 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         images = []
         n_par = data.shape[-1]
         n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
+        slc = group[0].idx.slice
+        rotmat = rh.calc_rotmat(group[0])
 
         # Format as ISMRMRD image data
         if n_par > 1:
             image = ismrmrd.Image.from_array(data, acquisition=group[0])
         else:
             image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
-        image.image_index = group[0].idx.slice
+            offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]
+            image.position[:] += rh.gcs_to_pcs(offset, rotmat)
+        image.image_index = slc
         image.image_series_index = group[0].idx.contrast
-        image.slice = group[0].idx.slice
+        image.slice = slc
         image.attribute_string = xml
         image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                             ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
@@ -599,22 +612,24 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         images.append(image)
 
         # send reference image if available
-        if process_raw.refimg[group[0].idx.slice] is not None and group[0].idx.contrast == 0:
+        if process_raw.refimg[slc] is not None and group[0].idx.contrast == 0:
             meta['ImgType'] = 'refimg'
             xml = meta.serialize()
-            refimg = np.swapaxes(process_raw.refimg[group[0].idx.slice], 0, 1)
+            refimg = np.swapaxes(process_raw.refimg[slc], 0, 1)
             refimg = np.flip(refimg, (0,1,2))
             refimg *= 32767 / np.max(refimg)
             refimg = np.around(refimg)
             refimg = refimg.astype(np.int16)
             
             image = ismrmrd.Image.from_array(refimg, acquisition=group[0])
-            image.image_index = group[0].idx.slice
+            image.image_index = slc
             image.image_series_index = n_contr
             image.attribute_string = xml
             image.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]
+            image.position[:] += rh.gcs_to_pcs(offset, rotmat)
             images.append(image)
 
         return images

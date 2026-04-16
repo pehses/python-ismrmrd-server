@@ -318,9 +318,8 @@ def fov_shift_spiral_reapply(sig, pred_trj, base_trj, shift, matr_sz):
     Re-apply (2D) FOV shift on spiral/noncartesian data, when FOV positioning in the Pulseq sequence is enabled
     first undo field of view shift with nominal, then reapply with predicted trajectory
 
-    IMPORTANT: The nominal trajectory has to be shifted by -10us as the ADC frequency adjustment
-               of the scanner is lagging behind be one gradient raster time (10 us).
-               For Pulseq sequences this is done in pulseq_helper.py
+    IMPORTANT: The nominal trajectory has to be shifted by some scanner dependent time as the ADC frequency adjustment
+               of the scanner is lagging behind. For Pulseq sequences this is done in pulseq_helper.py
 
     From Pulseq 1.4.2 on it is possible to disable FOV positioning for single blocks (e.g. spirals).
     In this case the nominal trajectory should be set to None or zeros.
@@ -613,7 +612,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
         chunk_sz = 2 * (chunk_sz//2)  # round down to multiple of 2
         chunk_sz = int(max(1, chunk_sz))
 
-    if chunk_sz <= 0 or chunk_sz >= nz:
+    if chunk_sz <= 0 or chunk_sz >= nz or not use_gpu:
         # espirit in one run:
         ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
         if softsense:

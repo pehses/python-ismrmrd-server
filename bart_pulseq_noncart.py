@@ -191,9 +191,15 @@ def process_noncart(connection, config, metadata, prot_file):
                     continue
                 if acs[0] is not None and sensmaps is None:
                     # ESPIRiT calibration
-                    acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim
+                    if n_slc > 1:
+                        acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim
+                    else:
+                        acs = np.asarray(acs)[0]
                     sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=False)
-                    sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
+                    if n_slc > 1:
+                        sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
+                    else:
+                        sensmaps = sensmaps[np.newaxis,...]
                     if sms_factor > 1:
                         sensmaps = reshape_sens_sms(sensmaps, sms_factor)
 
@@ -550,6 +556,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-2)
             data = bart(1, pics_config, data, sensmaps, t=trj)
+            if ecalib_maps > 1:
+                data = data[...,0]
         if not save_complex:    
             data = np.abs(data)
         

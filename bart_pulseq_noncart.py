@@ -24,6 +24,7 @@ dependencyFolder = os.path.join(shareFolder, "dependency")
 
 parallel_reco = True # parallel reconstruction of slices/contrasts
 save_complex = True
+read_ecalib = False # read ecalib maps from previous recon
 
 snr_map = False # calculate SNR map (only if parallel_reco is True)
 n_replica = 50 # number of replicas
@@ -63,6 +64,16 @@ def process_noncart(connection, config, metadata, prot_file):
             logging.debug('Invalid number of compressed coils. Set back to original number of coils.')
     else:
         cc_cha = n_cha
+
+    # Create folder, if necessary
+    if len(metadata.userParameters.userParameterString) > 1:
+        up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
+        seq_signature = up_string['seq_signature']
+        global debugFolder
+        debugFolder += f"/{seq_signature}"
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder, mode=0o774)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # ----------------------------- #
 
@@ -195,7 +206,12 @@ def process_noncart(connection, config, metadata, prot_file):
                         acs = np.moveaxis(np.asarray(acs),0,-1) # move slices to last dim
                     else:
                         acs = np.asarray(acs)[0]
-                    sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=False)
+                    sens_debug_file = os.path.join(debugFolder, "sensmaps.npy")
+                    if read_ecalib and os.path.exists(sens_debug_file):
+                        sensmaps = np.load(sens_debug_file)
+                    else:
+                        sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=False)
+                    np.save(sens_debug_file, sensmaps)
                     if n_slc > 1:
                         sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
                     else:
@@ -292,14 +308,16 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
     nufft_config = f'nufft -i -m 15 -l 0.005 -d {nx}:{nx}:{nz}'
     nlinv_config = f'nlinv -i 8 -S -x {nx}:{nx}:{nz}'
-    ecalib_config = 'ecalib -m 1 -I'
-    pics_config = 'pics -S -e -l1 -r 0.001 -i 50'
+    ecalib_config = f'ecalib -m {ecalib_maps} -I'
+    iterations = 100 # should be >=100
+    regu = 0.001 # should be sth between 0.001 and 0.01
+    pics_config = f'pics -S -e -l1 -r {regu} -i {iterations}'
     if gpu and nz > 1:
         nufft_config += ' -g'
         nlinv_config += ' -g'
         ecalib_config += ' -g'
         pics_config += ' -g'
-    pics_config_scaling = pics_config.replace('-i 50', '-i 1') + ' -d 3'
+    pics_config_scaling = pics_config.replace(f'-i {iterations}', '-i 1') + ' -d 3'
 
     if parallel:
         ksp = []
@@ -372,6 +390,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                     
                 # Reco
                 data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj, p=pat)
+                rh.log_bart_stdout()
                 if "slice_profile_meas" in up_base:
                     # upper mb slices need FOV shift, which is the slice distance in voxel
                     res_z = up_double["res_z"] if "res_z" in up_double else 1 # voxel size in z
@@ -390,6 +409,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 
                 # Reco
                 data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj)
+                rh.log_bart_stdout()
             if ecalib_maps > 1:
                 data = data[...,0,:]
             if not save_complex:
@@ -556,6 +576,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             if "slice_profile_meas" in up_base:
                 sensmaps = np.repeat(sensmaps, nz, axis=-2)
             data = bart(1, pics_config, data, sensmaps, t=trj)
+            rh.log_bart_stdout()
             if ecalib_maps > 1:
                 data = data[...,0]
         if not save_complex:    
@@ -660,7 +681,6 @@ def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
         np.save(debugFolder + "/" + "refimg.npy", refimg)
 
         np.save(debugFolder + "/" + "acs.npy", data)
-        # np.save(debugFolder + "/" + "sensmaps.npy", sensmaps)
         return data
     else:
         return None
@@ -690,8 +710,6 @@ def sort_spiral_data(group, dmtx=None):
         # update trajectory
         traj = np.swapaxes(acq.traj[:,:3],0,1) # [samples, dims] to [dims, samples]
         trj.append(traj)
-
-    np.save(debugFolder + "/" + "enc.npy", enc)
     
     # convert lists to numpy arrays
     trj = np.asarray(trj) # current size: (nacq, 3, ncol)
@@ -701,9 +719,6 @@ def sort_spiral_data(group, dmtx=None):
     trj = np.transpose(trj, [1, 2, 0]) # [3, ncol, nacq]
     sig = np.transpose(sig, [2, 0, 1])[np.newaxis] # [1, ncol, nacq, ncha]
     logging.debug("Trajectory shape = %s , Signal Shape = %s "%(trj.shape, sig.shape))
-    
-    np.save(debugFolder + "/" + "trj.npy", trj)
-    np.save(debugFolder + "/" + "raw.npy", sig)
 
     return sig, trj
 

@@ -30,7 +30,7 @@ snr_map = False # calculate SNR map (only if parallel_reco is True)
 n_replica = 50 # number of replicas
 
 compressed_coils = None
-ecalib_maps = 1
+ecalib_maps = 2
 
 ########################
 # Main Function
@@ -289,6 +289,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
     up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
+    up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
 
     nx = metadata.encoding[0].encodedSpace.matrixSize.x
     ny = metadata.encoding[0].encodedSpace.matrixSize.y
@@ -309,14 +310,22 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     nufft_config = f'nufft -i -m 15 -l 0.005 -d {nx}:{nx}:{nz}'
     nlinv_config = f'nlinv -i 8 -S -x {nx}:{nx}:{nz}'
     ecalib_config = f'ecalib -m {ecalib_maps} -I'
-    iterations = 100 # should be >=100
-    regu = 0.001 # should be sth between 0.001 and 0.01
-    pics_config = f'pics -S -e -l1 -r {regu} -i {iterations}'
+
+    pics_config_base = f'pics -S -e '
+    if 'pics_options' in up_string:
+        pics_config = pics_config_base + up_string['pics_options']
+    else:
+        iterations = 100 # should be >=100
+        regu = 0.0005
+        pics_config = f'pics -S -e -l1 -r {regu} -i {iterations}'
+    if '-l1' in pics_config:
+        pics_config += ' --wavelet cdf44'
+
     if gpu and nz > 1:
         nufft_config += ' -g'
         nlinv_config += ' -g'
         ecalib_config += ' -g'
-        pics_config += ' -g'
+        pics_config += ' -g --gpu-gridding'
     pics_config_scaling = pics_config.replace(f'-i {iterations}', '-i 1') + ' -d 3'
 
     if parallel:

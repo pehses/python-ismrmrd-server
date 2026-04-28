@@ -326,7 +326,10 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         nlinv_config += ' -g'
         ecalib_config += ' -g'
         pics_config += ' -g --gpu-gridding'
-    pics_config_scaling = pics_config.replace(f'-i {iterations}', '-i 1') + ' -d 3'
+    if re.search(r'(?:^|\s)-i\s*\d+', pics_config):
+        pics_config_scaling = re.sub(r'((?:^|\s)-i\s*)\d+', r'\g<1>1', pics_config, count=1) + ' -d 3'
+    else:
+        pics_config_scaling = pics_config + ' -i 1 -d 3'
 
     if parallel:
         ksp = []

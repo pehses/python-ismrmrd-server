@@ -339,7 +339,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
 
     # correct orientation at scanner (consistent with ICE)
     img = np.swapaxes(img, 0, 1)
-    img = np.flip(img, (0,1,2))
+    img = np.flip(img, (0,1))
 
     if parallel:
         n_contr = len(group)
@@ -444,7 +444,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
 
     # correct orientation at scanner (consistent with ICE)
     fmap = np.transpose(fmap, [1,2,0])
-    fmap = np.flip(fmap, (0,1,2))
+    fmap = np.flip(fmap, (0,1))
 
     # send in Hz
     fmap /= (2*np.pi)

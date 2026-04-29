@@ -446,7 +446,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             std_dev = np.std(np.abs(data_snr + np.max(np.abs(data_snr))), axis=0)
             snr = np.divide(np.abs(data), std_dev, where=std_dev!=0, out=np.zeros_like(std_dev))
             snr = np.swapaxes(snr, 0, 1)
-            snr = np.flip(snr, (0,1,2))
+            snr = np.flip(snr, (0,1))
             if snr.ndim == 3:
                 snr = snr[..., np.newaxis, np.newaxis]
             snr = np.moveaxis(snr, -1, 0)[...,0]
@@ -466,7 +466,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         # correct orientation at scanner (consistent with ICE)
         data = np.swapaxes(data, 0, 1)
-        data = np.flip(data, (0,1,2))
+        data = np.flip(data, (0,1))
         if data.ndim == 3: # if only 1 slice, BART removes the last 2 dims
             data = data[..., np.newaxis, np.newaxis]
         data = np.moveaxis(data, -1, 0)[...,0] # [slc,x,y,z]
@@ -517,7 +517,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 meta['ImgType'] = 'refimg'
                 xml = meta.serialize()
                 refimg = np.swapaxes(process_raw.refimg[slc], 0, 1)
-                refimg = np.flip(refimg, (0,1,2))
+                refimg = np.flip(refimg, (0,1))
                 refimg *= 32767 / np.max(refimg)
                 refimg = np.around(refimg)
                 refimg = refimg.astype(np.int16)
@@ -613,7 +613,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         # correct orientation at scanner (consistent with ICE)
         data = np.swapaxes(data, 0, 1)
-        data = np.flip(data, (0,1,2))
+        data = np.flip(data, (0,1))
 
         # Normalize and convert to int16
         # save one scaling in 'static' variable
@@ -660,7 +660,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             meta['ImgType'] = 'refimg'
             xml = meta.serialize()
             refimg = np.swapaxes(process_raw.refimg[slc], 0, 1)
-            refimg = np.flip(refimg, (0,1,2))
+            refimg = np.flip(refimg, (0,1))
             refimg *= 32767 / np.max(refimg)
             refimg = np.around(refimg)
             refimg = refimg.astype(np.int16)

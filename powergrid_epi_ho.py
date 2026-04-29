@@ -278,7 +278,7 @@ def process_raw(acqGroup, metadata, img_coord):
         sens = np.load(sens_path)
     else:
         acs = np.moveaxis(acs,0,-1) # move slice dimension to last
-        sens = rh.ecalib(acs, chunk_sz=0, n_maps=1, kernel_size=6, use_gpu=False)
+        sens = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=False)
         # sens = rh.bart_parallel(acs.ndim-1, acs.shape[-1], 1, 'caldir 32', acs)
         sens = np.transpose(sens, [-1,3,2,1,0]) # [slices,nc,nz,ny,nx]
         sens = sens[::-1,...,::-1,:] # refscan is with Pulseq and has different orientation

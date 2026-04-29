@@ -210,7 +210,10 @@ def process_noncart(connection, config, metadata, prot_file):
                     if read_ecalib and os.path.exists(sens_debug_file):
                         sensmaps = np.load(sens_debug_file)
                     else:
-                        sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=False)
+                        use_gpu = False
+                        if gpu and acs.shape[2] > 1:
+                            use_gpu = True
+                        sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=use_gpu)
                     np.save(sens_debug_file, sensmaps)
                     if n_slc > 1:
                         sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim

@@ -38,7 +38,7 @@ RUN cd /opt/code \
 
 # compile & install the bart MRI toolbox
 RUN  cd /opt/code \
-     && git clone https://github.com/mrirecon/bart \
+     && git clone https://codeberg.org/mrirecon/bart.git \
      && cd bart \
      # && git checkout v0.9.00 \
      && echo MKL=1 >> Makefile.local \

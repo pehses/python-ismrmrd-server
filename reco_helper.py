@@ -581,7 +581,7 @@ def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     log_bart_stdout()
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, softsense=False, chunk_sz=None, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, kernel_size=6, softsense=False, use_gpu=False):
     """
     Run parallel imaging calibration with ESPIRiT
 
@@ -589,72 +589,28 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, threads=8, kernel_size=6, s
     n_maps: number of ESPRIT maps
     crop: crop factor for ESPIRiT
     threshold: threshold for ESPIRiT
-    threads: number of threads for parallel processing, if 3D data is chunked
     kernel_size: kernel size for ESPIRiT
-    chunk_sz: chunk size for 3D data, if None 3D data will be processed in one run
     use_gpu: use GPU for ESPIRiT
     """
 
     logging.debug("Start sensitivity map calculation.")
     start = time.perf_counter()
 
+    if use_gpu:
+        os.environ["BART_GPU_GLOBAL_MEMORY"] = "1"
+
     gpu_str = "-g" if use_gpu else ""
+    ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
+    if softsense:
+        ecal_str += ' -S'
 
     ndim = acs.ndim
-    nx, ny, nz, nc = acs.shape[:4]
-    if chunk_sz is None:
-        # this should usually work
-        gpu_mem = 48 * 1024**3  # bytes
-        chunk_sz = gpu_mem / (8*nx*ny*nc*nc*n_maps)
-        if threads is not None and threads > 1:
-            chunk_sz /= threads
-        chunk_sz /= 2  # reserve some memory for overhead
-        chunk_sz = 2 * (chunk_sz//2)  # round down to multiple of 2
-        chunk_sz = int(max(1, chunk_sz))
-
-    if chunk_sz <= 0 or chunk_sz >= nz or not use_gpu:
-        # espirit in one run:
-        ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
-        if softsense:
-            ecal_str += ' -S'
-        if ndim == 5 and acs.shape[-1] > 1:
-            if n_maps > 1:
-                acs = acs[...,np.newaxis,:]
-            sensmaps = bart_parallel(acs.ndim-1, acs.shape[-1], 1, ecal_str, acs)
-        else:
-            sensmaps = bart(1, ecal_str, acs)
+    if ndim == 5 and acs.shape[-1] > 1:
+        if n_maps > 1:
+            acs = acs[...,np.newaxis,:]
+        sensmaps = bart_parallel(acs.ndim-1, acs.shape[-1], 1, ecal_str, acs)
     else:
-        # espirit_econ: reduce memory footprint by chunking
-        ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m {n_maps} -t {threshold} -1'
-        if softsense:
-            ecal_str += ' -S'
-        eon = bart(1, ecal_str, acs)  # currently, gpu doesn't help here but try anyway
-        # use norms 'forward'/'backward' for consistent scaling with bart's espirit_econ.sh
-        # scaling is very important for proper masking in ecaltwo!
-        tic = time.perf_counter()
-        eon = np.fft.ifft(eon, axis=2, norm='forward')
-        tmp = np.zeros(eon.shape[:2] + (nz-eon.shape[2],) + eon.shape[-1:], dtype=eon.dtype)
-        cutpos = eon.shape[2]//2
-        eon = np.concatenate((eon[:, :, :cutpos, :], tmp, eon[:, :, cutpos:, :]), axis=2)
-        eon = np.fft.fft(eon, axis=2, norm='backward')
-        logging.info("FFT interpolation processing time: %.2f s" % (time.perf_counter()-tic))
-
-        tic = time.perf_counter()
-        logging.info(f"loop: 'bart ecaltwo {gpu_str} -c {crop} -m {n_maps} {nx} {ny} {chunk_sz}' with {threads} threads")
-
-        slcs = (slice(i, i+chunk_sz) for i in range(0, nz, chunk_sz))
-        chunks = (eon[:, :, sl] for sl in slcs)
-
-        if threads is None or threads < 2:
-            sensmaps = [ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=crop) for sig in chunks]
-        else:
-            # WIP: BART has its own parallel looping/MPI since v0.9.00
-            with Pool(threads) as p:
-                sensmaps = p.map(partial(ecaltwo, gpu_str, n_maps, nx, ny, crop=crop), chunks)
-
-        sensmaps = np.concatenate(sensmaps, axis=0)
-        sensmaps = np.moveaxis(sensmaps, 0, 2)
-        logging.info(f"ecalib with chunk_sz={chunk_sz} and {threads} thread(s): {time.perf_counter()-tic} s")
+        sensmaps = bart(1, ecal_str, acs)
 
     while sensmaps.ndim < ndim:
         sensmaps = sensmaps[..., np.newaxis]

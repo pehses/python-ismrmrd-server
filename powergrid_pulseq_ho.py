@@ -390,12 +390,10 @@ def process_raw(acqGroup, metadata, acs, img_coord, online_recon=False):
             acs = acs[0][np.newaxis]
         acs = np.moveaxis(np.asarray(acs),0,-1) # [nx,ny,nz,nc, n_slc]
         gpu = False
-        chunk_sz = 0
         if os.environ.get('NVIDIA_VISIBLE_DEVICES') == 'all' and acs.shape[2] > 1:
             logging.debug("Use GPU for ecalib.")
             gpu = True
-            chunk_sz = None
-        sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=gpu, chunk_sz=chunk_sz)
+        sensmaps = rh.ecalib(acs, n_maps=1, kernel_size=6, use_gpu=gpu)
         # sensmaps = rh.bart_parallel(acs.ndim-1, acs.shape[-1], 1, 'caldir 32', acs)
         sensmaps = np.moveaxis(np.asarray(sensmaps),-1,0) # [n_slc,nx,ny,nz,nc]
         nz = metadata.encoding[0].encodingLimits.slice.maximum + 1

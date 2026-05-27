@@ -25,11 +25,10 @@ from bart import bart
 
 def log_bart_stdout():
     try:
-        logging.debug(bart.stdout)
-        if bart.ERR < 0:
-            logging.debug(bart.stderr)
+        logging.debug(f"BART stdout: \n{bart.stdout}")
+        logging.debug(f"BART stderr: \n{bart.stderr}")
     except:
-        print("BART logging failed. stdout not available.")
+        logging.debug("BART logging failed. stdout not available.")
 
 # Root sum of squares
 def rss(img, axis=-1):

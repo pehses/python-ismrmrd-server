@@ -322,6 +322,7 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         else:
             if vers >= Version("1.4.0"):
                 prot_acq.traj[:,0] *= -1
+                prot_acq.user_float[-4] *= -1
             dset_acq.resize(trajectory_dimensions=4, number_of_samples=nsamples_full, active_channels=dset_acq.active_channels)
             if prot_acq.traj.shape[0] == dset_acq.data.shape[1] and prot_acq.traj[:,:3].max() > 1:
                 # trajectory in protocol file
@@ -340,6 +341,8 @@ def insert_acq(prot_acq, dset_acq, metadata, noncartesian=True, return_basetrj=T
         #      as in that case the delay will be negative
         up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
         delay = up_double["traj_delay"] if "traj_delay" in up_double else 0
+        if delay == -1 and prot_acq.user_float[-1] != 0:
+            delay = prot_acq.user_float[-1]
         trajtype = metadata.encoding[0].trajectory.value
         if delay > 0 and trajtype=='spiral': # only do this if trajectory was sufficiently delayed
             dwelltime = 1e-6 * up_double["dwellTime_us"]
@@ -373,9 +376,9 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     dims = grad.shape[0]
 
     # FOV for scaling the trajectory 
-    fov = np.array([hdr.encoding[0].reconSpace.fieldOfView_mm.x,
-                    hdr.encoding[0].reconSpace.fieldOfView_mm.y,
-                    hdr.encoding[0].reconSpace.fieldOfView_mm.z])
+    fov = np.array([hdr.encoding[0].encodedSpace.fieldOfView_mm.x,
+                    hdr.encoding[0].encodedSpace.fieldOfView_mm.y,
+                    hdr.encoding[0].encodedSpace.fieldOfView_mm.z])
 
     # get user parameters and dwelltime
     up_double = {item.name: item.value for item in hdr.userParameters.userParameterDouble}
@@ -385,6 +388,9 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     gradshift = up_double["traj_delay"]
     if gradshift == -1 and acq.user_float[-1] != 0:
         gradshift = acq.user_float[-1]
+
+    # Trajectory offset - useful if gradients are not only imaging gradients but also include e.g. spoilers
+    traj_offset = np.array([acq.user_float[-4], acq.user_float[-3], acq.user_float[-2]])
 
     # ADC sampling time
     adctime = dwelltime * np.arange(0.5, ncol)
@@ -431,8 +437,8 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
         pred_grad = grad.copy()
         k0 = np.zeros_like(ncol)
 
-    pred_trj = np.cumsum(pred_grad, axis=1) * dt_grad * gammabar # calculate trajectory [1/m]
-    base_trj = np.cumsum(grad, axis=1) * dt_grad * gammabar
+    pred_trj = (np.cumsum(pred_grad, axis=1) + traj_offset[:, np.newaxis]) * dt_grad * gammabar # calculate trajectory [1/m]
+    base_trj = (np.cumsum(grad, axis=1) + traj_offset[:, np.newaxis]) * dt_grad * gammabar
     if traj_phys:
         pred_trj = 2*np.pi * gcs_to_dcs(pred_trj, rotmat) # [1/m] -> [rad/m]
         base_trj = 2*np.pi * gcs_to_dcs(base_trj, rotmat)

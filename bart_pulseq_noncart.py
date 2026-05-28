@@ -197,7 +197,7 @@ def process_noncart(connection, config, metadata, prot_file):
                         acsGroup[item.idx.slice].append(item)
                     if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
                         # run parallel imaging calibration (after last calibration scan is acquired/before first imaging scan)
-                        acs[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx, gpu)
+                        acs[item.idx.slice] = process_acs(acsGroup[item.idx.slice], metadata, cc_cha, dmtx)
                         acsGroup[item.idx.slice].clear()
                     continue
                 if acs[0] is not None and sensmaps is None:
@@ -678,7 +678,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         return images
 
-def process_acs(group, metadata, cc_cha, dmtx=None, gpu=False):
+def process_acs(group, metadata, cc_cha, dmtx=None):
     if len(group)>0:
         data = sort_into_kspace(group, metadata, dmtx, zf_around_center=True)
 

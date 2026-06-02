@@ -108,6 +108,7 @@ def process_noncart(connection, config, metadata, prot_file):
     # user parameters
     up_double = {item.name: item.value for item in metadata.userParameters.userParameterDouble}
     up_base = {item.name: item.value for item in metadata.userParameters.userParameterBase64}
+    up_string = {item.name: item.value for item in metadata.userParameters.userParameterString}
 
     # # Initialize lists for datasets
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
@@ -120,7 +121,10 @@ def process_noncart(connection, config, metadata, prot_file):
     global parallel_reco
     if sms_factor > 1:
         parallel_reco = True
-    if nz > 1:
+    joint_reco = False
+    if up_string is not None and 'pics_options' in up_string and '-R L:' in up_string['pics_options']:
+        joint_reco = True
+    if nz > 1 and not joint_reco:
         parallel_reco = False
 
     acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]
@@ -213,7 +217,7 @@ def process_noncart(connection, config, metadata, prot_file):
                         use_gpu = False
                         if gpu and acs.shape[2] > 1:
                             use_gpu = True
-                        sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, use_gpu=use_gpu)
+                        sensmaps = rh.ecalib(acs, n_maps=ecalib_maps, kernel_size=6, calsize=30, use_gpu=use_gpu)
                     np.save(sens_debug_file, sensmaps)
                     if n_slc > 1:
                         sensmaps = np.moveaxis(sensmaps,-1,0) # move slices back to first dim
@@ -320,7 +324,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     else:
         iterations = 100 # should be >=100
         regu = 0.0005
-        pics_config = f'pics -S -e -l1 -r {regu} -i {iterations}'
+        pics_config = f'{pics_config_base} -l1 -r {regu} -i {iterations}'
     if '-l1' in pics_config:
         pics_config += ' --wavelet cdf44'
 
@@ -333,6 +337,14 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         pics_config_scaling = re.sub(r'((?:^|\s)-i\s*)\d+', r'\g<1>1', pics_config, count=1) + ' -d 3'
     else:
         pics_config_scaling = pics_config + ' -i 1 -d 3'
+    
+    # Check if joint reconstruction of contrasts
+    joint_reco = False
+    if '-R L:' in pics_config:
+        joint_reco = True
+        # # loop over coils to save memory and use lowmem mode of NUFFT
+        pics_config = '--md-loop-dims=3 ' + pics_config + ' --lowmem -g --gpu-gridding'
+    logging.debug(f"PICS config: {pics_config}")
 
     if parallel:
         ksp = []
@@ -423,7 +435,16 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                         pics_config += f' -w {scaling}'
                 
                 # Reco
-                data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj)
+                if joint_reco:
+                    os.environ["BART_GPU_GLOBAL_MEMORY"] = "1"
+                    contr_dim = 5 if ecalib_maps > 1 else 4
+                    te_dim = 10
+                    ksp = np.moveaxis(rh.add_naxes(ksp, te_dim-contr_dim), contr_dim, -1)
+                    traj = np.moveaxis(rh.add_naxes(traj, te_dim-contr_dim), contr_dim, -1)
+                    data = bart(1, pics_config, ksp, sensmaps, t=traj)
+                    data = data[:,:,:,:,:,0,0,0,0,0]
+                else:
+                    data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj)
                 rh.log_bart_stdout()
             if ecalib_maps > 1:
                 data = data[...,0,:]
@@ -492,7 +513,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         xml = meta.serialize()
         
         images = []
-        n_par = data.shape[-1]
+        n_par = data.shape[2]
         rotmat = rh.calc_rotmat(group[0][0][0])
 
         for k,contr in enumerate(data):

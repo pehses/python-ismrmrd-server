@@ -580,7 +580,7 @@ def ecaltwo(gpu_str, n_maps, nx, ny, sig, crop=0.8):
     log_bart_stdout()
     return np.moveaxis(maps, 2, 0)  # slice dim first since we need to concatenate it in the next step
 
-def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, kernel_size=6, softsense=False, use_gpu=False):
+def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, kernel_size=6, calsize=30, softsense=False, use_gpu=False):
     """
     Run parallel imaging calibration with ESPIRiT
 
@@ -599,7 +599,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, kernel_size=6, softsense=Fa
         os.environ["BART_GPU_GLOBAL_MEMORY"] = "1"
 
     gpu_str = "-g" if use_gpu else ""
-    ecal_str = f'ecalib -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
+    ecal_str = f'ecalib -r {calsize} -k {kernel_size} -I {gpu_str} -m{n_maps} -c{crop} -t {threshold}'
     if softsense:
         ecal_str += ' -S'
 
@@ -616,6 +616,7 @@ def ecalib(acs, n_maps=1, crop=0.8, threshold=0.001, kernel_size=6, softsense=Fa
 
     log_bart_stdout()
     logging.debug(f"Finished sensitivity map calculation after {time.perf_counter()-start:.2f} s.")
+    os.environ["BART_GPU_GLOBAL_MEMORY"] = "0"
 
     return sensmaps
 

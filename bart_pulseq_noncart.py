@@ -121,11 +121,11 @@ def process_noncart(connection, config, metadata, prot_file):
     global parallel_reco
     if sms_factor > 1:
         parallel_reco = True
+    elif nz > 1 and not joint_reco:
+        parallel_reco = False
     joint_reco = False
     if up_string is not None and 'pics_options' in up_string and '-R L:' in up_string['pics_options']:
         joint_reco = True
-    if nz > 1 and not joint_reco:
-        parallel_reco = False
 
     acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]
     noiseGroup = []
@@ -308,7 +308,6 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
     n_cha = metadata.acquisitionSystemInformation.receiverChannels
     n_slc = metadata.encoding[0].encodingLimits.slice.maximum + 1
-    center_slc = n_slc // 2
     n_contr = metadata.encoding[0].encodingLimits.contrast.maximum + 1
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     redfac = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_1)
@@ -406,10 +405,14 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 pat = bart(1, 'pattern', ksp)
                 pics_config += " -M"
                 
-                # Extract scaling from central slice with 1 iteration
                 if n_slc > 1:
-                    _ = bart(1, pics_config_scaling, ksp[...,center_slc,np.newaxis], sensmaps[...,center_slc,np.newaxis], t=traj[...,center_slc,np.newaxis], p=pat[...,center_slc,np.newaxis])
+                    # Extract scaling from central slice with 1 iteration
+                    center_slc = ksp.shape[parallel_dim] // 2
+                    idx = (slice(None),) * parallel_dim + (slice(center_slc, center_slc + 1),)
+                    _ = bart(1, pics_config_scaling, ksp[idx], sensmaps[idx], t=traj[idx], p=pat[idx])
                     match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stdout, re.IGNORECASE)
+                    if match is None:
+                        match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stderr, re.IGNORECASE)
                     scaling = float(match.group(1)) if match else None
                     logging.debug(f"Extracted scaling factor: {scaling}")
                     if scaling:
@@ -427,8 +430,12 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             else:
                 if n_slc > 1:
                     # Extract scaling from central slice with 1 iteration
-                    _ = bart(1, pics_config_scaling, ksp[...,center_slc,np.newaxis], sensmaps[...,center_slc,np.newaxis], t=traj[...,center_slc,np.newaxis])
+                    center_slc = ksp.shape[parallel_dim] // 2
+                    idx = (slice(None),) * parallel_dim + (slice(center_slc, center_slc + 1),)
+                    _ = bart(1, pics_config_scaling, ksp[idx], sensmaps[idx], t=traj[idx])
                     match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stdout, re.IGNORECASE)
+                    if match is None:
+                        match = re.search(r'Scaling:\s*(-?[\d.]+(?:e[+-]?\d+)?)', bart.stderr, re.IGNORECASE)
                     scaling = float(match.group(1)) if match else None
                     logging.debug(f"Extracted scaling factor: {scaling}")
                     if scaling:

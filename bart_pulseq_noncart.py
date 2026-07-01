@@ -345,6 +345,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         pics_config = '--md-loop-dims=3 ' + pics_config + ' --lowmem -g --gpu-gridding'
     logging.debug(f"PICS config: {pics_config}")
 
+    if gpu:
+        os.environ["BART_GPU_GLOBAL_MEMORY"] = "1"
+
     if parallel:
         ksp = []
         traj = []

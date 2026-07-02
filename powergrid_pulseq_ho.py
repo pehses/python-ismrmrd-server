@@ -111,7 +111,7 @@ def process(connection, config, metadata, prot_file):
         process_acs.cc_cha = n_cha
 
     if use_matmri:
-        if not os.path.exists(os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")):
+        if not os.path.exists(os.path.join(shareFolder, "python-ismrmrd-server", "run_matmri_reco.sh")) or not os.path.exists(os.path.join(shareFolder, "python-ismrmrd-server", "matmri_reco")):
             use_matmri = False
             logging.warning("run_matmri_reco.sh not found. Set use_matmri to False.")
         if not os.path.exists("/opt/matlab_runtime/R2024b"):

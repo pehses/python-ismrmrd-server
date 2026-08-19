@@ -175,16 +175,39 @@ def main(args):
     # ----- Open connection to server ------------------------------------------
     # Spawn a thread to connect and handle incoming data
     logging.info("Connecting to MRD server at %s:%d" % (args.address, args.port))
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+    # Enumerate all possible routes to the address/port (including IPv6)
+    try:
+        addrInfo = socket.getaddrinfo(args.address, args.port, socket.AF_UNSPEC)
+    except socket.gaierror as e:
+        logging.error("Address resolution failed for {host}: {e}")
+        return
+
+    sock = None
     attempt     = 0
     maxAttempts = 5
     success     = False
     while attempt < maxAttempts:
-        try:
-            sock.connect((args.address, args.port))
-        except socket.error as error:
-            logging.warning("Failed to connect (%d/%d): %s" % (attempt+1, maxAttempts, error))
+        for af, socktype, proto, canonname, sa in addrInfo:
+            try:
+                sock = socket.socket(af, socktype, proto)
+            except OSError as msg:
+                logging.warning("Failed to create socket: %s" % (msg))
+                sock = None
+                continue
+
+            try:
+                sock.connect((args.address, args.port))
+            except OSError as msg:
+                logging.warning("Failed to connect: %s" % (msg))
+                sock.close()
+                sock = None
+                continue
+
+            break
+
+        if not sock:
+            logging.warning("Failed to establish connection (%d/%d)" % (attempt+1, maxAttempts))
             time.sleep(1)
             attempt += 1
         else:
@@ -192,7 +215,8 @@ def main(args):
             attempt = maxAttempts
 
     if not success:
-        sock.close()
+        if sock:
+            sock.close()
         logging.error("... Aborting")
         return
 

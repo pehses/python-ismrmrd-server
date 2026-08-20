@@ -14,6 +14,7 @@ from connection import Connection
 import time
 import os
 import json
+import inspect
 
 defaults = {
     'filename':           '',
@@ -242,6 +243,12 @@ def main(args):
     else:
         logging.info("Sending remote config file name '%s'", args.config)
         connection.send_config_file(args.config)
+
+    # If ismrmrd version support the 'mode' argument, open as read-only
+    if 'mode' in inspect.signature(ismrmrd.Dataset).parameters:
+        modeargs = {'mode': 'r'}
+    else:
+        modeargs = {}
 
     # Ensure ismrmrd package has a context manager
     if not (hasattr(ismrmrd.Dataset, '__enter__') and hasattr(ismrmrd.Dataset, '__exit__')):

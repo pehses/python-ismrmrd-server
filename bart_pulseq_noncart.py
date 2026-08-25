@@ -118,14 +118,15 @@ def process_noncart(connection, config, metadata, prot_file):
     sms_factor = int(metadata.encoding[0].parallelImaging.accelerationFactor.kspace_encoding_step_2) if metadata.encoding[0].encodingLimits.slice.maximum > 0 else 1
     if sms_factor == 0:
         sms_factor = 1
+    joint_reco = False
+    if up_string is not None and 'pics_options' in up_string and '-R L:' in up_string['pics_options']:
+        joint_reco = True
+
     global parallel_reco
     if sms_factor > 1:
         parallel_reco = True
     elif nz > 1 and not joint_reco:
         parallel_reco = False
-    joint_reco = False
-    if up_string is not None and 'pics_options' in up_string and '-R L:' in up_string['pics_options']:
-        joint_reco = True
 
     acqGroup = [[[] for _ in range(n_slc//sms_factor)] for _ in range(n_contr)]
     noiseGroup = []

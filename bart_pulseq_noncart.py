@@ -335,7 +335,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     if '-l1' in pics_config:
         pics_config += ' --wavelet cdf44'
 
-    if gpu and nz > 1:
+    if (gpu and nz > 1) or '-R L:' in pics_config:
         nufft_config += ' -g'
         nlinv_config += ' -g'
         ecalib_config += ' -g'
@@ -350,7 +350,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
     if '-R L:' in pics_config:
         joint_reco = True
         # # loop over coils to save memory and use lowmem mode of NUFFT
-        pics_config = '--md-loop-dims=3 ' + pics_config + ' --lowmem -g --gpu-gridding'
+        pics_config = '--md-loop-dims=3 ' + pics_config + ' --lowmem '
     logging.debug(f"PICS config: {pics_config}")
 
     if gpu:

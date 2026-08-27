@@ -171,6 +171,13 @@ def process_noncart(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
+                if (item.is_flag_set(ismrmrd.ACQ_IS_RTFEEDBACK_DATA) or 
+                    item.is_flag_set(ismrmrd.ACQ_IS_NAVIGATION_DATA) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_HPFEEDBACK_DATA) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE)):
+                    continue
+
                 # insert acquisition protocol
                 # base_trj is used to correct FOV shift (see below)
                 base_traj = insert_acq(acqs[0], item, metadata)

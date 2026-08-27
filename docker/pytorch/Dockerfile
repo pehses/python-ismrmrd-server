@@ -19,9 +19,9 @@ RUN cd /opt/code && \
 
 # siemens_to_ismrmrd converter
 RUN cd /opt/code && \
-    git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git && \
+    git clone https://github.com/kspaceKelvin/siemens_to_ismrmrd.git && \
     cd siemens_to_ismrmrd && \
-    git checkout v1.2.11 && \
+    git checkout kelvin && \
     mkdir build && \
     cd build && \
     cmake ../ && \

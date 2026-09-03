@@ -93,22 +93,22 @@ def ReadMrdImageSeries(dset: ismrmrd.Dataset, group: str) -> Tuple[List[Image.Im
 
             imgRois.append((x, y, rgb, thickness))
 
-        # Don't use consider channels dimension for RGB images
         if image.getHead().image_type == 6:
-            numchasli = image.data.shape[1]
+            chaSliIndices = [(0, sli) for sli in range(image.data.shape[1])]
         else:
-            numchasli = image.data.shape[0]*image.data.shape[1]
+            chaSliIndices = [(cha, sli) for cha in range(image.data.shape[0]) for sli in range(image.data.shape[1])]
 
-        # Same ROIs for each channel and slice (in a single MRD image)
-        for chasli in range(numchasli):
+        # Same ROIs for each channel and slice (in a single MRD image). Tag each
+        # frame's cha/z position so that MosaicImages can mosaic the internal
+        # 3D/channel dimensions of a single MRD image.
+        for cha, sli in chaSliIndices:
             rois.append(imgRois)
-
-        # MRD ImageHeader
-        for chasli in range(numchasli):
             heads.append(image.getHead())
 
-        for chasli in range(numchasli):
-            metas.append(meta)
+            frameMeta = ismrmrd.Meta.deserialize(meta.serialize())
+            frameMeta['mrd2gif_cha'] = cha
+            frameMeta['mrd2gif_z']   = sli
+            metas.append(frameMeta)
 
     return (images, rois, heads, metas)
 
@@ -385,7 +385,7 @@ def ApplyColormapROI(images: List[Image.Image], rois: List[List[Tuple]], heads: 
 
     return imagesWL
 
-def MosaicImageData(images: List[Any], rows: Optional[int] = None, cols: Optional[int] = None) -> np.ndarray:
+def MosaicImageData(images: List[Any], rows: Optional[int] = None, cols: Optional[int] = None) -> Any:
     """
     Create a tiled mosaic of images.
 
@@ -398,7 +398,8 @@ def MosaicImageData(images: List[Any], rows: Optional[int] = None, cols: Optiona
         cols: Number of cols. Automatically calculated if None.
 
     Returns:
-        Mosaic image as numpy array.
+        Mosaic image in the same type as the input (PIL.Image, with palette
+        restored for 'P' mode, or numpy array).
     """
 
     shape = np.array(images[0]).shape
@@ -446,94 +447,152 @@ def MosaicImageData(images: List[Any], rows: Optional[int] = None, cols: Optiona
 
             mosaicArray[row*shape[0]:(row+1)*shape[0], col*shape[1]:(col+1)*shape[1], ...] = images[idx]
 
+    if isinstance(images[0], Image.Image):
+        imgMode = images[0].mode
+        mosaicImg = Image.fromarray(mosaicArray, mode=imgMode)
+        if imgMode == 'P':
+            mosaicImg.putpalette(images[0].getpalette())
+        return mosaicImg
+
     return mosaicArray
 
-def MosaicImages(images: List[Image.Image], heads: List[Any], mosaic_less_than: int = 6) -> List[Image.Image]:
+def MosaicVolumeChannels(images: List[Image.Image], heads: List[Any], metas: List[Dict[str, Any]]) -> Tuple[List[Image.Image], List[Any], List[Dict[str, Any]], bool]:
+    """
+    Mosaic the z (3D volume) or channel dimensions of each source MRD image.
+
+    Uses the 'mrd2gif_z'/'mrd2gif_cha' MetaAttributes tags set by ReadMrdImageSeries
+    to identify frames that were decomposed from the same MRD image, and tiles them
+    into a mosaic frame along whichever of z or cha varies. If both vary, z is
+    mosaicked within each channel separately and channels are kept as separate output
+    frames (i.e. z and cha are never combined into a single grid).
+
+    Args:
+        images: Images in PIL.Image format.
+        heads: ImageHeaders for each image.
+        metas: MetaAttributes for each image.
+
+    Returns:
+        Tuple of (images, heads, metas, didMosaic), collapsed to one entry per source
+        MRD image (or one per channel, if both z and cha vary). didMosaic is True if
+        any dimension was tiled.
+    """
+
+    zs   = [meta.get('mrd2gif_z')   for meta in metas]
+    chas = [meta.get('mrd2gif_cha') for meta in metas]
+
+    hasTags = all(v is not None for v in zs) and all(v is not None for v in chas)
+
+    # Strip internal tags so they don't leak into output MetaAttributes
+    for meta in metas:
+        meta.pop('mrd2gif_z', None)
+        meta.pop('mrd2gif_cha', None)
+
+    if (not hasTags) or ((np.unique(zs).size <= 1) and (np.unique(chas).size <= 1)):
+        return (images, heads, metas, False)
+
+    # Each element in group contains images indices belonging to the same source MRD image
+    groups = []
+    current = []
+    for i, (cha, z) in enumerate(zip(chas, zs)):
+        if current and (cha == 0) and (z == 0):
+            groups.append(current)
+            current = []
+        current.append(i)
+    if current:
+        groups.append(current)
+
+    newImages = []
+    newHeads  = []
+    newMetas  = []
+
+    for idxs in groups:
+        groupChas = [int(chas[i]) for i in idxs]
+        groupZs   = [int(zs[i])   for i in idxs]
+        numCha    = max(groupChas) + 1
+        numZ      = max(groupZs) + 1
+
+        if (numCha == 1) and (numZ == 1):
+            newImages.append(images[idxs[0]])
+            newHeads.append(heads[idxs[0]])
+            newMetas.append(metas[idxs[0]])
+        elif numCha == 1:
+            print(f'  Creating a mosaic of {numZ} slices')
+            newImages.append(MosaicImageData([images[i] for i in idxs]))
+            newHeads.append(heads[idxs[0]])
+            newMetas.append(metas[idxs[0]])
+        elif numZ == 1:
+            print(f'  Creating a mosaic of {numCha} channels')
+            newImages.append(MosaicImageData([images[i] for i in idxs]))
+            newHeads.append(heads[idxs[0]])
+            newMetas.append(metas[idxs[0]])
+        else:
+            # Both z and cha vary -- mosaic z within each channel, keep channels as separate frames
+            print(f'  Creating a mosaic of {numZ} slices for each of {numCha} channels')
+            for cha in range(numCha):
+                chaIdxs = [i for i, c in zip(idxs, groupChas) if c == cha]
+                newImages.append(MosaicImageData([images[i] for i in chaIdxs]))
+                newHeads.append(heads[chaIdxs[0]])
+                newMetas.append(metas[chaIdxs[0]])
+
+    return (newImages, newHeads, newMetas, True)
+
+def MosaicImages(images: List[Image.Image], heads: List[Any], metas: List[Dict[str, Any]], mosaic_less_than: int = 6) -> List[Image.Image]:
     """
     Combine multiple images into a mosaic.
 
-    Combine images into a grid mosaic sorted by slice or contrast.
-    Also mosaic if there are only a small number of images total.
+    Combine images into a grid mosaic sorted by slice or contrast. Also mosaic
+    if there are only a small number of images total. Internal z/cha dimensions
+    of each source MRD image are mosaicked first (see MosaicVolumeChannels); if
+    that already produced a mosaic, no further mosaicing across another
+    dimension is performed.
     
     Args:
         images: Images in PIL.Image format.
         heads: ImageHeaders for each image.
+        metas: MetaAttributes for each image.
         mosaic_less_than: Create mosaic if fewer than this many images.
     
     Returns:
         Images after mosaicing, if applicable.
     """
 
+    images, heads, metas, didMosaic = MosaicVolumeChannels(images, heads, metas)
+    if didMosaic:
+        return images
+
     slices    = [head.slice    for head in heads]
     contrasts = [head.contrast for head in heads]
 
-    # Create a list where each element contains all images for a given mosaic cell
-    imagesSplit = []
-    imagesMosaic = []
-
-    # Option 1: Mosaic across slices
+    # Pick the grouping key: mosaic across slices, else contrasts, else (if the
+    # series is small) mosaic all images into a single frame
     if np.unique(slices).size > 1:
-        for slice in np.unique(slices):
-            imagesSplit.append([img for img, sli in zip(images, slices) if sli == slice])
-
-        if np.unique([len(imgs) for imgs in imagesSplit]).size > 1:
-            print('  ERROR: Failed to create mosaic because not all slices have the same number of images -- skipping mosaic!')
-            imagesSplit = []
-        else:
-            print(f'  Creating a mosaic of {len(imagesSplit[0])} images with {np.unique(slices).size} slices in each')
-
-    # Option 2: Mosaic across contrasts
+        key, keyName = slices, 'slices'
     elif np.unique(contrasts).size > 1:
-        for contrast in np.unique(contrasts):
-            imagesSplit.append([img for img, con in zip(images, contrasts) if con == contrast])
-
-        if np.unique([len(imgs) for imgs in imagesSplit]).size > 1:
-            print('  ERROR: Failed to create mosaic because not all contrasts have the same number of images -- skipping mosaic!')
-            imagesSplit = []
-        else:
-            print(f'  Creating a mosaic of {len(imagesSplit[0])} images with {np.unique(contrasts).size} contrasts in each')
-
-    # Option 3: Mosaic across a small number of images
+        key, keyName = contrasts, 'contrasts'
     elif (len(images) > 1) and (len(images) < mosaic_less_than):
         print(f'  Creating a mosaic of {len(images)} images (number of images in series is <{mosaic_less_than})')
-        imagesSplit = images.copy()
 
         # Make sure all images have the same mode
-        modes = set([img.mode for img in imagesSplit])
+        modes = set(img.mode for img in images)
         if len(modes) > 1:
             print('  Warning: Series has images with mixed modes of type: ' + ', '.join(modes) + ' -- converting to P type')
             if 'P' not in modes:
                 raise Exception('Unhandled case of mixed modes without a P type')
+            images = [img if img.mode == 'P' else img.convert('P') for img in images]
 
-            for i, img in enumerate(imagesSplit):
-                if img.mode != 'P':
-                    imagesSplit[i] = imagesSplit[i].convert('P')
-
-        # Create (single-frame) mosaic
-        imgMode = imagesSplit[0].mode
-        tmpImg = Image.fromarray(MosaicImageData(imagesSplit), mode=imgMode)
-        
-        if imgMode == 'P':
-            palette = imagesSplit[0].getpalette()
-            tmpImg.putpalette(palette)
-        imagesMosaic = [tmpImg]
-        imagesSplit = []
-
-    if imagesSplit:
-        # Loop over time dimension
-        imagesMosaic = []
-        for idx in range(len(imagesSplit[0])):
-            imgMode = imagesSplit[0][idx].mode
-            tmpImg = Image.fromarray(MosaicImageData([img[idx] for img in imagesSplit]), mode=imgMode)
-            if imgMode == 'P':
-                palette = imagesSplit[0][0].getpalette()
-                tmpImg.putpalette(palette)
-            imagesMosaic.append(tmpImg)
-
-    if imagesMosaic:
-        return imagesMosaic
+        return [MosaicImageData(images)]
     else:
         return images
+
+    # Group images by key value, then mosaic each set of matching positions across groups
+    imagesSplit = [[img for img, k in zip(images, key) if k == val] for val in np.unique(key)]
+
+    if np.unique([len(imgs) for imgs in imagesSplit]).size > 1:
+        print(f'  ERROR: Failed to create mosaic because not all {keyName} have the same number of images -- skipping mosaic!')
+        return images
+
+    print(f'  Creating a mosaic of {len(imagesSplit[0])} images with {np.unique(key).size} {keyName} in each')
+    return [MosaicImageData([imgs[idx] for imgs in imagesSplit]) for idx in range(len(imagesSplit[0]))]
 
 def main(args: argparse.Namespace) -> None:
     """
@@ -697,7 +756,11 @@ def _main_inner(args: argparse.Namespace) -> None:
                 is_diff = True
 
             if not args.no_mosaic_slices:
-                images = MosaicImages(images, heads, args.mosaic_less_than)
+                images = MosaicImages(images, heads, metas, args.mosaic_less_than)
+            else:
+                for meta in metas:
+                    meta.pop('mrd2gif_z', None)
+                    meta.pop('mrd2gif_cha', None)
 
             # Add SequenceDescriptionAdditional to filename, if present
             seqDescription = ''

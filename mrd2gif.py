@@ -17,7 +17,7 @@ defaults = {
     'in_group':         '',
     'rescale':          1,
     'fps':              25,
-    'no_mosaic_slices': False,
+    'no_mosaic':        False,
     'mosaic_less_than': 6,
     'filetype':         'gif',
     'ref_filename':     '',
@@ -755,7 +755,7 @@ def _main_inner(args: argparse.Namespace) -> None:
                 images = imagesCombined
                 is_diff = True
 
-            if not args.no_mosaic_slices:
+            if not args.no_mosaic:
                 images = MosaicImages(images, heads, metas, args.mosaic_less_than)
             else:
                 for meta in metas:
@@ -815,7 +815,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--in-group',                              help='Input data group')
     parser.add_argument('-r', '--rescale',          type=int,            help='Rescale factor (integer) for output images')
     parser.add_argument(      '--fps',              type=int,            help='Frame rate for animated images')
-    parser.add_argument(      '--no-mosaic-slices', action='store_true', help='Do not mosaic images along slice dimension')
+    parser.add_argument(      '--no-mosaic',        action='store_true', help='Do not mosaic images')
     parser.add_argument(      '--mosaic-less-than', type=int,            help='Mosaic images with less than this number of images in series')
     parser.add_argument(      '--filetype',         type=str,            help='File type for output images (gif or png)')
     parser.add_argument(      '--ref-filename',     type=str,            help='Reference file to compare against')

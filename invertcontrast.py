@@ -12,6 +12,7 @@ import ctypes
 import re
 import mrdhelper
 import constants
+from collections import defaultdict, namedtuple
 from time import perf_counter
 
 # Folder for debug output files
@@ -60,7 +61,7 @@ def process(connection, config, mrdHeader):
 
                 # When this criteria is met, run process_raw() on the accumulated
                 # data, which returns images that are sent back to the client.
-                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_SLICE):
+                if item.is_flag_set(ismrmrd.ACQ_LAST_IN_MEASUREMENT):
                     logging.info("Processing a group of k-space data")
                     image = process_raw(acqGroup, connection, config, mrdHeader)
                     connection.send_image(image)
@@ -152,133 +153,146 @@ def process_raw(acqGroup, connection, config, mrdHeader):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    if mrdHeader.encoding[0].encodedSpace.matrixSize.z == 1:
-        # 2D data: Format data into single [cha PE RO phs] array
-        lin = [acquisition.idx.kspace_encode_step_1 for acquisition in acqGroup]
-        phs = [acquisition.idx.phase                for acquisition in acqGroup]
+    # Group readouts by a composite index of all loop counters
+    # i.e. all readouts with the same loop counters (excluding phase and partition encode) will be in the same group
+    # Note that user indices 5 and 6 are excluded as these are used to represent center lin/par
 
-        # Use the zero-padded matrix size
-        data = np.zeros((acqGroup[0].data.shape[0], 
-                        mrdHeader.encoding[0].encodedSpace.matrixSize.y, 
-                        mrdHeader.encoding[0].encodedSpace.matrixSize.x, 
-                        max(phs)+1), 
-                        acqGroup[0].data.dtype)
+    # 1. Define the namedtuple
+    IndexKey = namedtuple('IndexKey', ['avg', 'slc', 'con', 'phs', 'rep', 'set', 'seg', 'user'])
+    indexedAcqs = defaultdict(list)
+    for acq in acqGroup:
+        key = IndexKey(
+            acq.idx.average,
+            acq.idx.slice,
+            acq.idx.contrast,
+            acq.idx.phase,
+            acq.idx.repetition,
+            acq.idx.set,
+            acq.idx.segment,
+            tuple(acq.idx.user[0:5]),
+        )
+        indexedAcqs[key].append(acq)
 
-        rawHead = [None]*(max(phs)+1)
 
-        for acq, lin, phs in zip(acqGroup, lin, phs):
-            if (lin < data.shape[1]) and (phs < data.shape[3]):
-                # TODO: Account for asymmetric echo in a better way
-                data[:,lin,-acq.data.shape[1]:,phs] = acq.data
+    imagesOut = []  # Accumulated list of all reconstructed images
 
-                # center line of k-space is encoded in user[5]
-                if (rawHead[phs] is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
-                    rawHead[phs] = acq.getHead()
-    else:
-        # 3D data: Format data into single [cha PE RO par] array
-        lin = [acquisition.idx.kspace_encode_step_1 for acquisition in acqGroup]
-        par = [acquisition.idx.kspace_encode_step_2 for acquisition in acqGroup]
+    for imgIdx, (key, acqs) in enumerate(sorted(indexedAcqs.items())):
+        # Log the active loop indices in this iteration
+        active = [f"{k}={v}" for k, v in key._asdict().items() if k != 'user' and v != 0]
+        active += [f"user[{i}]={v}" for i, v in enumerate(key.user) if v != 0]
+        dim_str = ", ".join(active) or "all 0"
+        logging.info(f"Reconstructing image {imgIdx} (idx {dim_str})")
 
-        # Use the zero-padded matrix size
-        data = np.zeros((acqGroup[0].data.shape[0], 
-                        mrdHeader.encoding[0].encodedSpace.matrixSize.y, 
-                        mrdHeader.encoding[0].encodedSpace.matrixSize.x, 
-                        mrdHeader.encoding[0].encodedSpace.matrixSize.z), 
-                        acqGroup[0].data.dtype)
+        if mrdHeader.encoding[0].encodedSpace.matrixSize.z == 1:
+            # 2D data: Format data into single [cha PE RO] array
+            data = np.zeros((acqGroup[0].data.shape[0],                        # Receiver channel
+                            mrdHeader.encoding[0].encodedSpace.matrixSize.y,   # Phase encode
+                            mrdHeader.encoding[0].encodedSpace.matrixSize.x,), # Readout
+                            acqGroup[0].data.dtype)
 
-        rawHead = [None]
+            # A singular representative header for the entire image
+            rawHead = None
 
-        for acq, lin, par in zip(acqGroup, lin, par):
-            if (lin < data.shape[1]) and (par < data.shape[3]):
-                # TODO: Account for asymmetric echo in a better way
-                data[:,lin,-acq.data.shape[1]:,par] = acq.data
+            for acq in acqs:
+                lin = acq.idx.kspace_encode_step_1
+                if lin < data.shape[1]:
+                    # TODO: Account for asymmetric echo in a better way
+                    data[:,lin,-acq.data.shape[1]:] = acq.data
 
-                # Update rawHead if current line is closer to center k-space
-                if ((rawHead[0] is None) or 
-                    ((np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead[0].idx.kspace_encode_step_1 - rawHead[0].idx.user[5])) and
-                     (np.abs(acq.getHead().idx.kspace_encode_step_2 - acq.getHead().idx.user[6]) < np.abs(rawHead[0].idx.kspace_encode_step_2 - rawHead[0].idx.user[6])))):
-                    rawHead[0] = acq.getHead()
+                    # If the acq is closer to the center line (stored in user[5]), then replace it as the representative header
+                    if (rawHead is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead.idx.kspace_encode_step_1 - rawHead.idx.user[5])):
+                        rawHead = acq.getHead()
+        else:
+            # 3D data: Format data into single [cha PE RO par] array
+            data = np.zeros((acqGroup[0].data.shape[0], 
+                            mrdHeader.encoding[0].encodedSpace.matrixSize.y, 
+                            mrdHeader.encoding[0].encodedSpace.matrixSize.x, 
+                            mrdHeader.encoding[0].encodedSpace.matrixSize.z), 
+                            acqGroup[0].data.dtype)
 
-    # Zero pad for interpolation
-    if data.shape[1] < mrdHeader.encoding[0].reconSpace.matrixSize.y:
-        logging.debug("Zero-padding in phase encode direction")
-        offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.y - data.shape[1])/2)
-        data = np.pad(data, ((0,0), (offset,offset), (0,0), (0,0)))
+            # A singular representative header for the entire image
+            rawHead = None
 
-    if data.shape[2] < mrdHeader.encoding[0].reconSpace.matrixSize.x:
-        logging.debug("Zero-padding in readout direction")
-        offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.x - data.shape[2])/2)
-        data = np.pad(data, ((0,0), (0,0), (offset,offset), (0,0)))
+            for acq in acqs:
+                lin = acq.idx.kspace_encode_step_1
+                par = acq.idx.kspace_encode_step_2
+                if (lin < data.shape[1]) and (par < data.shape[3]):
+                    lin = acq.idx.kspace_encode_step_1
+                    par = acq.idx.kspace_encode_step_2
 
-    if (mrdHeader.encoding[0].reconSpace.matrixSize.z > 1) and (data.shape[3] < mrdHeader.encoding[0].reconSpace.matrixSize.z):
-        logging.debug("Zero-padding in partition direction")
-        offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.z - data.shape[3])/2)
-        data = np.pad(data, ((0,0), (0,0), (0,0), (offset,offset)))
+                    # TODO: Account for asymmetric echo in a better way
+                    data[:,lin,-acq.data.shape[1]:,par] = acq.data
 
-    # Flip matrix in RO/PE to be consistent with ICE
-    data = np.flip(data, (1, 2))
+                    # If the acq is closer to the center line (stored in user[5]) and center partition (user[6]), then replace it as the representative header
+                    if ((rawHead is None) or 
+                        ((np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead.idx.kspace_encode_step_1 - rawHead.idx.user[5])) and
+                         (np.abs(acq.getHead().idx.kspace_encode_step_2 - acq.getHead().idx.user[6]) < np.abs(rawHead.idx.kspace_encode_step_2 - rawHead.idx.user[6])))):
+                        rawHead = acq.getHead()
 
-    logging.debug("Raw data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "raw.npy", data)
+        # Zero pad for interpolation
+        if data.shape[1] < mrdHeader.encoding[0].reconSpace.matrixSize.y:
+            logging.debug("Zero-padding in phase encode direction")
+            offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.y - data.shape[1])/2)
+            data = np.pad(data, ((0,0), (offset,offset), (0,0), (0,0)))
 
-    # Fourier Transform
-    if mrdHeader.encoding[0].encodedSpace.matrixSize.z > 1:
-        ftAxes = (1, 2, 3)
-    else:
-        ftAxes = (1, 2)
+        if data.shape[2] < mrdHeader.encoding[0].reconSpace.matrixSize.x:
+            logging.debug("Zero-padding in readout direction")
+            offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.x - data.shape[2])/2)
+            data = np.pad(data, ((0,0), (0,0), (offset,offset), (0,0)))
 
-    data = fft.fftshift( data, axes=ftAxes)
-    data = fft.ifftn(    data, axes=ftAxes)
-    data = fft.ifftshift(data, axes=ftAxes)
-    data *= np.prod(data.shape) # FFT scaling for consistency with ICE
+        if (mrdHeader.encoding[0].reconSpace.matrixSize.z > 1) and (data.shape[3] < mrdHeader.encoding[0].reconSpace.matrixSize.z):
+            logging.debug("Zero-padding in partition direction")
+            offset = int((mrdHeader.encoding[0].reconSpace.matrixSize.z - data.shape[3])/2)
+            data = np.pad(data, ((0,0), (0,0), (0,0), (offset,offset)))
 
-    # Sum of squares coil combination
-    # Data will be [PE RO phs]
-    data = np.abs(data)
-    data = np.square(data)
-    data = np.sum(data, axis=0)
-    data = np.sqrt(data)
+        # Flip matrix in RO/PE to be consistent with ICE
+        data = np.flip(data, (1, 2))
 
-    logging.debug("Image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "img.npy", data)
+        logging.debug("Raw data is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "raw.npy", data)
 
-    # Remove readout oversampling
-    if mrdHeader.encoding[0].reconSpace.matrixSize.x != 0:
-        offset = int((data.shape[1] - mrdHeader.encoding[0].reconSpace.matrixSize.x)/2)
-        data = data[:,offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.x]
+        # Fourier Transform
+        if mrdHeader.encoding[0].encodedSpace.matrixSize.z > 1:
+            ftAxes = (1, 2, 3)
+        else:
+            ftAxes = (1, 2)
 
-    # Remove phase oversampling
-    if mrdHeader.encoding[0].reconSpace.matrixSize.y != 0:
-        offset = int((data.shape[0] - mrdHeader.encoding[0].reconSpace.matrixSize.y)/2)
-        data = data[offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.y,:]
+        data = fft.fftshift( data, axes=ftAxes)
+        data = fft.ifftn(    data, axes=ftAxes)
+        data = fft.ifftshift(data, axes=ftAxes)
+        data *= np.prod(data.shape) # FFT scaling for consistency with ICE
 
-    # Remove partition oversampling
-    if mrdHeader.encoding[0].reconSpace.matrixSize.z > 1:
-        offset = int((data.shape[2] - mrdHeader.encoding[0].reconSpace.matrixSize.z)/2)
-        data = data[:,:,offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.z]
+        # Sum of squares coil combination
+        # Data will be [PE RO]
+        data = np.abs(data)
+        data = np.square(data)
+        data = np.sum(data, axis=0)
+        data = np.sqrt(data)
 
-    logging.debug("Image without oversampling is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "imgCrop.npy", data)
+        logging.debug("Image data is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "img.npy", data)
 
-    # Measure processing time
-    toc = perf_counter()
-    strProcessTime = "Total processing time: %.2f ms" % ((toc-tic)*1000.0)
-    logging.info(strProcessTime)
+        # Remove readout oversampling
+        if mrdHeader.encoding[0].reconSpace.matrixSize.x != 0:
+            offset = int((data.shape[1] - mrdHeader.encoding[0].reconSpace.matrixSize.x)/2)
+            data = data[:,offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.x]
 
-    # Send this as a text message back to the client
-    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
+        # Remove phase oversampling
+        if mrdHeader.encoding[0].reconSpace.matrixSize.y != 0:
+            offset = int((data.shape[0] - mrdHeader.encoding[0].reconSpace.matrixSize.y)/2)
+            data = data[offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.y,:]
 
-    # Format as ISMRMRD image data
-    imagesOut = []
+        # Remove partition oversampling
+        if mrdHeader.encoding[0].reconSpace.matrixSize.z > 1:
+            offset = int((data.shape[2] - mrdHeader.encoding[0].reconSpace.matrixSize.z)/2)
+            data = data[:,:,offset:offset+mrdHeader.encoding[0].reconSpace.matrixSize.z]
 
-    if mrdHeader.encoding[0].reconSpace.matrixSize.z > 1:
-        numImg = 1
-    else:
-        numImg = data.shape[2]
+        logging.debug("Image without oversampling is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "imgCrop.npy", data)
 
-    for img in range(numImg):
-        # Create new MRD instance for the processed image
-        # data has shape [PE RO img], i.e. [y x].
+        # Format as ISMRMRD image data
+        # 2D data has shape [PE RO], i.e. [y x].
+        # 3D data has shape [PE RO PAR], i.e. [y x z].
         # from_array() should be called with 'transpose=False' to avoid warnings, and when called
         # with this option, can take input as: [cha z y x], [z y x], or [y x]
         if mrdHeader.encoding[0].reconSpace.matrixSize.z > 1:
@@ -286,14 +300,14 @@ def process_raw(acqGroup, connection, config, mrdHeader):
             tmpImg = ismrmrd.Image.from_array(data.transpose((2, 0, 1)), transpose=False)
         else:
             # For 2D data, send back individual 2D images
-            tmpImg = ismrmrd.Image.from_array(data[...,img], transpose=False)
+            tmpImg = ismrmrd.Image.from_array(data, transpose=False)
 
         # Set the header information
-        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[img]))
+        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead))
         tmpImg.field_of_view = (ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.x), 
                                 ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.y), 
                                 ctypes.c_float(mrdHeader.encoding[0].reconSpace.fieldOfView_mm.z))
-        tmpImg.image_index = img
+        tmpImg.image_index = imgIdx
 
         # Set ISMRMRD Meta Attributes
         tmpMeta = ismrmrd.Meta()
@@ -305,6 +319,14 @@ def process_raw(acqGroup, connection, config, mrdHeader):
         logging.debug("Image MetaAttributes: %s", xml)
         tmpImg.attribute_string = xml
         imagesOut.append(tmpImg)
+
+    # Measure processing time
+    toc = perf_counter()
+    strProcessTime = "Total processing time: %.2f ms" % ((toc-tic)*1000.0)
+    logging.info(strProcessTime)
+
+    # Send this as a text message back to the client
+    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
     # Call process_image() to invert image contrast
     imagesOut = process_image(imagesOut, connection, config, mrdHeader)

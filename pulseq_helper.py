@@ -417,7 +417,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
             girf_name = "girf_10us.npy"
         else:
             girf_name = "girf_10us_skyra.npy"
-        girf = np.load(os.path.join(dependencyFolder, girf_name))
+        girf = np.load(os.path.join(dependencyFolder, girf_name))[:,:4]
 
         # rotation to phys coord system
         grad_phys = gcs_to_dcs(grad, rotmat)

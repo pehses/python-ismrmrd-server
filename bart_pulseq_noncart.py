@@ -531,7 +531,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         xml = meta.serialize()
         
         images = []
-        n_par = data.shape[2]
+        n_par = data.shape[4]
         rotmat = rh.calc_rotmat(group[0][0][0])
 
         for k,contr in enumerate(data):

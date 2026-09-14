@@ -369,7 +369,6 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     """
     
     dt_grad = 10e-6 # [s]
-    dt_skope = 1e-6 # [s]
     gammabar = 42.577e6
 
     grad = np.swapaxes(acq.traj[:],0,1) # [dims, samples] [T/m]
@@ -402,7 +401,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
 
     # time vector for interpolation
     gradtime = dt_grad * np.arange(grad.shape[-1]) + gradshift
-    gradtime += dt_grad/2 - dt_skope/2 # account for cumsum (assumes rects for integration, we have triangs) - dt_skope/2 seems to be necessary
+    gradtime += dt_grad/2 # account for cumsum (assumes rects for integration, we have triangs)
 
     # add zero z-dir if necessary
     if dims == 2:
@@ -419,7 +418,7 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     if not os.path.exists(os.path.join(dependencyFolder, girf_name)):
         logging.debug(f"GIRF file {girf_name} not found in {dependencyFolder}. Trajectory prediction will be skipped.")
         use_girf = False
-        
+
     if use_girf:
         girf = np.load(os.path.join(dependencyFolder, girf_name))[:,:4]
 

@@ -411,12 +411,16 @@ def calc_traj(acq, hdr, ncol, rotmat, use_girf=True, traj_phys=False):
     ##############################
     ## girf trajectory prediction:
     ##############################
+    dependencyFolder = "/tmp/share/dependency"
+    if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
+        girf_name = "girf_10us.npy"
+    else:
+        girf_name = "girf_10us_skyra.npy"
+    if not os.path.exists(os.path.join(dependencyFolder, girf_name)):
+        logging.debug(f"GIRF file {girf_name} not found in {dependencyFolder}. Trajectory prediction will be skipped.")
+        use_girf = False
+        
     if use_girf:
-        dependencyFolder = "/tmp/share/dependency"
-        if hdr.acquisitionSystemInformation.systemModel == 'Investigational_Device_7T_Plus':
-            girf_name = "girf_10us.npy"
-        else:
-            girf_name = "girf_10us_skyra.npy"
         girf = np.load(os.path.join(dependencyFolder, girf_name))[:,:4]
 
         # rotation to phys coord system

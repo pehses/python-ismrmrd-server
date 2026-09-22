@@ -230,6 +230,7 @@ def process_raw(group, connection, config, metadata):
                                 ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
 
     tmpImg.image_index   = 1
+    tmpImg.image_type    = ismrmrd.IMTYPE_COMPLEX
     tmpImg.flags         = 2**5   # IMAGE_LAST_IN_AVERAGE
  
     logging.info("Outgoing spectroscopy data is field_of_view %s, %s, %s" % (np.double(tmpImg.field_of_view[0]), np.double(tmpImg.field_of_view[1]), np.double(tmpImg.field_of_view[2])))
@@ -329,6 +330,7 @@ def plot_spectra(img, connection, config, metadata):
     # Set the header information
     tmpHead = img.getHead()
     tmpHead.data_type     = roiImg.data_type
+    tmpHead.image_type    = ismrmrd.IMTYPE_MAGNITUDE
     tmpHead.field_of_view = (ctypes.c_float( imgX), ctypes.c_float( imgY), ctypes.c_float(10))  # Dummy FOV because the spectroscopy FOV isn't appropriate
     tmpHead.matrix_size   = (ctypes.c_ushort(imgX), ctypes.c_ushort(imgY), ctypes.c_ushort(1))
     roiImg.setHead(tmpHead)

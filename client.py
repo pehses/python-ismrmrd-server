@@ -14,6 +14,7 @@ from connection import Connection
 import time
 import os
 import json
+import inspect
 
 defaults = {
     'filename':           '',
@@ -26,12 +27,14 @@ defaults = {
     'config_local':       '',
     'ignore_json_config': False,
     'send_waveforms':     False,
+    'fix_transposed':     False,
     'verbose':            False,
     'logfile':            '',
+    'quiet':              False,
     'mrd2gif':            False
 }
 
-def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, recvAcqs, recvImages, recvWaveforms):
+def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, quiet, fixTransposed, recvAcqs, recvImages, recvWaveforms):
     """Start a Connection instance to receive data, generally run in a separate thread"""
 
     if verbose:
@@ -41,11 +44,16 @@ def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, recvAcqs,
 
     if logfile:
         logging.basicConfig(filename=logfile, format='%(asctime)s - %(message)s', level=verbosity)
-        logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+        if not quiet:
+            logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     else:
         logging.basicConfig(format='%(asctime)s - %(message)s', level=verbosity)
 
     incoming_connection = Connection(sock, True, outfile, "", outgroup)
+
+    if fixTransposed:
+        logging.warning('fix-transposed is True -- received images may be transposed if needed to ensure uniform dimensions across all images in a series')
+        incoming_connection.fixTransposed = True
 
     try:
         for msg in incoming_connection:
@@ -70,6 +78,31 @@ def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, recvAcqs,
     recvWaveforms.value = incoming_connection.recvWaveforms
 
 def main(args):
+    # ----- Set up logging ---------------------------------------------
+    if args.logfile:
+        print("Logging to file: ", args.logfile)
+        logging.basicConfig(filename=args.logfile, format='%(asctime)s - %(message)s', level=logging.WARNING)
+        if not args.quiet:
+            logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    else:
+        print("No logfile provided")
+        logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.WARNING)
+
+    if args.verbose:
+        logging.root.setLevel(logging.DEBUG)
+    else:
+        logging.root.setLevel(logging.INFO)
+
+    # Use an output filename based on the input file if not provided
+    if args.outfile is None:
+        base, ext = os.path.splitext(args.filename)
+        args.outfile = base + '_results' + ext
+        logging.info("Output file not specified -- writing results to %s", args.outfile)
+
+    # If a config is specified via the command line arguments, then set ignore_json_config to True
+    if ('-c' in sys.argv) or ('--config' in sys.argv):
+        args.ignore_json_config = True
+
     # ----- Load and validate file ---------------------------------------------
     if (args.config_local):
         if not os.path.exists(args.config_local):
@@ -92,7 +125,7 @@ def main(args):
             return
         dsetNames = dset.keys()
         logging.info("File %s contains %d groups:", args.filename, len(dset.keys()))
-        print(" ", "\n  ".join(dsetNames))
+        logging.info("\n  ".join(dsetNames))
 
         if not args.in_group:
             if len(dset.keys()) == 1:
@@ -143,16 +176,39 @@ def main(args):
     # ----- Open connection to server ------------------------------------------
     # Spawn a thread to connect and handle incoming data
     logging.info("Connecting to MRD server at %s:%d" % (args.address, args.port))
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+    # Enumerate all possible routes to the address/port (including IPv6)
+    try:
+        addrInfo = socket.getaddrinfo(args.address, args.port, socket.AF_UNSPEC)
+    except socket.gaierror as e:
+        logging.error("Address resolution failed for {host}: {e}")
+        return
+
+    sock = None
     attempt     = 0
     maxAttempts = 5
     success     = False
     while attempt < maxAttempts:
-        try:
-            sock.connect((args.address, args.port))
-        except socket.error as error:
-            logging.warning("Failed to connect (%d/%d): %s" % (attempt+1, maxAttempts, error))
+        for af, socktype, proto, canonname, sa in addrInfo:
+            try:
+                sock = socket.socket(af, socktype, proto)
+            except OSError as msg:
+                logging.warning("Failed to create socket: %s" % (msg))
+                sock = None
+                continue
+
+            try:
+                sock.connect((args.address, args.port))
+            except OSError as msg:
+                logging.warning("Failed to connect: %s" % (msg))
+                sock.close()
+                sock = None
+                continue
+
+            break
+
+        if not sock:
+            logging.warning("Failed to establish connection (%d/%d)" % (attempt+1, maxAttempts))
             time.sleep(1)
             attempt += 1
         else:
@@ -160,14 +216,15 @@ def main(args):
             attempt = maxAttempts
 
     if not success:
-        sock.close()
+        if sock:
+            sock.close()
         logging.error("... Aborting")
         return
 
     recvAcqs      = multiprocessing.Value('i', 0)
     recvImages    = multiprocessing.Value('i', 0)
     recvWaveforms = multiprocessing.Value('i', 0)
-    process = multiprocessing.Process(target=connection_receive_loop, args=(sock, args.outfile, args.out_group, args.verbose, args.logfile, recvAcqs, recvImages, recvWaveforms))
+    process = multiprocessing.Process(target=connection_receive_loop, args=(sock, args.outfile, args.out_group, args.verbose, args.logfile, args.quiet, args.fix_transposed, recvAcqs, recvImages, recvWaveforms))
     process.daemon = True
     process.start()
 
@@ -186,6 +243,12 @@ def main(args):
     else:
         logging.info("Sending remote config file name '%s'", args.config)
         connection.send_config_file(args.config)
+
+    # If ismrmrd version support the 'mode' argument, open as read-only
+    if 'mode' in inspect.signature(ismrmrd.Dataset).parameters:
+        modeargs = {'mode': 'r'}
+    else:
+        modeargs = {}
 
     # Ensure ismrmrd package has a context manager
     if not (hasattr(ismrmrd.Dataset, '__enter__') and hasattr(ismrmrd.Dataset, '__exit__')):
@@ -333,6 +396,7 @@ def main(args):
             mrd2gifargs = SimpleNamespace(**mrd2gif.defaults)
             mrd2gifargs.filename = args.outfile
             mrd2gifargs.in_group = args.out_group
+            mrd2gifargs.quiet    = args.quiet
 
             logging.info('Calling mrd2gif...')
             mrd2gif.main(mrd2gifargs)
@@ -354,35 +418,15 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config',                                  help='Remote configuration file')
     parser.add_argument('-C', '--config-local',                            help='Local configuration file')
     parser.add_argument('-w', '--send-waveforms',     action='store_true', help='Send waveform (physio) data')
+    parser.add_argument(      '--fix-transposed',     action='store_true', help='Fix transposed images when storing to an MRD file')
     parser.add_argument('-v', '--verbose',            action='store_true', help='Verbose mode')
     parser.add_argument('-l', '--logfile',            type=str,            help='Path to log file')
+    parser.add_argument('-q', '--quiet',              action='store_true', help='Suppress stdout logging')
     parser.add_argument(      '--ignore-json-config', action='store_true', help='Ignore config specified in JSON')
     parser.add_argument(      '--mrd2gif',            action='store_true', help='Run mrd2gif on output file')
 
     parser.set_defaults(**defaults)
 
     args = parser.parse_args()
-
-    if args.logfile:
-        print("Logging to file: ", args.logfile)
-        logging.basicConfig(filename=args.logfile, format='%(asctime)s - %(message)s', level=logging.WARNING)
-        logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    else:
-        print("No logfile provided")
-        logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.WARNING)
-
-    if args.verbose:
-        logging.root.setLevel(logging.DEBUG)
-    else:
-        logging.root.setLevel(logging.INFO)
-
-    if args.outfile is None:
-        base, ext = os.path.splitext(args.filename)
-        args.outfile = base + '_results' + ext
-        logging.info("Output file not specified -- writing results to %s", args.outfile)
-
-    # If a config is specified via the command line arguments, then set ignore_json_config to True
-    if ('-c' in sys.argv) or ('--config' in sys.argv):
-        args.ignore_json_config = True
 
     main(args)

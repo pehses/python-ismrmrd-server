@@ -464,6 +464,8 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 else:
                     data = rh.bart_parallel(parallel_dim, ksp.shape[parallel_dim], 1, pics_config, ksp, sensmaps, t=traj)
                 rh.log_bart_stdout()
+            if ksp.shape[parallel_dim] == 1:
+                data = data[..., np.newaxis]
             if ecalib_maps > 1:
                 data = data[...,0,:]
             if not save_complex:

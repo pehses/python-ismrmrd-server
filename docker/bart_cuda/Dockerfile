@@ -1,89 +1,55 @@
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS mrd_converter
+FROM nvidia/cuda:12.6.3-devel-ubuntu24.04 AS mrd_converter
 
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
 ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --no-install-suggests --yes \
-       wget apt-utils apt-transport-https gnupg2 python3-dev python3-pip ca-certificates libhdf5-serial-dev h5utils cmake cmake-curses-gui \
-        libboost-all-dev libfftw3-dev git build-essential gfortran libpng-dev liblapacke-dev libpng-dev libopenblas-dev libxml2-dev libxslt1-dev libpugixml-dev libxml2-utils
-
+     wget apt-transport-https gnupg2 ca-certificates \
+     libfftw3-dev git build-essential gfortran libpng-dev liblapacke-dev libopenblas-dev
 
 # install mkl
 COPY ./mkl.sh /tmp/
 RUN /tmp/mkl.sh
 
+RUN mkdir -p /opt/code
 
-RUN  mkdir -p /opt/code
-
-RUN  cd /opt/code \
-     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
-
-# install spiraltraj for trajectory calculation
-RUN  cd /opt/code \
-     && git clone https://github.com/mrphysics-bonn/spiraltraj.git \
-     && cd spiraltraj \
-     && pip3 wheel .
-
-# ISMRMRD library
 RUN cd /opt/code \
-    && git clone https://github.com/ismrmrd/ismrmrd.git \
-    && cd ismrmrd \
-    && git checkout v1.13.6 \
-    && mkdir build \
-    && cd build \
-    && cmake ../ \
-    && make -j $(nproc) \
+    && git clone -b pulseq https://github.com/pehses/python-ismrmrd-server.git
+
+# Compile the CUDA-enabled BART MRI toolbox.
+RUN cd /opt/code \
+    && git clone https://codeberg.org/mrirecon/bart.git \
+    && cd bart \
+    && git checkout v1.0.01 \
+    && echo MKL=1 >> Makefile.local \
+    && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
+    && echo PARALLEL=1 >> Makefile.local \
+    && echo CUDA=1 >> Makefile.local \
+    && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
+    && echo CUDA_LIB=/lib64 >> Makefile.local \
+    && make \
     && make install
 
-# siemens_to_ismrmrd converter
-RUN cd /opt/code \
-    && git clone https://github.com/ismrmrd/siemens_to_ismrmrd.git \
-    && cd siemens_to_ismrmrd \
-    && cp /opt/code/python-ismrmrd-server/parameter_maps/* parameter_maps/ \
-    && mkdir build \
-    && cd build \
-    && cmake ../ \
-    && make -j $(nproc) \
-    && make install
+FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
 
-# compile & install the bart MRI toolbox
-RUN  cd /opt/code \
-     && git clone https://github.com/mrirecon/bart \
-     && cd bart \
-     && git checkout v0.9.00 \
-     && echo MKL=1 >> Makefile.local \
-     && echo MKL_BASE=/opt/intel/mkl >> Makefile.local \
-     && echo PARALLEL=1 >> Makefile.local \
-     && echo CUDA=1 >> Makefile.local \
-     && echo CUDA_BASE=/usr/local/cuda >> Makefile.local \
-     && echo CUDA_LIB=/lib64 >> Makefile.local \
-     && make \
-     && make install
-
-# ----- Start another clean build without all of the build dependencies of siemens_to_ismrmrd -----
-FROM nvidia/cuda:11.4.2-runtime-ubuntu20.04
 LABEL maintainer="Marten Veldmann (marten.veldmann@dzne.de)"
 
 ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Copy siemens_to_ismrmrd from last stage and re-add necessary dependencies
-COPY --from=mrd_converter /usr/local/lib/libismrmrd*        /usr/local/lib/
-COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd /usr/local/bin/siemens_to_ismrmrd
+# Copy bart
 COPY --from=mrd_converter /usr/local/bin/bart /usr/local/bin/bart
-COPY --from=mrd_converter /opt/code/spiraltraj/SpiralTraj* /opt/code/
 
 # Copy MKL
 COPY --from=mrd_converter /opt/intel/mkl/lib /opt/intel/mkl/lib/
-RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so  \
+RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so \
     libblas.so-x86_64-linux-gnu      /opt/intel/mkl/lib/intel64/libmkl_rt.so 50 && \
-  update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so.3  \
+  update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so.3 \
     libblas.so.3-x86_64-linux-gnu    /opt/intel/mkl/lib/intel64/libmkl_rt.so 50 && \
-  update-alternatives --install /usr/lib/x86_64-linux-gnu/liblapack.so   \
+  update-alternatives --install /usr/lib/x86_64-linux-gnu/liblapack.so \
     liblapack.so-x86_64-linux-gnu    /opt/intel/mkl/lib/intel64/libmkl_rt.so 50 && \
   update-alternatives --install /usr/lib/x86_64-linux-gnu/liblapack.so.3 \
     liblapack.so.3-x86_64-linux-gnu  /opt/intel/mkl/lib/intel64/libmkl_rt.so 50 && \
@@ -92,44 +58,33 @@ RUN update-alternatives --install /usr/lib/x86_64-linux-gnu/libblas.so  \
   ldconfig && \
   echo "MKL_THREADING_LAYER=GNU" >> /etc/environment
 
-# create pythonpath for single file packages (without requiring setup.py or __init__.py)
-RUN mkdir -p /opt/code/pythonpath
-ENV PYTHONPATH "${PYTHONPATH}:/opt/code/pythonpath"
-
-# copy bart python interface to pythonpath
-COPY --from=mrd_converter /opt/code/bart/python/* /opt/code/pythonpath/
-
 # Dependencies for Python MRD server
 RUN  apt-get update --quiet \
-     && apt-get dist-upgrade --yes \
      && apt-get install --no-install-recommends --no-install-suggests --yes \
-        ca-certificates nano git gcc python3 python3-pip h5utils libxslt1.1 libfftw3-3 liblapacke libpugixml-dev libxml2-utils \
-     && pip3 install --no-cache-dir h5py scikit-image xsdata==22.2 ismrmrd==1.14.0 dipy despike psutil
+        ca-certificates git python3-dev python3-venv libfftw3-double3 libfftw3-single3 liblapacke libpng16-16
+
+# Create virtual environment
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+RUN pip install --no-cache-dir h5py intel-openmp scipy scikit-image dipy psutil ismrmrd despike julia
 
 RUN  mkdir -p /opt/code
+COPY --from=mrd_converter /opt/code/python-ismrmrd-server /opt/code/python-ismrmrd-server
+COPY --from=mrd_converter /opt/code/bart /opt/code/bart
 
-RUN  cd /opt/code \
-     && pip3 install SpiralTraj*
-
-RUN  cd /opt/code \
-     && git clone https://github.com/ismrmrd/ismrmrd-python-tools.git \
-     && cd /opt/code/ismrmrd-python-tools \
-     && python3 setup.py install
-
-RUN  cd /opt/code \
-     && git clone -b pulseq_dev https://github.com/pehses/python-ismrmrd-server.git
+RUN pip3 install --no-cache-dir /opt/code/bart/pkg/python
 
 # Cleanup files not required after compiling
-RUN  apt-get remove --yes gcc git python3-pip
-RUN  apt-get autoremove --yes 
-RUN  apt-get autoclean --yes
+RUN apt-get remove --yes git python3-pip \
+    && apt-get autoremove --yes \
+    && apt-get autoclean --yes
 
 # add ismrmrd server start script
 RUN echo "#!/bin/bash \n/opt/code/python-ismrmrd-server/main.py -v -H=0.0.0.0 -p=9002 -l=/tmp/share/debug/python-ismrmrd-server.log" >> /usr/bin/start_server
 RUN chmod +x /usr/bin/start_server
 
-# Expose all GPU to docker
-ENV NVIDIA_VISIBLE_DEVICES all
-ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 CMD ["/usr/bin/start_server"]

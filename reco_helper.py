@@ -672,8 +672,8 @@ def calc_fmap(imgs, echo_times, metadata):
         imgs_sens = np.moveaxis(imgs[...,0], 0, -1)
         ksp_sens= fft_dim(imgs_sens, axes=(0,1))
         sens = bart_parallel(ksp_sens.ndim-1, ksp_sens.shape[-1], 1, "ecalib -m1", ksp_sens)
-        nifti = nib.Nifti1Image(np.flip(np.transpose(abs(sens[:,:,0]),[0,1,3,2]), (0,1,2)), np.eye(4))
-        nib.save(nifti, "/tmp/share/debug/fmap_sens.nii")
+        if sens.ndim < 5:
+            sens = sens[...,np.newaxis]
         sens = np.moveaxis(sens, -1, 0)
 
     # from [slices,nx,ny,nz,coils,echoes] to either [slices,nx,ny,coils,echoes] or [nz,nx,ny,coils,echoes]
@@ -741,7 +741,7 @@ def calc_fmap(imgs, echo_times, metadata):
         if romeo_uw:
             phasediff_uw = romeo_unwrap(phasediff, [], metadata, mask=None, mc_unwrap=False, return_b0=False)
         else:
-            phasediff_uw = unwrap_phase(np.angle(phasediff))
+            phasediff_uw = do_unwrap_phase(phasediff)
         te_diff = echo_times[1] - echo_times[0]
         fmap = phasediff_uw/te_diff
 
@@ -939,7 +939,10 @@ def load_external_fmap(path, shape):
     return fmap
 
 def do_unwrap_phase(phasediff):
-    return unwrap_phase(np.angle(phasediff))
+    if phasediff.shape[0] == 1:
+        return unwrap_phase(np.angle(phasediff[0]))[np.newaxis]
+    else:
+        return unwrap_phase(np.angle(phasediff))
 
 def do_despike(fmap, n=0.8, size=5, fill_size=2):
     return despike.clean(fmap, n=n, size=size, mask='mean', fill_method='median', fill_size=fill_size)

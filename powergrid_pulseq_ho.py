@@ -58,7 +58,7 @@ first_vol = 0 # index of first volume, that is reconstructed
 
 compressed_coils = None # if not None compress number of coils to the specified number of coils
 
-use_matmri = False
+use_matmri = True
 
 ########################
 # Main Function
@@ -209,9 +209,15 @@ def process(connection, config, metadata, prot_file):
     process_acs.enc_info = [999, 0, 999, 0, 0] # initilaize encoding info: enc1 min/max, enc2 min/max, constrast max
 
     # field map, if it was acquired - needs at least 2 reference contrasts
-    if 'echo_times' in prot_arrays:
-        echo_times = prot_arrays['echo_times']
-        process_acs.fmap = {'fmap': [None] * n_slc, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+    if 'echo_times_acs' in prot_arrays:
+        echo_time_str = 'echo_times_acs'
+    elif 'echo_times' in prot_arrays:
+        echo_time_str = 'echo_times'
+    else:
+        echo_time_str = None
+    if echo_time_str is not None:
+        echo_times = prot_arrays[echo_time_str]
+        process_acs.fmap = {'fmap': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 

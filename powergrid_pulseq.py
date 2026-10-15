@@ -178,9 +178,15 @@ def process(connection, config, metadata, prot_file):
         sens_shots = True
 
     # field map, if it was acquired - needs at least 2 reference contrasts
-    if 'echo_times' in prot_arrays:
-        echo_times = prot_arrays['echo_times']
-        process_acs.fmap = {'fmap': [None] * n_slc, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+    if 'echo_times_acs' in prot_arrays:
+        echo_time_str = 'echo_times_acs'
+    elif 'echo_times' in prot_arrays:
+        echo_time_str = 'echo_times'
+    else:
+        echo_time_str = None
+    if echo_time_str is not None:
+        echo_times = prot_arrays[echo_time_str]
+        process_acs.fmap = {'fmap': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 

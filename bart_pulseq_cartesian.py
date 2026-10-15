@@ -102,6 +102,13 @@ def process_cartesian(connection, config, metadata, prot_file):
             # ----------------------------------------------------------
             if isinstance(item, ismrmrd.Acquisition):
 
+                if (item.is_flag_set(ismrmrd.ACQ_IS_RTFEEDBACK_DATA) or 
+                    item.is_flag_set(ismrmrd.ACQ_IS_NAVIGATION_DATA) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_HPFEEDBACK_DATA) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION) or
+                    item.is_flag_set(ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE)):
+                    continue
+
                 insert_acq(acqs[0], item, metadata, noncartesian=False, return_basetrj=False)
                 acqs.pop(0)
 
@@ -132,7 +139,7 @@ def process_cartesian(connection, config, metadata, prot_file):
                     acs_ksp = []
                     for slc in acsGroup:
                         acs_ksp.append(sort_into_kspace(slc, metadata, dmtx, zf_around_center=True))
-                    sensmaps = process_acs(acsGroup, gpu)
+                    sensmaps = process_acs(acs_ksp, gpu)
                     process_acs.enc_info = [999, 0, 999, 0]
 
                 acqGroup[item.idx.contrast][item.idx.slice].append(item)

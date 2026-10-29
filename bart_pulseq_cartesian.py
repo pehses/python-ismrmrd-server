@@ -326,11 +326,9 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, parallel=F
             pics_str += ' -g'
         if parallel:
             img_uncmb = rh.bart_parallel(ksp.ndim-1, ksp.shape[-1], 1, pics_str, ksp, sensmaps)
-            dims = 5
         else:
             img_uncmb = bart(1, pics_str, ksp, sensmaps)
-            dims = 4
-        while img_uncmb.ndim < dims:
+        while img_uncmb.ndim < 5:
             img_uncmb = img_uncmb[...,np.newaxis] # add nz, nc, slice axis if necessary
 
     nz = metadata.encoding[0].encodedSpace.matrixSize.z

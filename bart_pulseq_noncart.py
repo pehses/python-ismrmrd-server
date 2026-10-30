@@ -630,7 +630,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             data = np.sqrt(np.sum(np.abs(data)**2, axis=-1))
         else:
             if "slice_profile_meas" in up_base:
-                sensmaps = np.repeat(sensmaps, nz, axis=-2)
+                sensmaps = np.repeat(sensmaps, nz, axis=2)
             data = bart(1, pics_config, data, sensmaps, t=trj)
             rh.log_bart_stdout()
             if ecalib_maps > 1:

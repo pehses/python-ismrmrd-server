@@ -186,7 +186,7 @@ def process(connection, config, metadata, prot_file):
         echo_time_str = None
     if echo_time_str is not None:
         echo_times = prot_arrays[echo_time_str]
-        process_acs.fmap = {'fmap': None, 'TE': echo_times, 'name': 'Field Map from reference scan'}
+        process_acs.fmap = {'fmap': [None] * n_slc, 'TE': echo_times, 'name': 'Field Map from reference scan'}
     else:
         process_acs.fmap = None
 

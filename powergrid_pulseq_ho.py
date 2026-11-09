@@ -58,7 +58,7 @@ first_vol = 0 # index of first volume, that is reconstructed
 
 compressed_coils = None # if not None compress number of coils to the specified number of coils
 
-use_matmri = True
+use_matmri = False
 
 ########################
 # Main Function

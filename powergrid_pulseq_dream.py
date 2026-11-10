@@ -597,7 +597,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
         if data.ndim > 3:
             for contr in range(data.shape[0]):
                 series_ix += 1
-                image = ismrmrd.Image.from_array(data[contr], acquisition=acqGroup[contr][0])
+                image = ismrmrd.Image.from_array(data[contr].T, acquisition=acqGroup[contr][0])
                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[contr][0].read_dir[0]), "{:.18f}".format(acqGroup[contr][0].read_dir[1]), "{:.18f}".format(acqGroup[contr][0].read_dir[2])]
                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[contr][0].phase_dir[0]), "{:.18f}".format(acqGroup[contr][0].phase_dir[1]), "{:.18f}".format(acqGroup[contr][0].phase_dir[2])]
                 image.image_index = 0
@@ -611,7 +611,7 @@ def process_raw(acqGroup, metadata, sensmaps, prot_arrays):
         else:
             # FA maps, Ref Voltage maps
             series_ix += 1
-            image = ismrmrd.Image.from_array(data, acquisition=acqGroup[0][0])
+            image = ismrmrd.Image.from_array(data.T, acquisition=acqGroup[0][0])
             meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0].read_dir[2])]
             meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0].phase_dir[2])]
             image.image_index = 0

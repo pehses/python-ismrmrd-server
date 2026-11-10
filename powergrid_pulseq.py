@@ -695,7 +695,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
                         for slc in range(imgs.shape[3]):
                             img_ix += 1
                             for nz in range(imgs.shape[4]):
-                                image = ismrmrd.Image.from_array(imgs[rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                                image = ismrmrd.Image.from_array(imgs[rep,contr,phs,slc,nz].T, acquisition=acqGroup[0][contr][0])
                                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 image.image_index = img_ix
@@ -721,7 +721,7 @@ def process_raw(acqGroup, metadata, sensmaps, shotimgs, prot_arrays):
         else:
             # ADC maps, Refimg & Fmap
             for slc, img in enumerate(imgs):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                image = ismrmrd.Image.from_array(img[0].T, acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc

@@ -539,9 +539,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
         for k,contr in enumerate(data):
             for slc,img in enumerate(contr):
                 if n_par > 1:
-                    image = ismrmrd.Image.from_array(img, acquisition=group[0][0][0])
+                    image = ismrmrd.Image.from_array(img.T, acquisition=group[0][0][0])
                 else:
-                    image = ismrmrd.Image.from_array(img[...,0], acquisition=group[0][0][0])
+                    image = ismrmrd.Image.from_array(img[...,0].T, acquisition=group[0][0][0])
                     offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
                     image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                 image.image_index = slc
@@ -563,7 +563,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
                 refimg = np.around(refimg)
                 refimg = refimg.astype(np.int16)
                 
-                image = ismrmrd.Image.from_array(refimg, acquisition=group[0][0][0])
+                image = ismrmrd.Image.from_array(refimg.T, acquisition=group[0][0][0])
                 image.image_index = slc
                 image.image_series_index = n_contr
                 image.attribute_string = xml
@@ -580,9 +580,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             for k,contr in enumerate(snr):
                 for slc,img in enumerate(contr):
                     if n_par > 1:
-                        image = ismrmrd.Image.from_array(img, acquisition=group[0][0][0])
+                        image = ismrmrd.Image.from_array(img.T, acquisition=group[0][0][0])
                     else:
-                        image = ismrmrd.Image.from_array(img[...,0], acquisition=group[0][0][0])
+                        image = ismrmrd.Image.from_array(img[...,0].T, acquisition=group[0][0][0])
                         offset = [0, 0, slc_res*(slc-(n_slc-1)/2)] # slice offset in GCS
                         image.position[:] += rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
                     image.image_index = slc
@@ -682,9 +682,9 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
 
         # Format as ISMRMRD image data
         if n_par > 1:
-            image = ismrmrd.Image.from_array(data, acquisition=group[0])
+            image = ismrmrd.Image.from_array(data.T, acquisition=group[0])
         else:
-            image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
             offset = [0, 0, slc_res*(slc-(n_slc-1)/2)]
             image.position[:] += rh.gcs_to_pcs(offset, rotmat)
         image.image_index = slc
@@ -706,7 +706,7 @@ def process_raw(group, metadata, cc_cha, dmtx=None, sensmaps=None, gpu=False, pa
             refimg = np.around(refimg)
             refimg = refimg.astype(np.int16)
             
-            image = ismrmrd.Image.from_array(refimg, acquisition=group[0])
+            image = ismrmrd.Image.from_array(refimg.T, acquisition=group[0])
             image.image_index = slc
             image.image_series_index = n_contr
             image.attribute_string = xml

@@ -396,7 +396,7 @@ def send_images(imgs, metadata, group):
     for k,contr in enumerate(imgs):
         for j,data in enumerate(contr):
             if n_par > 1:
-                image = ismrmrd.Image.from_array(data, acquisition=group[0])
+                image = ismrmrd.Image.from_array(data.T, acquisition=group[0])
                 image.image_index = j
                 image.image_series_index = k
                 image.attribute_string = xml
@@ -408,7 +408,7 @@ def send_images(imgs, metadata, group):
             else:
                 offset = [0, 0, -1*slc_res*(j-(n_slc-1)/2)] # slice offset in GCS
                 pos_offset = rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
-                image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+                image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
                 image.image_index = j # slice
                 image.image_series_index = k # contrast
                 image.attribute_string = xml
@@ -475,7 +475,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
     images = []
 
     if nz > 1: # send as 3D volume
-        image = ismrmrd.Image.from_array(fmap, acquisition=group[0])
+        image = ismrmrd.Image.from_array(fmap.T, acquisition=group[0])
         image.image_index = 1 # contains image index
         image.image_series_index = n_contr
         image.slice = 0
@@ -490,7 +490,7 @@ def calc_fieldmap(imgs, echo_times, metadata, group):
             offset = [0, 0, -1*slc_res*(ix-(n_slc-1)/2)] # slice offset in GCS
             pos_offset = rh.gcs_to_pcs(offset, rotmat) # correct image position in PCS
 
-            image = ismrmrd.Image.from_array(fmap[...,ix], acquisition=group[0])
+            image = ismrmrd.Image.from_array(fmap[...,ix].T, acquisition=group[0])
             image.image_index = ix
             image.image_series_index = n_contr
             image.slice = 0

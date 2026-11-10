@@ -453,7 +453,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
     # Format as ISMRMRD image data
     if n_par > 1:
         for par in range(n_par):
-            image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
             image.image_index = 1 + par
             image.image_series_index = 1 + group[0].idx.contrast
             image.slice = 0
@@ -466,7 +466,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         
         if fa_map is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(fa_map[...,par], acquisition=group[0])
+                image = ismrmrd.Image.from_array(fa_map[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 3
                 image.slice = 0
@@ -478,7 +478,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         
         if ref_volt is not None:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(ref_volt[...,par], acquisition=group[0])
+                image = ismrmrd.Image.from_array(ref_volt[...,par].T, acquisition=group[0])
                 image.image_index = 1 + par
                 image.image_series_index = 4
                 image.slice = 0
@@ -489,7 +489,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
                 images.append(image)
         
     else:
-        image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+        image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
         image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
         image.image_series_index = 1
         image.slice = 0
@@ -501,7 +501,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
         images.append(image)
         
         if fa_map is not None:
-            image = ismrmrd.Image.from_array(fa_map[...,0], acquisition=group[0])
+            image = ismrmrd.Image.from_array(fa_map[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 2
             image.slice = 0
@@ -512,7 +512,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, gpu=False, prot_array
             images.append(image)
         
         if ref_volt is not None:
-            image = ismrmrd.Image.from_array(ref_volt[...,0], acquisition=group[0])
+            image = ismrmrd.Image.from_array(ref_volt[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 3
             image.slice = 0

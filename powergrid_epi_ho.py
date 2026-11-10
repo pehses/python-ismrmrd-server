@@ -487,7 +487,7 @@ def process_raw(acqGroup, metadata, img_coord):
                         for slc in range(dsets[key].shape[3]):
                             img_ix += 1
                             for nz in range(dsets[key].shape[4]):
-                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz], acquisition=acqGroup[0][contr][0])
+                                image = ismrmrd.Image.from_array(dsets[key][rep,contr,phs,slc,nz].T, acquisition=acqGroup[0][contr][0])
                                 meta['ImageRowDir'] = ["{:.18f}".format(acqGroup[0][0][0].read_dir[0]), "{:.18f}".format(acqGroup[0][0][0].read_dir[1]), "{:.18f}".format(acqGroup[0][0][0].read_dir[2])]
                                 meta['ImageColumnDir'] = ["{:.18f}".format(acqGroup[0][0][0].phase_dir[0]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[1]), "{:.18f}".format(acqGroup[0][0][0].phase_dir[2])]
                                 image.image_index = img_ix
@@ -508,7 +508,7 @@ def process_raw(acqGroup, metadata, img_coord):
         else:
             # Fmap & SNR maps
             for slc, img in enumerate(dsets[key]):
-                image = ismrmrd.Image.from_array(img[0], acquisition=acqGroup[0][0][0])
+                image = ismrmrd.Image.from_array(img[0].T, acquisition=acqGroup[0][0][0])
                 image.image_index = slc + 1
                 image.image_series_index = series_ix
                 image.slice = slc

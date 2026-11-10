@@ -265,15 +265,15 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
     if simu:
         n_par = data_mag.shape[-1]
         for par in range(n_par):
-            image_mag = ismrmrd.Image.from_array(data_mag[...,par], acquisition=group[0])
+            image_mag = ismrmrd.Image.from_array(data_mag[...,par].T, acquisition=group[0])
             image_mag.image_series_index = 1
-            image_phs = ismrmrd.Image.from_array(data_phs[...,par], acquisition=group[0])
+            image_phs = ismrmrd.Image.from_array(data_phs[...,par].T, acquisition=group[0])
             image_phs.image_series_index = 2
             images.append(image_mag)
             images.append(image_phs)
-            image_ch_mag = ismrmrd.Image.from_array(data_ch_mag[...,par,:], acquisition=group[0])
+            image_ch_mag = ismrmrd.Image.from_array(data_ch_mag[...,par,:].T, acquisition=group[0])
             image_ch_mag.image_series_index = 3
-            image_ch_phs = ismrmrd.Image.from_array(data_ch_phs[...,par,:], acquisition=group[0])
+            image_ch_phs = ismrmrd.Image.from_array(data_ch_phs[...,par,:].T, acquisition=group[0])
             image_ch_phs.image_series_index = 4
             images.append(image_ch_phs)
             images.append(image_ch_mag)
@@ -282,7 +282,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
         n_par = data.shape[-1]
         if n_par > 1:
             for par in range(n_par):
-                image = ismrmrd.Image.from_array(data[...,par], acquisition=group[0])
+                image = ismrmrd.Image.from_array(data[...,par].T, acquisition=group[0])
                 image.image_index = 1 + group[0].idx.contrast * n_par + par
                 image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
                 image.slice = 0
@@ -292,7 +292,7 @@ def process_raw(group, metadata, dmtx=None, sensmaps=None, sensmaps_jemris=None,
                                     ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
                 images.append(image)
         else:
-            image = ismrmrd.Image.from_array(data[...,0], acquisition=group[0])
+            image = ismrmrd.Image.from_array(data[...,0].T, acquisition=group[0])
             image.image_index = 1 + group[0].idx.contrast * n_slc + group[0].idx.slice
             image.image_series_index = 1 + group[0].idx.average *n_sets + group[0].idx.set
             image.slice = 0
